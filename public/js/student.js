@@ -136,9 +136,10 @@ function setupRecording() {
         if (e.data && e.data.size > 0 && sessionInfo.recording_folder_id) {
             chunkIndex++;
             const formData = new FormData();
-            formData.append('video', e.data, 'chunk.webm');
+            formData.append('exam_session_id', sessionInfo.id);
             formData.append('folder_id', sessionInfo.recording_folder_id);
             formData.append('chunk_index', chunkIndex);
+            formData.append('video', e.data, `chunk_${chunkIndex}.webm`);
             
             activeUploads++;
             try {

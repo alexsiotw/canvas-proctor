@@ -269,21 +269,33 @@ app.post('/api/session/end', requireAuth, async (req, res) => {
 
 // API: Upload Video Chunk
 app.post('/api/session/upload-chunk', requireAuth, upload.single('video'), async (req, res) => {
+    const { folder_id, chunk_index, exam_session_id } = req.body;
     try {
-        const { folder_id, chunk_index } = req.body;
-        if (!req.file) throw new Error("Multer failed to parse the video file");
+        if (!req.file) throw new Error("Multer failed to parse the video file (req.file is undefined). Form parsing error.");
+        if (!folder_id) throw new Error("Missing folder_id from client payload.");
+        if (!process.env.GOOGLE_CREDENTIALS_JSON) throw new Error("Missing GOOGLE_CREDENTIALS_JSON variable.");
         
-        if (folder_id && process.env.GOOGLE_CREDENTIALS_JSON) {
-            const fileName = `chunk_${chunk_index}.webm`;
-            const tempFilePath = path.join(os.tmpdir(), `${uuidv4()}_${fileName}`);
-            fs.writeFileSync(tempFilePath, req.file.buffer);
-            
-            await driveApi.uploadVideoChunk(folder_id, fileName, tempFilePath);
-            fs.unlinkSync(tempFilePath);
+        const fileName = `chunk_${chunk_index}.webm`;
+        const tempFilePath = path.join(os.tmpdir(), `${uuidv4()}_${fileName}`);
+        fs.writeFileSync(tempFilePath, req.file.buffer);
+        
+        await driveApi.uploadVideoChunk(folder_id, fileName, tempFilePath);
+        fs.unlinkSync(tempFilePath);
+        
+        if (exam_session_id) {
+            await pool.query('INSERT INTO event_logs (exam_session_id, event_type, event_message) VALUES ($1, $2, $3)', 
+                [exam_session_id, 'upload_success', `Video chunk ${chunk_index} securely mapped to Google Drive.`]);
         }
+        
         res.json({ success: true });
     } catch (err) {
         console.error('Upload Error', err);
+        if (exam_session_id) {
+            try {
+                await pool.query('INSERT INTO event_logs (exam_session_id, event_type, event_message) VALUES ($1, $2, $3)', 
+                    [exam_session_id, 'upload_error', err.message]);
+            } catch(e) {}
+        }
         res.status(500).json({ error: err.message });
     }
 });
