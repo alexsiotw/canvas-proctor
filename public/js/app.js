@@ -1,6 +1,7 @@
 let exams = [];
 let liveStudents = {}; 
 let currentLiveExamId = null;
+let currentFullscreenSessionId = null;
 let socket = io();
 
 socket.on('snapshot_update', (data) => {
@@ -8,6 +9,11 @@ socket.on('snapshot_update', (data) => {
     if(currentLiveExamId == data.exam_id) {
         liveStudents[data.exam_session_id] = { ...liveStudents[data.exam_session_id], screenshot: data.screenshot_data_url };
         updateLiveGrid();
+        
+        // Dynamically update the fullscreen modal in real-time acting as a live feed!
+        if (currentFullscreenSessionId == data.exam_session_id) {
+            document.getElementById('fullscreen-image').src = data.screenshot_data_url;
+        }
     }
 });
 
@@ -25,20 +31,8 @@ socket.on('proctor_log', (data) => {
 });
 
 document.addEventListener('DOMContentLoaded', () => {
-    navigate('exams');
+    loadExams(); // Boot directly into Exams Workspace
 });
-
-function navigate(page) {
-    document.querySelectorAll('.nav-item').forEach(el => el.classList.remove('active'));
-    const navItem = document.querySelector(`[data-page="${page}"]`);
-    if(navItem) navItem.classList.add('active');
-
-    document.getElementById('content').innerHTML = '<div class="spinner" style="margin: 40px auto;"></div>';
-
-    if (page === 'exams') loadExams();
-    if (page === 'live') loadLiveExamSelect();
-    if (page === 'reports') loadReports();
-}
 
 async function loadExams() {
     const res = await fetch('/api/exams');
@@ -52,7 +46,7 @@ function renderExams() {
         <div class="page-header">
             <div>
                 <h1 class="page-title">Configured Exams</h1>
-                <p class="page-subtitle">Setup proctoring for your Canvas Quizzes.</p>
+                <p class="page-subtitle">Select an exam below to enter its workspace, monitor live students, and view final reports.</p>
             </div>
             <button class="btn btn-primary" onclick="showCreateExamModal()">+ New Proctored Exam</button>
         </div>
@@ -70,8 +64,8 @@ function renderExams() {
     } else {
         exams.forEach(ex => {
             html += `
-                <div class="card session-card" style="position:relative;">
-                    <button class="btn" style="position:absolute; top: 15px; right: 15px; background: var(--danger); color: white; padding: 4px 8px; font-size: 12px; border:none; border-radius: 4px;" onclick="deleteExam(${ex.id})">Delete</button>
+                <div class="card session-card" style="position:relative; cursor:pointer;" onclick="loadExamDashboard(${ex.id})">
+                    <button class="btn" style="position:absolute; top: 15px; right: 15px; background: var(--danger); color: white; padding: 4px 8px; font-size: 12px; border:none; border-radius: 4px;" onclick="event.stopPropagation(); deleteExam(${ex.id})">Delete</button>
                     <div class="session-date">${new Date(ex.created_at).toLocaleDateString()}</div>
                     <div class="session-title">${ex.title}</div>
                     <div style="margin-top: 10px; font-weight: bold; font-size: 14px; background: #eef2ff; color: #4338ca; padding: 5px 10px; border-radius: 4px; display: inline-block;">Code: ${ex.exam_code}</div>
@@ -88,6 +82,157 @@ function renderExams() {
     content.innerHTML = html;
 }
 
+// THE NEW EXAM DASHBOARD (Master-Detail View)
+function loadExamDashboard(examId) {
+    const exam = exams.find(e => e.id == examId);
+    if (!exam) return;
+    
+    currentLiveExamId = examId;
+    liveStudents = {};
+    socket.emit('join_teacher', examId);
+    
+    const content = document.getElementById('content');
+    content.innerHTML = `
+        <div class="page-header" style="display:flex; justify-content:space-between; align-items:center;">
+            <div>
+                <button class="btn btn-secondary" style="margin-bottom: 10px;" onclick="closeExamDashboard()">← Back to Exams</button>
+                <h1 class="page-title">${exam.title} Workspace</h1>
+                <p class="page-subtitle">Now Managing Exam Code: <strong style="color:var(--primary)">${exam.exam_code}</strong></p>
+            </div>
+        </div>
+        
+        <!-- Grid layout cleanly splitting Live Monitor & Reports side-by-side or stacked -->
+        <div style="display: flex; flex-direction: column; gap: 30px; margin-top: 20px;">
+            <!-- Live Monitoring Block -->
+            <div class="card" style="padding: 20px; box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1);">
+                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom: 15px; border-bottom: 1px solid var(--border-color); padding-bottom: 10px;">
+                    <h2 style="font-size: 18px; font-weight: 600;">Live Monitoring Feed</h2>
+                    <span style="font-size:12px; color:var(--text-secondary);">Click on a student's webcam to expand securely. Updates dynamically.</span>
+                </div>
+                <div id="live-grid" class="session-grid"></div>
+            </div>
+            
+            <!-- Reports Block -->
+            <div class="card" style="padding: 20px; box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1);">
+                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom: 15px; border-bottom: 1px solid var(--border-color); padding-bottom: 10px;">
+                    <h2 style="font-size: 18px; font-weight: 600;">Post-Exam Reports & Video Vault</h2>
+                    <button class="btn btn-secondary" style="font-size:12px; padding: 4px 8px;" onclick="fetchReportData(${exam.id})">Refresh Reports</button>
+                </div>
+                <div id="report-content"><div class="spinner" style="margin: 20px auto;"></div></div>
+            </div>
+        </div>
+    `;
+    
+    updateLiveGrid();
+    fetchReportData(examId);
+}
+
+function closeExamDashboard() {
+    currentLiveExamId = null;
+    loadExams();
+}
+
+// LIVE VIEW LOGIC
+function updateLiveGrid() {
+    const grid = document.getElementById('live-grid');
+    if(!grid) return;
+    grid.innerHTML = '';
+
+    Object.keys(liveStudents).forEach(sessionId => {
+        const s = liveStudents[sessionId];
+        const statusColor = s.status === 'online' ? 'var(--success)' : 'var(--text-muted)';
+        
+        let content = '';
+        if(s.screenshot) {
+            content = `<img src="${s.screenshot}" style="width:100%; height:120px; object-fit:cover; border-radius: 4px; cursor: pointer;" onclick="openFullscreenImg('${s.screenshot}', ${sessionId})" />`;
+        } else {
+            content = `<div style="width:100%; height:120px; background:#ddd; border-radius: 4px; display:flex; align-items:center; justify-content:center; color:#888;">No Signal</div>`;
+        }
+
+        grid.innerHTML += `
+            <div class="card" style="padding: 12px; background: #f8fafc;">
+                <div style="display:flex; justify-content:space-between; margin-bottom:8px;">
+                    <strong style="font-size: 14px;">${s.name || 'Testing...'}</strong>
+                    <span style="width: 10px; height: 10px; background: ${statusColor}; border-radius: 50%; display:inline-block;"></span>
+                </div>
+                ${content}
+            </div>
+        `;
+    });
+
+    if(Object.keys(liveStudents).length === 0) {
+        grid.innerHTML = '<div style="color: var(--text-muted); font-size: 14px; grid-column:1/-1; padding:20px 0;">Live queue is currently empty. Waiting for students to authenticate...</div>';
+    }
+}
+
+function openFullscreenImg(src, sessionId) {
+    currentFullscreenSessionId = sessionId;
+    document.getElementById('fullscreen-image').src = src;
+    document.getElementById('image-overlay').classList.add('active');
+}
+
+function closeImage() {
+    currentFullscreenSessionId = null;
+    document.getElementById('image-overlay').classList.remove('active');
+}
+
+// REPORTS LOGIC
+async function fetchReportData(examId) {
+    if(!examId) return;
+    const res = await fetch(`/api/exams/${examId}/reports`);
+    const sessions = await res.json();
+    const tableContainer = document.getElementById('report-content');
+    if(!tableContainer) return; // Prevent crashing if user navigated away
+
+    let tableHtml = `
+        <div class="table-wrapper">
+        <table style="width:100%">
+            <thead>
+                <tr>
+                    <th>Student Name</th>
+                    <th>Status</th>
+                    <th>Started At</th>
+                    <th>Security Flags / Event Timeline</th>
+                    <th>Recorded Video Playback</th>
+                </tr>
+            </thead>
+            <tbody>
+    `;
+
+    sessions.forEach(s => {
+        let logsList = `<ul>`;
+        s.logs.forEach(l => {
+            logsList += `<li><strong style="color:var(--danger)">${l.event_type}</strong>: <span style="font-size:12px;">${l.event_message}</span> <span style="color:#888;font-size:11px;">(${new Date(l.event_timestamp).toLocaleTimeString()})</span></li>`;
+        });
+        if(s.logs.length === 0) logsList += "<li style='color:var(--success); font-weight:bold;'>No flags recorded. Clean run!</li>";
+        logsList += '</ul>';
+
+        tableHtml += `
+            <tr>
+                <td style="font-weight: 600;">
+                    ${s.student_name || s.student_canvas_id} 
+                    <div style="font-size: 11px; color:#666;">(Attempt ${s.attempt_number || 1})</div>
+                    <button class="btn btn-secondary" style="display:block; margin-top:8px; font-size:11px; padding:4px 8px; border: 1px solid var(--border-color); background: white;" onclick="grantExtraAttempt(${s.exam_id}, '${s.student_canvas_id}')">+1 Override Pass</button>
+                </td>
+                <td><span class="status-badge status-${s.status === 'completed' ? 'Present' : 'Late'}">${s.status}</span></td>
+                <td>${new Date(s.started_at).toLocaleString()}</td>
+                <td style="font-size: 13px;">${logsList}</td>
+                <td>
+                    ${s.status === 'completed' ? `<a href="/watch.html?session=${s.id}" target="_blank" class="btn btn-primary" style="font-size:12px; padding:8px 12px; border-radius: 4px; background:#4338ca; color:white; text-decoration:none; display:inline-block;">Watch Final Video</a>` : '<span style="color:#888; font-style:italic; font-size:12px;">In Progress...</span>'}
+                </td>
+            </tr>
+        `;
+    });
+
+    if (sessions.length === 0) {
+        tableHtml += '<tr><td colspan="5" style="text-align:center; padding: 20px; color:#888;">No recorded attempts in the vault yet.</td></tr>';
+    }
+
+    tableHtml += '</tbody></table></div>';
+    tableContainer.innerHTML = tableHtml;
+}
+
+// EXAM GENERATION & DELETION MODALS
 function showCreateExamModal() {
     const defaultCode = Math.random().toString(36).substring(2, 8).toUpperCase();
     const html = `
@@ -187,172 +332,6 @@ async function deleteExam(id) {
     }
 }
 
-function showToast(msg, type='info') {
-    const el = document.createElement('div');
-    el.style.background = type === 'success' ? 'var(--success)' : (type === 'warning' ? 'var(--warning)' : 'var(--text-primary)');
-    el.style.color = 'white';
-    el.style.padding = '12px 20px';
-    el.style.borderRadius = 'var(--radius)';
-    el.style.boxShadow = 'var(--shadow)';
-    el.style.fontSize = '14px';
-    el.innerText = msg;
-    document.getElementById('toast-container').appendChild(el);
-    setTimeout(() => el.remove(), 4000);
-}
-
-// LIVE VIEW LOGIC
-async function loadLiveExamSelect() {
-    if(exams.length === 0) {
-        const res = await fetch('/api/exams');
-        exams = await res.json();
-    }
-    const content = document.getElementById('content');
-    
-    if(exams.length === 0) {
-        content.innerHTML = '<div class="empty-state">No exams found to monitor.</div>';
-        return;
-    }
-
-    let selectHtml = '<div style="margin-bottom: 20px;"><label class="form-label">Select Exam to Monitor</label><select id="live-exam-sel" class="form-select" onchange="startLiveMonitoring(this.value)"><option value="">-- Choose Exam --</option>';
-    exams.forEach(e => selectHtml += `<option value="${e.id}">${e.title}</option>`);
-    selectHtml += '</select></div><div id="live-grid" class="session-grid"></div>';
-
-    content.innerHTML = `
-        <div class="page-header">
-            <div>
-                <h1 class="page-title">Live Monitoring</h1>
-                <p class="page-subtitle">Watch student screens in real-time.</p>
-            </div>
-        </div>
-        ${selectHtml}
-    `;
-}
-
-function startLiveMonitoring(examId) {
-    if(!examId) return;
-    currentLiveExamId = examId;
-    liveStudents = {};
-    socket.emit('join_teacher', examId);
-    updateLiveGrid();
-}
-
-function updateLiveGrid() {
-    const grid = document.getElementById('live-grid');
-    if(!grid) return;
-    grid.innerHTML = '';
-
-    Object.keys(liveStudents).forEach(sessionId => {
-        const s = liveStudents[sessionId];
-        const statusColor = s.status === 'online' ? 'var(--success)' : 'var(--text-muted)';
-        
-        let content = '';
-        if(s.screenshot) {
-            content = `<img src="${s.screenshot}" style="width:100%; height:120px; object-fit:cover; border-radius: 4px; cursor: pointer;" onclick="openFullscreenImg('${s.screenshot}')" />`;
-        } else {
-            content = `<div style="width:100%; height:120px; background:#ddd; border-radius: 4px; display:flex; align-items:center; justify-content:center; color:#888;">No Signal</div>`;
-        }
-
-        grid.innerHTML += `
-            <div class="card" style="padding: 12px;">
-                <div style="display:flex; justify-content:space-between; margin-bottom:8px;">
-                    <strong style="font-size: 14px;">${s.name || 'Testing...'}</strong>
-                    <span style="width: 10px; height: 10px; background: ${statusColor}; border-radius: 50%; display:inline-block;"></span>
-                </div>
-                ${content}
-            </div>
-        `;
-    });
-
-    if(Object.keys(liveStudents).length === 0) {
-        grid.innerHTML = '<div style="color: var(--text-muted); font-size: 14px;">Waiting for students to connect...</div>';
-    }
-}
-
-function openFullscreenImg(src) {
-    document.getElementById('fullscreen-image').src = src;
-    document.getElementById('image-overlay').classList.add('active');
-}
-
-function closeImage() {
-    document.getElementById('image-overlay').classList.remove('active');
-}
-
-// REPORTS LOGIC
-async function loadReports() {
-    if(exams.length === 0) {
-        const res = await fetch('/api/exams');
-        exams = await res.json();
-    }
-    const content = document.getElementById('content');
-    
-    if(exams.length === 0) {
-        content.innerHTML = '<div class="empty-state">No exams configured.</div>';
-        return;
-    }
-
-    let selectHtml = '<div style="margin-bottom: 20px;"><label class="form-label">Select Exam to View Reports</label><select id="report-exam-sel" class="form-select" onchange="fetchReportData(this.value)"><option value="">-- Choose Exam --</option>';
-    exams.forEach(e => selectHtml += `<option value="${e.id}">${e.title}</option>`);
-    selectHtml += '</select></div><div id="report-content"></div>';
-
-    content.innerHTML = `
-        <div class="page-header">
-            <div>
-                <h1 class="page-title">Proctor Reports</h1>
-                <p class="page-subtitle">View logs, tab switches, and security flags.</p>
-            </div>
-        </div>
-        ${selectHtml}
-    `;
-}
-
-async function fetchReportData(examId) {
-    if(!examId) return;
-    const res = await fetch(`/api/exams/${examId}/reports`);
-    const sessions = await res.json();
-
-    let tableHtml = `
-        <div class="table-wrapper">
-        <table>
-            <thead>
-                <tr>
-                    <th>Student Name</th>
-                    <th>Status</th>
-                    <th>Started At</th>
-                    <th>Flags / Events</th>
-                    <th>Recordings</th>
-                </tr>
-            </thead>
-            <tbody>
-    `;
-
-    sessions.forEach(s => {
-        let logsList = `<ul>`;
-        s.logs.forEach(l => {
-            logsList += `<li><strong style="color:var(--danger)">${l.event_type}</strong>: ${l.event_message} (${new Date(l.event_timestamp).toLocaleTimeString()})</li>`;
-        });
-        if(s.logs.length === 0) logsList += "<li>No flags recorded. Good job!</li>";
-        logsList += '</ul>';
-
-        tableHtml += `
-            <tr>
-                <td style="font-weight: 600;">
-                    ${s.student_name || s.student_canvas_id} (Attempt ${s.attempt_number || 1})
-                    <button class="btn btn-secondary" style="display:block; margin-top:8px; font-size:11px; padding:4px 8px; border: 1px solid var(--border-color); background: #f8fafc;" onclick="grantExtraAttempt(${s.exam_id}, '${s.student_canvas_id}')">+1 Override Pass</button>
-                </td>
-                <td><span class="status-badge status-${s.status === 'completed' ? 'Present' : 'Late'}">${s.status}</span></td>
-                <td>${new Date(s.started_at).toLocaleString()}</td>
-                <td style="font-size: 13px;">${logsList}</td>
-                <td>
-                    ${s.status === 'completed' ? `<a href="/watch.html?session=${s.id}" target="_blank" class="btn btn-primary" style="font-size:12px; padding:6px 10px; border-radius: 4px; background:var(--primary); color:white; text-decoration:none;">Watch Final Video</a>` : '<span style="color:#888;">Processing...</span>'}
-                </td>
-            </tr>
-        `;
-    });
-
-    tableHtml += '</tbody></table></div>';
-    document.getElementById('report-content').innerHTML = tableHtml;
-}
-
 async function grantExtraAttempt(examId, studentCanvasId) {
     if(!confirm("Are you sure you want to grant this specific student an additional attempt?")) return;
     try {
@@ -365,4 +344,17 @@ async function grantExtraAttempt(examId, studentCanvasId) {
         console.error(err);
         showToast('Error granting attempt', 'warning');
     }
+}
+
+function showToast(msg, type='info') {
+    const el = document.createElement('div');
+    el.style.background = type === 'success' ? 'var(--success)' : (type === 'warning' ? 'var(--warning)' : 'var(--text-primary)');
+    el.style.color = 'white';
+    el.style.padding = '12px 20px';
+    el.style.borderRadius = 'var(--radius)';
+    el.style.boxShadow = 'var(--shadow)';
+    el.style.fontSize = '14px';
+    el.innerText = msg;
+    document.getElementById('toast-container').appendChild(el);
+    setTimeout(() => el.remove(), 4000);
 }
