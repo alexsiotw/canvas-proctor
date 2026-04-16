@@ -129,12 +129,12 @@ app.get('/api/exams', requireInstructor, async (req, res) => {
 app.post('/api/exams', requireInstructor, async (req, res) => {
     try {
         const { canvasCourseId } = req.session.lti;
-        const { title, canvas_quiz_url, require_mic, require_camera, require_screen, disable_right_click, require_fullscreen } = req.body;
+        const { title, canvas_quiz_url, require_mic, require_camera, require_screen, disable_right_click, require_fullscreen, max_attempts, exam_code } = req.body;
         
         const result = await pool.query(`
-            INSERT INTO exams (canvas_course_id, title, canvas_quiz_url, require_mic, require_camera, require_screen, disable_right_click, require_fullscreen)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *
-        `, [canvasCourseId, title, canvas_quiz_url, require_mic, require_camera, require_screen, disable_right_click, require_fullscreen]);
+            INSERT INTO exams (canvas_course_id, title, canvas_quiz_url, require_mic, require_camera, require_screen, disable_right_click, require_fullscreen, max_attempts, exam_code)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING *
+        `, [canvasCourseId, title, canvas_quiz_url, require_mic, require_camera, require_screen, disable_right_click, require_fullscreen, max_attempts || 1, exam_code]);
         
         res.json(result.rows[0]);
     } catch (err) {
@@ -142,13 +142,36 @@ app.post('/api/exams', requireInstructor, async (req, res) => {
     }
 });
 
-// API: Get Exam details (For Student entering / pre-flight)
-app.get('/api/exams/active', requireAuth, async (req, res) => {
+// API: Delete Exam
+app.delete('/api/exams/:id', requireInstructor, async (req, res) => {
     try {
         const { canvasCourseId } = req.session.lti;
-        // The student sees the active exam for the course. For simplicity, we just return the most recently created exam.
-        const result = await pool.query('SELECT * FROM exams WHERE canvas_course_id = $1 ORDER BY id DESC LIMIT 1', [canvasCourseId]);
-        res.json(result.rows[0] || null);
+        await pool.query('DELETE FROM exams WHERE id = $1 AND canvas_course_id = $2', [req.params.id, canvasCourseId]);
+        res.json({ success: true });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// API: Get Exam details (For Student entering / pre-flight)
+app.post('/api/exams/verify-code', requireAuth, async (req, res) => {
+    try {
+        const { canvasCourseId, userId } = req.session.lti;
+        const { exam_code } = req.body;
+        
+        const examResult = await pool.query('SELECT * FROM exams WHERE canvas_course_id = $1 AND exam_code = $2', [canvasCourseId, exam_code]);
+        if (examResult.rows.length === 0) return res.status(404).json({ error: 'Invalid exam code' });
+        
+        const exam = examResult.rows[0];
+        
+        const sessionCountQuery = await pool.query('SELECT COUNT(*) as attempt_count FROM exam_sessions WHERE exam_id = $1 AND student_canvas_id = $2', [exam.id, userId]);
+        const attemptCount = parseInt(sessionCountQuery.rows[0].attempt_count, 10);
+        
+        if (attemptCount >= (exam.max_attempts || 1)) {
+            return res.status(403).json({ error: `You have reached the maximum number of attempts (${exam.max_attempts}) for this exam.` });
+        }
+        
+        res.json(exam);
     } catch (err) {
         res.status(500).json({ error: err.message });
     }
@@ -160,20 +183,20 @@ app.post('/api/session/start', requireAuth, async (req, res) => {
         const { exam_id } = req.body;
         const { userId, userName } = req.session.lti;
 
-        let sessionResult = await pool.query('SELECT * FROM exam_sessions WHERE exam_id = $1 AND student_canvas_id = $2', [exam_id, userId]);
+        // Always create a new session since attempt constraints were checked in verify-code
+        const countQuery = await pool.query('SELECT COUNT(*) as attempts FROM exam_sessions WHERE exam_id = $1 AND student_canvas_id = $2', [exam_id, userId]);
+        const currentAttempts = parseInt(countQuery.rows[0].attempts, 10);
         
-        if (sessionResult.rows.length === 0) {
-            // New Session, create Drive Folder
-            let folderId = null;
-            if(process.env.GOOGLE_CREDENTIALS_JSON) {
-                const exam = (await pool.query('SELECT title FROM exams WHERE id = $1', [exam_id])).rows[0];
-                folderId = await driveApi.createStudentExamFolder(exam.title, userName);
-            }
-            sessionResult = await pool.query(`
-                INSERT INTO exam_sessions (exam_id, student_canvas_id, student_name, recording_folder_id)
-                VALUES ($1, $2, $3, $4) RETURNING *
-            `, [exam_id, userId, userName, folderId]);
+        let folderId = null;
+        const exam = (await pool.query('SELECT title FROM exams WHERE id = $1', [exam_id])).rows[0];
+        if(process.env.GOOGLE_CREDENTIALS_JSON) {
+            folderId = await driveApi.createStudentExamFolder(exam.title + ' Attempt ' + (currentAttempts + 1), userName);
         }
+        
+        const sessionResult = await pool.query(`
+            INSERT INTO exam_sessions (exam_id, student_canvas_id, student_name, recording_folder_id, attempt_number)
+            VALUES ($1, $2, $3, $4, $5) RETURNING *
+        `, [exam_id, userId, userName, folderId, currentAttempts + 1]);
         res.json(sessionResult.rows[0]);
     } catch (err) {
         res.status(500).json({ error: err.message });

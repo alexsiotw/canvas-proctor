@@ -58,6 +58,11 @@ async function initDatabase() {
         created_at TIMESTAMP DEFAULT NOW(),
         expires_at TIMESTAMP DEFAULT NOW() + INTERVAL '24 hours'
       );
+      
+      ALTER TABLE exams ADD COLUMN IF NOT EXISTS exam_code VARCHAR(50);
+      ALTER TABLE exams ADD COLUMN IF NOT EXISTS max_attempts INTEGER DEFAULT 1;
+      ALTER TABLE exam_sessions ADD COLUMN IF NOT EXISTS attempt_number INTEGER DEFAULT 1;
+      ALTER TABLE exam_sessions DROP CONSTRAINT IF EXISTS exam_sessions_exam_id_student_canvas_id_key;
     `);
     console.log('Database tables initialized successfully');
   } catch (err) {

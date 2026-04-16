@@ -70,13 +70,14 @@ function renderExams() {
     } else {
         exams.forEach(ex => {
             html += `
-                <div class="card session-card">
+                <div class="card session-card" style="position:relative;">
+                    <button class="btn" style="position:absolute; top: 15px; right: 15px; background: var(--danger); color: white; padding: 4px 8px; font-size: 12px; border:none; border-radius: 4px;" onclick="deleteExam(${ex.id})">Delete</button>
                     <div class="session-date">${new Date(ex.created_at).toLocaleDateString()}</div>
                     <div class="session-title">${ex.title}</div>
+                    <div style="margin-top: 10px; font-weight: bold; font-size: 14px; background: #eef2ff; color: #4338ca; padding: 5px 10px; border-radius: 4px; display: inline-block;">Code: ${ex.exam_code}</div>
                     <div style="font-size: 12px; color: var(--text-secondary); margin-top: 8px;">
-                        <div>📷 Camera: ${ex.require_camera ? 'Yes' : 'No'}</div>
-                        <div>🎤 Mic: ${ex.require_mic ? 'Yes' : 'No'}</div>
-                        <div>💻 Screen: ${ex.require_screen ? 'Yes' : 'No'}</div>
+                        <div>Max Attempts: ${ex.max_attempts || 1}</div>
+                        <div>📷 Camera: ${ex.require_camera ? 'Yes' : 'No'} | 🎤 Mic: ${ex.require_mic ? 'Yes' : 'No'} | 💻 Screen: ${ex.require_screen ? 'Yes' : 'No'}</div>
                     </div>
                 </div>
             `;
@@ -88,6 +89,7 @@ function renderExams() {
 }
 
 function showCreateExamModal() {
+    const defaultCode = Math.random().toString(36).substring(2, 8).toUpperCase();
     const html = `
         <div class="modal-header">
             <h2 class="modal-title">Link Canvas Quiz</h2>
@@ -96,6 +98,16 @@ function showCreateExamModal() {
         <div class="form-group">
             <label class="form-label">Exam Title</label>
             <input type="text" id="exam-title" class="form-input" placeholder="e.g. Midterm Physics">
+        </div>
+        <div class="form-group" style="display: flex; gap: 10px;">
+            <div style="flex:1;">
+                <label class="form-label">Access Code</label>
+                <input type="text" id="exam-code" class="form-input" value="${defaultCode}">
+            </div>
+            <div style="flex:1;">
+                <label class="form-label">Max Attempts</label>
+                <input type="number" id="max-attempts" class="form-input" value="1" min="1">
+            </div>
         </div>
         <div class="form-group">
             <label class="form-label">Canvas Quiz URL</label>
@@ -133,6 +145,8 @@ async function saveExam() {
     const payload = {
         title: document.getElementById('exam-title').value,
         canvas_quiz_url: document.getElementById('exam-url').value,
+        exam_code: document.getElementById('exam-code').value,
+        max_attempts: parseInt(document.getElementById('max-attempts').value) || 1,
         require_camera: document.getElementById('chk-camera').checked,
         require_mic: document.getElementById('chk-mic').checked,
         require_screen: document.getElementById('chk-screen').checked,
@@ -159,6 +173,18 @@ async function saveExam() {
 
 function closeModal() {
     document.getElementById('modal-overlay').classList.remove('active');
+}
+
+async function deleteExam(id) {
+    if(confirm('WARNING: Are you sure you want to completely delete this exam and all student video recordings? This is permanent.')) {
+        try {
+            await fetch('/api/exams/' + id, {method: 'DELETE'});
+            loadExams();
+            showToast('Exam completely deleted.', 'success');
+        } catch(e) {
+            console.error(e);
+        }
+    }
 }
 
 function showToast(msg, type='info') {
@@ -309,7 +335,7 @@ async function fetchReportData(examId) {
 
         tableHtml += `
             <tr>
-                <td style="font-weight: 600;">${s.student_name || s.student_canvas_id}</td>
+                <td style="font-weight: 600;">${s.student_name || s.student_canvas_id} (Attempt ${s.attempt_number || 1})</td>
                 <td><span class="status-badge status-${s.status === 'completed' ? 'Present' : 'Late'}">${s.status}</span></td>
                 <td>${new Date(s.started_at).toLocaleString()}</td>
                 <td style="font-size: 13px;">${logsList}</td>

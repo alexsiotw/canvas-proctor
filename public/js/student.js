@@ -5,22 +5,33 @@ let mediaRecorder = null;
 let chunkIndex = 0;
 let finalStream = null;
 
-// Initialize
-document.addEventListener('DOMContentLoaded', async () => {
+// Wait for explicit verification
+async function verifyExamCode() {
+    const errorMsg = document.getElementById('code-error-msg');
+    errorMsg.style.display = 'none';
+    const code = document.getElementById('access-code-input').value.trim();
+    if(!code) return;
+    
     try {
-        const res = await fetch('/api/exams/active');
-        examConfig = await res.json();
+        const res = await fetch('/api/exams/verify-code', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ exam_code: code })
+        });
         
-        if (!examConfig) {
-            document.getElementById('setup-container').innerHTML = '<div class="check-card"><h2>No Active Exam</h2><p>Wait for your instructor to configure the exam.</p></div>';
-            return;
+        const data = await res.json();
+        if(!res.ok) {
+            throw new Error(data.error || 'Authentication failed');
         }
-
+        
+        examConfig = data;
+        document.getElementById('code-container').style.display = 'none';
+        document.getElementById('setup-container').style.display = 'flex';
         renderRequirements();
-    } catch (err) {
-        console.error(err);
+    } catch(err) {
+        errorMsg.innerText = err.message;
+        errorMsg.style.display = 'block';
     }
-});
+}
 
 function renderRequirements() {
     let reqHtml = '';
