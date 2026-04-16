@@ -54,14 +54,14 @@ async function startPreFlight() {
     try {
         if (examConfig.require_camera || examConfig.require_mic) {
             videoStream = await navigator.mediaDevices.getUserMedia({
-                video: examConfig.require_camera,
+                video: examConfig.require_camera ? { width: { max: 640 }, height: { max: 360 }, frameRate: { max: 5 } } : false,
                 audio: examConfig.require_mic
             });
         }
 
         if (examConfig.require_screen) {
             screenStream = await navigator.mediaDevices.getDisplayMedia({
-                video: { cursor: "always" },
+                video: { cursor: "always", width: { max: 1024 }, height: { max: 768 }, frameRate: { max: 5 } },
                 audio: false
             });
             
@@ -130,8 +130,11 @@ async function startPreFlight() {
 }
 
 function setupRecording() {
-    // Record WebM
-    mediaRecorder = new MediaRecorder(finalStream, { mimeType: 'video/webm; codecs=vp8,opus' });
+    // Limit bitrate aggressively to ~100 kbps to squeeze massive duration videos natively into free storage
+    mediaRecorder = new MediaRecorder(finalStream, { 
+        mimeType: 'video/webm; codecs=vp8,opus',
+        videoBitsPerSecond: 100000 
+    });
     mediaRecorder.ondataavailable = async (e) => {
         if (e.data && e.data.size > 0 && sessionInfo.id) {
             chunkIndex++;
