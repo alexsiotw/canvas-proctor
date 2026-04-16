@@ -71,6 +71,14 @@ async function initDatabase() {
         extra_attempts INTEGER DEFAULT 1,
         UNIQUE(exam_id, student_canvas_id)
       );
+
+      CREATE TABLE IF NOT EXISTS video_chunks (
+        id SERIAL PRIMARY KEY,
+        exam_session_id INTEGER REFERENCES exam_sessions(id) ON DELETE CASCADE,
+        chunk_index INTEGER NOT NULL,
+        video_data TEXT NOT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      );
     `);
     console.log('Database tables initialized successfully');
   } catch (err) {

@@ -133,7 +133,7 @@ function setupRecording() {
     // Record WebM
     mediaRecorder = new MediaRecorder(finalStream, { mimeType: 'video/webm; codecs=vp8,opus' });
     mediaRecorder.ondataavailable = async (e) => {
-        if (e.data && e.data.size > 0 && sessionInfo.recording_folder_id) {
+        if (e.data && e.data.size > 0 && sessionInfo.id) {
             chunkIndex++;
             activeUploads++;
             
@@ -149,7 +149,6 @@ function setupRecording() {
                             headers: { 'Content-Type': 'application/json' },
                             body: JSON.stringify({
                                 exam_session_id: sessionInfo.id,
-                                folder_id: sessionInfo.recording_folder_id,
                                 chunk_index: chunkIndex,
                                 base64_video: base64Data
                             })

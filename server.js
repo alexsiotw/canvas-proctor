@@ -10,7 +10,6 @@ const multer = require('multer');
 const http = require('http');
 const { Server } = require('socket.io');
 const { pool, initDatabase } = require('./db');
-const driveApi = require('./services/driveApi');
 const fs = require('fs');
 const os = require('os');
 
@@ -210,17 +209,10 @@ app.post('/api/session/start', requireAuth, async (req, res) => {
         // Always create a new session since attempt constraints were checked in verify-code
         const countQuery = await pool.query('SELECT COUNT(*) as attempts FROM exam_sessions WHERE exam_id = $1 AND student_canvas_id = $2', [exam_id, userId]);
         const currentAttempts = parseInt(countQuery.rows[0].attempts, 10);
-        
-        let folderId = null;
-        const exam = (await pool.query('SELECT title FROM exams WHERE id = $1', [exam_id])).rows[0];
-        if(process.env.GOOGLE_CREDENTIALS_JSON) {
-            folderId = await driveApi.createStudentExamFolder(exam.title + ' Attempt ' + (currentAttempts + 1), userName);
-        }
-        
         const sessionResult = await pool.query(`
-            INSERT INTO exam_sessions (exam_id, student_canvas_id, student_name, recording_folder_id, attempt_number)
-            VALUES ($1, $2, $3, $4, $5) RETURNING *
-        `, [exam_id, userId, userName, folderId, currentAttempts + 1]);
+            INSERT INTO exam_sessions (exam_id, student_canvas_id, student_name, attempt_number)
+            VALUES ($1, $2, $3, $4) RETURNING *
+        `, [exam_id, userId, userName, currentAttempts + 1]);
         res.json(sessionResult.rows[0]);
     } catch (err) {
         res.status(500).json({ error: err.message });
@@ -267,38 +259,36 @@ app.post('/api/session/end', requireAuth, async (req, res) => {
     }
 });
 
-// API: Upload Video Chunk directly via JSON payload to bypass Form boundary dropping
+// API: Upload Video Chunk directly via JSON payload to Bypass Form Boundaries
 app.post('/api/session/upload-chunk', requireAuth, async (req, res) => {
     const { folder_id, chunk_index, exam_session_id, base64_video } = req.body;
     try {
-        if (!base64_video) throw new Error("Video payload was entirely empty or blocked in transit.");
-        if (!folder_id) throw new Error("Missing folder_id from client payload.");
-        if (!process.env.GOOGLE_CREDENTIALS_JSON) throw new Error("Missing GOOGLE_CREDENTIALS_JSON variable.");
+        if (!base64_video) throw new Error("Video payload was empty");
         
-        // Convert Base64 strictly back to binary format
-        const videoBuffer = Buffer.from(base64_video.split(',')[1] || base64_video, 'base64');
-        const fileName = `chunk_${chunk_index}.webm`;
-        const tempFilePath = path.join(os.tmpdir(), `${uuidv4()}_${fileName}`);
-        
-        fs.writeFileSync(tempFilePath, videoBuffer);
-        
-        await driveApi.uploadVideoChunk(folder_id, fileName, tempFilePath);
-        fs.unlinkSync(tempFilePath);
-        
-        if (exam_session_id) {
-            await pool.query('INSERT INTO event_logs (exam_session_id, event_type, event_message) VALUES ($1, $2, $3)', 
-                [exam_session_id, 'upload_success', `Video chunk ${chunk_index} securely mapped to Google Drive.`]);
-        }
+        await pool.query(`
+            INSERT INTO video_chunks (exam_session_id, chunk_index, video_data)
+            VALUES ($1, $2, $3)
+        `, [exam_session_id, chunk_index, base64_video]);
         
         res.json({ success: true });
     } catch (err) {
         console.error('Upload Error', err);
-        if (exam_session_id) {
-            try {
-                await pool.query('INSERT INTO event_logs (exam_session_id, event_type, event_message) VALUES ($1, $2, $3)', 
-                    [exam_session_id, 'upload_error', err.message]);
-            } catch(e) {}
-        }
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// API: Get Video Chunks for Playback
+app.get('/api/session/video-playback/:session_id', requireInstructor, async (req, res) => {
+    try {
+        const { session_id } = req.params;
+        const chunkResults = await pool.query(`
+            SELECT video_data FROM video_chunks 
+            WHERE exam_session_id = $1 
+            ORDER BY chunk_index ASC
+        `, [session_id]);
+        
+        res.json({ chunks: chunkResults.rows.map(r => r.video_data) });
+    } catch (err) {
         res.status(500).json({ error: err.message });
     }
 });

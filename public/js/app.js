@@ -343,7 +343,7 @@ async function fetchReportData(examId) {
                 <td>${new Date(s.started_at).toLocaleString()}</td>
                 <td style="font-size: 13px;">${logsList}</td>
                 <td>
-                    ${s.recording_folder_id ? `<a href="https://drive.google.com/drive/folders/${s.recording_folder_id}" target="_blank" class="btn btn-primary" style="font-size:12px; padding:6px 10px;">Watch</a>` : '<span style="color:#888;">No Folder</span>'}
+                    ${s.status === 'completed' ? `<a href="/watch.html?session=${s.id}" target="_blank" class="btn btn-primary" style="font-size:12px; padding:6px 10px; border-radius: 4px; background:var(--primary); color:white; text-decoration:none;">Watch Final Video</a>` : '<span style="color:#888;">Processing...</span>'}
                 </td>
             </tr>
         `;
