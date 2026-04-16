@@ -138,8 +138,8 @@ function loadExamDashboard(examId) {
                 <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom: 15px; border-bottom: 1px solid var(--border-color); padding-bottom: 10px;">
                     <h2 style="font-size: 18px; font-weight: 600;">Post-Exam Reports & Video Vault</h2>
                     <div style="display:flex; gap: 8px;">
-                        <button class="btn btn-primary" style="font-size:12px; padding: 4px 8px; background:var(--primary);" onclick="window.open('/api/exams/${exam.id}/export-videos', '_blank')">📁 Download .ZIP Archive</button>
-                        <button class="btn btn-secondary" style="font-size:12px; padding: 4px 8px; background:var(--danger); color:white; border:none;" onclick="purgeVideosOnly(${exam.id})">🗑️ Purge Video Engine</button>
+                        <button class="btn btn-primary" style="font-size:12px; padding: 4px 8px; background:var(--accent); color:white !important; border:none;" onclick="window.open('/api/exams/${exam.id}/export-videos', '_blank')">📁 Download .ZIP Archive</button>
+                        <button class="btn btn-secondary" style="font-size:12px; padding: 4px 8px; background:var(--danger); color:white !important; border:none;" onclick="purgeVideosOnly(${exam.id})">🗑️ Purge Video Engine</button>
                         <button class="btn btn-secondary" style="font-size:12px; padding: 4px 8px;" onclick="fetchReportData(${exam.id})">Refresh Reports</button>
                     </div>
                 </div>
@@ -204,58 +204,75 @@ function closeImage() {
 // REPORTS LOGIC
 async function fetchReportData(examId) {
     if(!examId) return;
-    const res = await fetch(`/api/exams/${examId}/reports`);
-    const sessions = await res.json();
     const tableContainer = document.getElementById('report-content');
-    if(!tableContainer) return; // Prevent crashing if user navigated away
+    if(!tableContainer) return;
 
-    let tableHtml = `
-        <div class="table-wrapper">
-        <table style="width:100%">
-            <thead>
-                <tr>
-                    <th>Student Name</th>
-                    <th>Status</th>
-                    <th>Started At</th>
-                    <th>Security Flags / Event Timeline</th>
-                    <th>Recorded Video Playback</th>
-                </tr>
-            </thead>
-            <tbody>
-    `;
+    try {
+        const res = await fetch(`/api/exams/${examId}/reports`);
+        const sessions = await res.json();
+        
+        if (sessions.error) {
+            tableContainer.innerHTML = `<div style="padding: 20px; color: var(--danger); text-align:center;">Error loading reports: ${sessions.error}</div>`;
+            return;
+        }
 
-    sessions.forEach(s => {
-        let logsList = `<ul>`;
-        s.logs.forEach(l => {
-            logsList += `<li><strong style="color:var(--danger)">${l.event_type}</strong>: <span style="font-size:12px;">${l.event_message}</span> <span style="color:#888;font-size:11px;">(${new Date(l.event_timestamp).toLocaleTimeString()})</span></li>`;
-        });
-        if(s.logs.length === 0) logsList += "<li style='color:var(--success); font-weight:bold;'>No flags recorded. Clean run!</li>";
-        logsList += '</ul>';
+        if(!Array.isArray(sessions)) {
+             tableContainer.innerHTML = `<div style="padding: 20px; color: var(--danger); text-align:center;">Unexpected data format from server.</div>`;
+             return;
+        }
 
-        tableHtml += `
-            <tr>
-                <td style="font-weight: 600;">
-                    ${s.student_name || s.student_canvas_id} 
-                    <div style="font-size: 11px; color:#666;">(Attempt ${s.attempt_number || 1})</div>
-                    <button class="btn btn-secondary" style="display:block; margin-top:8px; font-size:11px; padding:4px 8px; border: 1px solid var(--border-color); background: white;" onclick="grantExtraAttempt(${s.exam_id}, '${s.student_canvas_id}')">+1 Override Pass</button>
-                </td>
-                <td><span class="status-badge status-${s.status === 'completed' ? 'Present' : 'Late'}">${s.status}</span></td>
-                <td>${new Date(s.started_at).toLocaleString()}</td>
-                <td style="font-size: 13px;">${logsList}</td>
-                <td>
-                    ${s.status === 'completed' && !s.video_archived ? `<a href="/watch.html?session=${s.id}" target="_blank" class="btn btn-primary" style="font-size:12px; padding:8px 12px; border-radius: 4px; background:#4338ca; color:white; text-decoration:none; display:inline-block;">Watch Final Video</a>` 
-                    : (s.video_archived ? '<span style="color:var(--danger); font-size:12px; font-weight:bold;">[Archived Off-Site]</span>' : '<span style="color:#888; font-style:italic; font-size:12px;">In Progress...</span>')}
-                </td>
-            </tr>
+        let tableHtml = `
+            <div class="table-wrapper">
+            <table style="width:100%">
+                <thead>
+                    <tr>
+                        <th>Student Name</th>
+                        <th>Status</th>
+                        <th>Started At</th>
+                        <th>Security Flags / Event Timeline</th>
+                        <th>Recorded Video Playback</th>
+                    </tr>
+                </thead>
+                <tbody>
         `;
-    });
 
-    if (sessions.length === 0) {
-        tableHtml += '<tr><td colspan="5" style="text-align:center; padding: 20px; color:#888;">No recorded attempts in the vault yet.</td></tr>';
+        sessions.forEach(s => {
+            let logsList = `<ul>`;
+            const logs = Array.isArray(s.logs) ? s.logs : [];
+            logs.forEach(l => {
+                logsList += `<li><strong style="color:var(--danger)">${l.event_type}</strong>: <span style="font-size:12px;">${l.event_message}</span> <span style="color:#888;font-size:11px;">(${new Date(l.event_timestamp).toLocaleTimeString()})</span></li>`;
+            });
+            if(logs.length === 0) logsList += "<li style='color:var(--success); font-weight:bold;'>No flags recorded. Clean run!</li>";
+            logsList += '</ul>';
+
+            tableHtml += `
+                <tr>
+                    <td style="font-weight: 600;">
+                        ${s.student_name || s.student_canvas_id} 
+                        <div style="font-size: 11px; color:#666;">(Attempt ${s.attempt_number || 1})</div>
+                        <button class="btn btn-secondary" style="display:block; margin-top:8px; font-size:11px; padding:4px 8px; border: 1px solid var(--border-color); background: white;" onclick="grantExtraAttempt(${s.exam_id}, '${s.student_canvas_id}')">+1 Override Pass</button>
+                    </td>
+                    <td><span class="status-badge status-${s.status === 'completed' ? 'Present' : 'Late'}">${s.status}</span></td>
+                    <td>${new Date(s.started_at).toLocaleString()}</td>
+                    <td style="font-size: 13px;">${logsList}</td>
+                    <td>
+                        ${s.status === 'completed' && !s.video_archived ? `<a href="/watch.html?session=${s.id}" target="_blank" class="btn btn-primary" style="font-size:12px; padding:8px 12px; border-radius: 4px; background:#4338ca; color:white; text-decoration:none; display:inline-block;">Watch Final Video</a>` 
+                        : (s.video_archived ? '<span style="color:var(--danger); font-size:12px; font-weight:bold;">[Archived Off-Site]</span>' : '<span style="color:#888; font-style:italic; font-size:12px;">In Progress...</span>')}
+                    </td>
+                </tr>
+            `;
+        });
+
+        if (sessions.length === 0) {
+            tableHtml += '<tr><td colspan="5" style="text-align:center; padding: 20px; color:#888;">No recorded attempts in the vault yet.</td></tr>';
+        }
+
+        tableHtml += '</tbody></table></div>';
+        tableContainer.innerHTML = tableHtml;
+    } catch (err) {
+        console.error("Report fetch failed", err);
+        tableContainer.innerHTML = `<div style="padding: 20px; color: var(--danger); text-align:center;">Connection Error. Check console for details.</div>`;
     }
-
-    tableHtml += '</tbody></table></div>';
-    tableContainer.innerHTML = tableHtml;
 }
 
 // EXAM GENERATION & DELETION MODALS

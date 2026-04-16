@@ -374,7 +374,7 @@ app.delete('/api/exams/:id/videos-only', requireInstructor, async (req, res) => 
 // API: Get Exam Report (Teacher)
 app.get('/api/exams/:exam_id/reports', requireInstructor, async (req, res) => {
     try {
-        const sessions = await pool.query('SELECT id, exam_id, student_canvas_id, student_name, status, started_at, end_time, attempt_number, video_archived FROM exam_sessions WHERE exam_id = $1', [req.params.exam_id]);
+        const sessions = await pool.query('SELECT id, exam_id, student_canvas_id, student_name, status, started_at, attempt_number, video_archived FROM exam_sessions WHERE exam_id = $1', [req.params.exam_id]);
         const logs = await pool.query(`
             SELECT pl.* FROM proctor_logs pl 
             JOIN exam_sessions es ON pl.exam_session_id = es.id 
