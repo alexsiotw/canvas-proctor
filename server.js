@@ -134,8 +134,8 @@ app.post('/api/exams', requireInstructor, async (req, res) => {
         const { title, canvas_quiz_url, require_mic, require_camera, require_screen, disable_right_click, require_fullscreen, max_attempts, exam_code } = req.body;
         
         const result = await pool.query(`
-            INSERT INTO exams (canvas_course_id, title, canvas_quiz_url, require_mic, require_camera, require_screen, disable_right_click, require_fullscreen, max_attempts, exam_code)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING *
+            INSERT INTO exams (canvas_course_id, title, canvas_quiz_url, require_mic, require_camera, require_screen, disable_right_click, require_fullscreen, max_attempts, exam_code, is_open)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, false) RETURNING *
         `, [canvasCourseId, title, canvas_quiz_url, require_mic, require_camera, require_screen, disable_right_click, require_fullscreen, max_attempts || 1, exam_code]);
         
         res.json(result.rows[0]);
@@ -172,6 +172,26 @@ app.post('/api/exams/:exam_id/overrides', requireInstructor, async (req, res) =>
     }
 });
 
+// API: Toggle Exam Open/Close Status
+app.patch('/api/exams/:id/status', requireInstructor, async (req, res) => {
+    try {
+        const { id } = req.params;
+        const { is_open } = req.body;
+        const { canvasCourseId } = req.session.lti;
+        
+        const result = await pool.query(`
+            UPDATE exams SET is_open = $1 
+            WHERE id = $2 AND canvas_course_id = $3 
+            RETURNING *
+        `, [is_open, id, canvasCourseId]);
+        
+        if (result.rows.length === 0) return res.status(404).json({ error: 'Exam not found' });
+        res.json(result.rows[0]);
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
 // API: Get Exam details (For Student entering / pre-flight)
 app.post('/api/exams/verify-code', requireAuth, async (req, res) => {
     try {
@@ -182,6 +202,10 @@ app.post('/api/exams/verify-code', requireAuth, async (req, res) => {
         if (examResult.rows.length === 0) return res.status(404).json({ error: 'Invalid exam code' });
         
         const exam = examResult.rows[0];
+        
+        if (!exam.is_open) {
+            return res.status(403).json({ error: 'This exam is currently closed by the instructor.' });
+        }
         
         const sessionCountQuery = await pool.query('SELECT COUNT(*) as attempt_count FROM exam_sessions WHERE exam_id = $1 AND student_canvas_id = $2', [exam.id, userId]);
         const attemptCount = parseInt(sessionCountQuery.rows[0].attempt_count, 10);

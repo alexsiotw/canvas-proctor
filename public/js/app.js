@@ -87,7 +87,12 @@ function renderExams() {
             html += `
                 <div class="card session-card" style="position:relative; cursor:pointer;" onclick="loadExamDashboard(${ex.id})">
                     <button class="btn" style="position:absolute; top: 15px; right: 15px; background: var(--danger); color: white; padding: 4px 8px; font-size: 12px; border:none; border-radius: 4px;" onclick="event.stopPropagation(); deleteExam(${ex.id})">Delete</button>
-                    <div class="session-date">${new Date(ex.created_at).toLocaleDateString()}</div>
+                    <div style="display:flex; align-items:center; gap:8px; margin-bottom: 4px;">
+                        <div class="session-date">${new Date(ex.created_at).toLocaleDateString()}</div>
+                        <span style="font-size:10px; padding: 2px 6px; border-radius: 10px; font-weight:bold; text-transform:uppercase; ${ex.is_open ? 'background:var(--success-bg); color:var(--success);' : 'background:var(--danger-bg); color:var(--danger);'}">
+                            ${ex.is_open ? '● Open' : '● Closed'}
+                        </span>
+                    </div>
                     <div class="session-title">${ex.title}</div>
                     <div style="margin-top: 10px; font-weight: bold; font-size: 14px; background: #eef2ff; color: #4338ca; padding: 5px 10px; border-radius: 4px; display: inline-block;">Code: ${ex.exam_code}</div>
                     <div style="font-size: 12px; color: var(--text-secondary); margin-top: 8px;">
@@ -117,7 +122,15 @@ function loadExamDashboard(examId) {
         <div class="page-header" style="display:flex; justify-content:space-between; align-items:center;">
             <div>
                 <button class="btn btn-secondary" style="margin-bottom: 10px;" onclick="closeExamDashboard()">← Back to Exams</button>
-                <h1 class="page-title">${exam.title} Workspace</h1>
+                <div style="display:flex; align-items:center; gap: 15px;">
+                    <h1 class="page-title">${exam.title} Workspace</h1>
+                    <button class="btn" id="status-toggle-btn" 
+                        style="padding: 6px 14px; font-size: 13px; border-radius: 20px; font-weight: bold; border: none; cursor: pointer; transition: var(--transition);
+                        ${exam.is_open ? 'background:var(--success); color:white;' : 'background:var(--danger); color:white;'}"
+                        onclick="toggleExamStatus(${exam.id})">
+                        ${exam.is_open ? '🔓 Exam is OPEN' : '🔒 Exam is CLOSED'}
+                    </button>
+                </div>
                 <p class="page-subtitle">Now Managing Exam Code: <strong style="color:var(--primary)">${exam.exam_code}</strong></p>
             </div>
         </div>
@@ -361,6 +374,37 @@ async function saveExam() {
 
 function closeModal() {
     document.getElementById('modal-overlay').classList.remove('active');
+}
+
+async function toggleExamStatus(id) {
+    const exam = exams.find(e => e.id == id);
+    if (!exam) return;
+    
+    const newStatus = !exam.is_open;
+    try {
+        const res = await fetch(`/api/exams/${id}/status`, {
+            method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ is_open: newStatus })
+        });
+        
+        if (res.ok) {
+            const updatedExam = await res.json();
+            // Update local state
+            exam.is_open = updatedExam.is_open;
+            
+            // If we are currently in the dashboard for this exam, re-render it
+            if (currentLiveExamId == id) {
+                loadExamDashboard(id);
+            } else {
+                renderExams();
+            }
+            
+            showToast(`Exam is now ${updatedExam.is_open ? 'OPEN' : 'CLOSED'}`, 'success');
+        }
+    } catch (err) {
+        console.error(err);
+        showToast('Failed to toggle status', 'warning');
+    }
 }
 
 async function deleteExam(id) {
