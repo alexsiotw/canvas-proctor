@@ -1,0 +1,212 @@
+let examConfig = null;
+let sessionInfo = null;
+let socket = io();
+let mediaRecorder = null;
+let chunkIndex = 0;
+let finalStream = null;
+
+// Initialize
+document.addEventListener('DOMContentLoaded', async () => {
+    try {
+        const res = await fetch('/api/exams/active');
+        examConfig = await res.json();
+        
+        if (!examConfig) {
+            document.getElementById('setup-container').innerHTML = '<div class="check-card"><h2>No Active Exam</h2><p>Wait for your instructor to configure the exam.</p></div>';
+            return;
+        }
+
+        renderRequirements();
+    } catch (err) {
+        console.error(err);
+    }
+});
+
+function renderRequirements() {
+    let reqHtml = '';
+    if (examConfig.require_camera) reqHtml += '<li>📷 Web Camera Access Required</li>';
+    if (examConfig.require_mic) reqHtml += '<li>🎤 Microphone Access Required</li>';
+    if (examConfig.require_screen) reqHtml += '<li>💻 Screen Sharing (Entire Screen) Required</li>';
+    if (examConfig.require_fullscreen) reqHtml += '<li>🔲 Fullscreen Mode will be enforced</li>';
+    
+    document.getElementById('requirements-list').innerHTML = reqHtml;
+}
+
+async function startPreFlight() {
+    const errorMsg = document.getElementById('error-msg');
+    errorMsg.style.display = 'none';
+    
+    try {
+        let videoStream = null;
+        let screenStream = null;
+
+        if (examConfig.require_camera || examConfig.require_mic) {
+            videoStream = await navigator.mediaDevices.getUserMedia({
+                video: examConfig.require_camera,
+                audio: examConfig.require_mic
+            });
+        }
+
+        if (examConfig.require_screen) {
+            screenStream = await navigator.mediaDevices.getDisplayMedia({
+                video: { cursor: "always" },
+                audio: false
+            });
+            
+            // Basic check to ensure they shared entire screen (heuristic: surface/display surface)
+            const track = screenStream.getVideoTracks()[0];
+            const settings = track.getSettings();
+            if (settings.displaySurface && settings.displaySurface !== 'monitor') {
+                throw new Error("You must share your ENTIRE SCREEN, not just a window or tab.");
+            }
+        }
+
+        // Combine streams for recording
+        const tracks = [];
+        if(screenStream) screenStream.getTracks().forEach(t => tracks.push(t));
+        else if (videoStream) videoStream.getVideoTracks().forEach(t => tracks.push(t)); // fallback to camera if no screen
+
+        if(videoStream) videoStream.getAudioTracks().forEach(t => tracks.push(t));
+
+        finalStream = new MediaStream(tracks);
+        
+        // Attach local video object for snapshot extraction (choose screen or camera)
+        if(screenStream) {
+            document.getElementById('local-video').srcObject = screenStream;
+        } else if(videoStream) {
+            document.getElementById('local-video').srcObject = videoStream;
+        }
+
+        // Tell server session started
+        const sessionRes = await fetch('/api/session/start', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ exam_id: examConfig.id })
+        });
+        sessionInfo = await sessionRes.json();
+
+        // Join socket room
+        socket.emit('join_student', {
+            exam_id: examConfig.id,
+            exam_session_id: sessionInfo.id,
+            student_name: sessionInfo.student_name
+        });
+
+        // Setup Media Recorder
+        setupRecording();
+
+        // Setup environment
+        if (examConfig.require_fullscreen) {
+             await document.documentElement.requestFullscreen().catch(e => console.log('Fullscreen failed:', e));
+        }
+
+        if (examConfig.disable_right_click) {
+             document.addEventListener('contextmenu', event => event.preventDefault());
+        }
+
+        setupFocusTracking();
+
+        // Launch Exam
+        document.getElementById('setup-container').style.display = 'none';
+        document.getElementById('recording-indicator').style.display = 'block';
+        
+        const frame = document.getElementById('exam-frame');
+        frame.src = examConfig.canvas_quiz_url;
+        frame.style.display = 'block';
+
+        // Start taking snapshots
+        setInterval(sendSnapshot, 3000);
+
+    } catch(err) {
+        errorMsg.innerText = err.message || err.name;
+        errorMsg.style.display = 'block';
+    }
+}
+
+function setupRecording() {
+    // Record WebM
+    mediaRecorder = new MediaRecorder(finalStream, { mimeType: 'video/webm; codecs=vp8,opus' });
+    mediaRecorder.ondataavailable = async (e) => {
+        if (e.data && e.data.size > 0 && sessionInfo.recording_folder_id) {
+            chunkIndex++;
+            const formData = new FormData();
+            formData.append('video', e.data);
+            formData.append('folder_id', sessionInfo.recording_folder_id);
+            formData.append('chunk_index', chunkIndex);
+            
+            try {
+                fetch('/api/session/upload-chunk', { method: 'POST', body: formData });
+            } catch(uploadErr) {
+                console.error("Failed to upload chunk", uploadErr);
+            }
+        }
+    };
+    
+    // Slice every 10 seconds (in production you might do 60s)
+    mediaRecorder.start(10000);
+}
+
+function sendSnapshot() {
+    const video = document.getElementById('local-video');
+    if(video.videoWidth === 0) return;
+    
+    const canvas = document.createElement('canvas');
+    canvas.width = 640; 
+    canvas.height = 360; 
+    const ctx = canvas.getContext('2d');
+    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+    
+    const dataUrl = canvas.toDataURL('image/jpeg', 0.5);
+    
+    socket.emit('student_snapshot', {
+        exam_id: examConfig.id,
+        exam_session_id: sessionInfo.id,
+        screenshot_data_url: dataUrl
+    });
+}
+
+function setupFocusTracking() {
+    document.addEventListener('visibilitychange', () => {
+        if (document.visibilityState === 'hidden') {
+            logProctorEvent('tab_blur', 'Student switched tabs or minimized browser');
+        } else {
+            logProctorEvent('tab_focus', 'Student returned to the exam tab');
+        }
+    });
+
+    window.addEventListener('blur', () => {
+        logProctorEvent('window_blur', 'Exam window lost focus');
+    });
+
+    window.addEventListener('resize', () => {
+        if (examConfig.require_fullscreen && !document.fullscreenElement) {
+            logProctorEvent('fullscreen_exit', 'Student exited fullscreen mode');
+        }
+    });
+}
+
+function logProctorEvent(type, message) {
+    if(!sessionInfo) return;
+    fetch('/api/session/log', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+            exam_session_id: sessionInfo.id,
+            event_type: type,
+            event_message: message
+        })
+    }).catch(console.error);
+
+    showToast('Activity Logged: ' + message);
+}
+
+function showToast(msg) {
+    const el = document.createElement('div');
+    el.style.background = 'var(--danger)';
+    el.style.color = 'white';
+    el.style.padding = '12px 20px';
+    el.style.borderRadius = 'var(--radius)';
+    el.style.boxShadow = 'var(--shadow)';
+    el.style.fontSize = '14px';
+    el.innerText = msg;
+    document.getElementById('toast-container').appendChild(el);
+    setTimeout(() => el.remove(), 5000);
+}
