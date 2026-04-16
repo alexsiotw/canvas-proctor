@@ -6,6 +6,9 @@ let chunkIndex = 0;
 let finalStream = null;
 let activeUploads = 0;
 
+let videoStream = null;
+let screenStream = null;
+
 // Wait for explicit verification
 async function verifyExamCode() {
     const errorMsg = document.getElementById('code-error-msg');
@@ -49,9 +52,6 @@ async function startPreFlight() {
     errorMsg.style.display = 'none';
     
     try {
-        let videoStream = null;
-        let screenStream = null;
-
         if (examConfig.require_camera || examConfig.require_mic) {
             videoStream = await navigator.mediaDevices.getUserMedia({
                 video: examConfig.require_camera,
@@ -226,18 +226,24 @@ function launchQuiz() {
 }
 
 async function endExam() {
-    if(mediaRecorder && mediaRecorder.state !== 'inactive') {
-        mediaRecorder.stop();
-    }
-    
     document.getElementById('active-exam-container').innerHTML = '<h2>Finalizing Video...</h2><p style="color:var(--text-secondary);">Safely encrypting and uploading your footage. Please do not close the window yet.</p>';
-    
-    // Give the browser event loop a moment to trigger the final ondataavailable event payload
-    await new Promise(r => setTimeout(r, 500));
+
+    if(mediaRecorder && mediaRecorder.state !== 'inactive') {
+        const stopPromise = new Promise(resolve => {
+            mediaRecorder.onstop = resolve;
+        });
+        mediaRecorder.stop();
+        await stopPromise;
+    }
     
     while(activeUploads > 0) {
         await new Promise(r => setTimeout(r, 1000));
     }
+    
+    // Disable the browser's hardware tracking logic so the screen recording icons shut off cleanly
+    if (videoStream) videoStream.getTracks().forEach(t => t.stop());
+    if (screenStream) screenStream.getTracks().forEach(t => t.stop());
+    if (finalStream) finalStream.getTracks().forEach(t => t.stop());
     
     logProctorEvent('exam_ended', 'Student securely finished the exam.');
     
