@@ -1,5 +1,6 @@
 let examConfig = null;
 let sessionInfo = null;
+let socket = io();
 let mediaRecorder = null;
 let chunkIndex = 0;
 let finalStream = null;
