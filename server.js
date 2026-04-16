@@ -322,7 +322,7 @@ app.get('/api/exams/:id/export-videos', async (req, res) => {
         }
 
         res.setHeader('Content-Type', 'application/zip');
-        res.setHeader('Content-Disposition', \`attachment; filename="\${exam.title.replace(/[^a-z0-9]/gi, '_')}_Proctor_Vault.zip"\`);
+        res.setHeader('Content-Disposition', `attachment; filename="${exam.title.replace(/[^a-z0-9]/gi, '_')}_Proctor_Vault.zip"`);
 
         const archive = archiver('zip', { zlib: { level: 9 } });
         archive.pipe(res);
@@ -340,7 +340,7 @@ app.get('/api/exams/:id/export-videos', async (req, res) => {
             const masterBlob = Buffer.concat(binaryChunks);
             
             const studentNameStr = session.student_name ? session.student_name.replace(/[^a-z0-9]/gi, '_') : session.student_canvas_id;
-            archive.append(masterBlob, { name: \`\${studentNameStr}_Attempt_\${session.attempt_number || 1}.webm\` });
+            archive.append(masterBlob, { name: `${studentNameStr}_Attempt_${session.attempt_number || 1}.webm` });
         }
 
         archive.finalize();
