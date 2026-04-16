@@ -267,17 +267,20 @@ app.post('/api/session/end', requireAuth, async (req, res) => {
     }
 });
 
-// API: Upload Video Chunk
-app.post('/api/session/upload-chunk', requireAuth, upload.single('video'), async (req, res) => {
-    const { folder_id, chunk_index, exam_session_id } = req.body;
+// API: Upload Video Chunk directly via JSON payload to bypass Form boundary dropping
+app.post('/api/session/upload-chunk', requireAuth, async (req, res) => {
+    const { folder_id, chunk_index, exam_session_id, base64_video } = req.body;
     try {
-        if (!req.file) throw new Error("Multer failed to parse the video file (req.file is undefined). Form parsing error.");
+        if (!base64_video) throw new Error("Video payload was entirely empty or blocked in transit.");
         if (!folder_id) throw new Error("Missing folder_id from client payload.");
         if (!process.env.GOOGLE_CREDENTIALS_JSON) throw new Error("Missing GOOGLE_CREDENTIALS_JSON variable.");
         
+        // Convert Base64 strictly back to binary format
+        const videoBuffer = Buffer.from(base64_video.split(',')[1] || base64_video, 'base64');
         const fileName = `chunk_${chunk_index}.webm`;
         const tempFilePath = path.join(os.tmpdir(), `${uuidv4()}_${fileName}`);
-        fs.writeFileSync(tempFilePath, req.file.buffer);
+        
+        fs.writeFileSync(tempFilePath, videoBuffer);
         
         await driveApi.uploadVideoChunk(folder_id, fileName, tempFilePath);
         fs.unlinkSync(tempFilePath);

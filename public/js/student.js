@@ -135,18 +135,33 @@ function setupRecording() {
     mediaRecorder.ondataavailable = async (e) => {
         if (e.data && e.data.size > 0 && sessionInfo.recording_folder_id) {
             chunkIndex++;
-            const formData = new FormData();
-            formData.append('exam_session_id', sessionInfo.id);
-            formData.append('folder_id', sessionInfo.recording_folder_id);
-            formData.append('chunk_index', chunkIndex);
-            formData.append('video', e.data, `chunk_${chunkIndex}.webm`);
-            
             activeUploads++;
+            
             try {
-                await fetch('/api/session/upload-chunk', { method: 'POST', body: formData });
-            } catch(uploadErr) {
-                console.error("Failed to upload chunk", uploadErr);
-            } finally {
+                const reader = new FileReader();
+                reader.readAsDataURL(e.data);
+                reader.onloadend = async () => {
+                    const base64Data = reader.result;
+                    
+                    try {
+                        await fetch('/api/session/upload-chunk', { 
+                            method: 'POST', 
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({
+                                exam_session_id: sessionInfo.id,
+                                folder_id: sessionInfo.recording_folder_id,
+                                chunk_index: chunkIndex,
+                                base64_video: base64Data
+                            })
+                        });
+                    } catch(uploadErr) {
+                        console.error("Failed to upload chunk", uploadErr);
+                    } finally {
+                        activeUploads--;
+                    }
+                };
+            } catch(err) {
+                console.error("Reader boundary crash:", err);
                 activeUploads--;
             }
         }
