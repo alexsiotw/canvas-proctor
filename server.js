@@ -207,7 +207,7 @@ app.post('/api/session/upload-chunk', requireAuth, upload.single('video'), async
     try {
         const { folder_id, chunk_index } = req.body;
         if (folder_id && req.file && process.env.GOOGLE_CREDENTIALS_JSON) {
-            const fileName = \`chunk_\${chunk_index}.webm\`;
+            const fileName = `chunk_${chunk_index}.webm`;
             await driveApi.uploadVideoChunk(folder_id, fileName, req.file.buffer);
         }
         res.json({ success: true });
@@ -277,6 +277,6 @@ app.get('/', (req, res) => {
 
 initDatabase().then(() => {
     server.listen(PORT, () => {
-        console.log(\`Proctor Gateway running on port \${PORT}\`);
+        console.log(`Proctor Gateway running on port ${PORT}`);
     });
 }).catch(console.error);

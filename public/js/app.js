@@ -21,7 +21,7 @@ socket.on('student_status', (data) => {
 });
 
 socket.on('proctor_log', (data) => {
-    showToast(\`Alert: \${data.event_message}\`, 'warning');
+    showToast(`Alert: ${data.event_message}`, 'warning');
 });
 
 document.addEventListener('DOMContentLoaded', () => {
@@ -30,7 +30,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
 function navigate(page) {
     document.querySelectorAll('.nav-item').forEach(el => el.classList.remove('active'));
-    const navItem = document.querySelector(\`[data-page="\${page}"]\`);
+    const navItem = document.querySelector(`[data-page="${page}"]`);
     if(navItem) navItem.classList.add('active');
 
     document.getElementById('content').innerHTML = '<div class="spinner" style="margin: 40px auto;"></div>';
@@ -48,7 +48,7 @@ async function loadExams() {
 
 function renderExams() {
     const content = document.getElementById('content');
-    let html = \`
+    let html = `
         <div class="page-header">
             <div>
                 <h1 class="page-title">Configured Exams</h1>
@@ -57,29 +57,29 @@ function renderExams() {
             <button class="btn btn-primary" onclick="showCreateExamModal()">+ New Proctored Exam</button>
         </div>
         <div class="session-grid">
-    \`;
+    `;
 
     if (exams.length === 0) {
-        html += \`
+        html += `
             <div class="empty-state" style="grid-column: 1/-1;">
                 <div class="empty-icon">📝</div>
                 <div class="empty-text">No Exams configured yet</div>
                 <div class="empty-hint">Click the button above to link a Canvas Quiz.</div>
             </div>
-        \`;
+        `;
     } else {
         exams.forEach(ex => {
-            html += \`
+            html += `
                 <div class="card session-card">
-                    <div class="session-date">\${new Date(ex.created_at).toLocaleDateString()}</div>
-                    <div class="session-title">\${ex.title}</div>
+                    <div class="session-date">${new Date(ex.created_at).toLocaleDateString()}</div>
+                    <div class="session-title">${ex.title}</div>
                     <div style="font-size: 12px; color: var(--text-secondary); margin-top: 8px;">
-                        <div>📷 Camera: \${ex.require_camera ? 'Yes' : 'No'}</div>
-                        <div>🎤 Mic: \${ex.require_mic ? 'Yes' : 'No'}</div>
-                        <div>💻 Screen: \${ex.require_screen ? 'Yes' : 'No'}</div>
+                        <div>📷 Camera: ${ex.require_camera ? 'Yes' : 'No'}</div>
+                        <div>🎤 Mic: ${ex.require_mic ? 'Yes' : 'No'}</div>
+                        <div>💻 Screen: ${ex.require_screen ? 'Yes' : 'No'}</div>
                     </div>
                 </div>
-            \`;
+            `;
         });
     }
 
@@ -88,7 +88,7 @@ function renderExams() {
 }
 
 function showCreateExamModal() {
-    const html = \`
+    const html = `
         <div class="modal-header">
             <h2 class="modal-title">Link Canvas Quiz</h2>
             <button class="modal-close" onclick="closeModal()">×</button>
@@ -123,7 +123,7 @@ function showCreateExamModal() {
             <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
             <button class="btn btn-primary" onclick="saveExam()">Create</button>
         </div>
-    \`;
+    `;
     
     document.getElementById('modal-content').innerHTML = html;
     document.getElementById('modal-overlay').classList.add('active');
@@ -188,18 +188,18 @@ async function loadLiveExamSelect() {
     }
 
     let selectHtml = '<div style="margin-bottom: 20px;"><label class="form-label">Select Exam to Monitor</label><select id="live-exam-sel" class="form-select" onchange="startLiveMonitoring(this.value)"><option value="">-- Choose Exam --</option>';
-    exams.forEach(e => selectHtml += \`<option value="\${e.id}">\${e.title}</option>\`);
+    exams.forEach(e => selectHtml += `<option value="${e.id}">${e.title}</option>`);
     selectHtml += '</select></div><div id="live-grid" class="session-grid"></div>';
 
-    content.innerHTML = \`
+    content.innerHTML = `
         <div class="page-header">
             <div>
                 <h1 class="page-title">Live Monitoring</h1>
                 <p class="page-subtitle">Watch student screens in real-time.</p>
             </div>
         </div>
-        \${selectHtml}
-    \`;
+        ${selectHtml}
+    `;
 }
 
 function startLiveMonitoring(examId) {
@@ -221,20 +221,20 @@ function updateLiveGrid() {
         
         let content = '';
         if(s.screenshot) {
-            content = \`<img src="\${s.screenshot}" style="width:100%; height:120px; object-fit:cover; border-radius: 4px; cursor: pointer;" onclick="openFullscreenImg('\${s.screenshot}')" />\`;
+            content = `<img src="${s.screenshot}" style="width:100%; height:120px; object-fit:cover; border-radius: 4px; cursor: pointer;" onclick="openFullscreenImg('${s.screenshot}')" />`;
         } else {
-            content = \`<div style="width:100%; height:120px; background:#ddd; border-radius: 4px; display:flex; align-items:center; justify-content:center; color:#888;">No Signal</div>\`;
+            content = `<div style="width:100%; height:120px; background:#ddd; border-radius: 4px; display:flex; align-items:center; justify-content:center; color:#888;">No Signal</div>`;
         }
 
-        grid.innerHTML += \`
+        grid.innerHTML += `
             <div class="card" style="padding: 12px;">
                 <div style="display:flex; justify-content:space-between; margin-bottom:8px;">
-                    <strong style="font-size: 14px;">\${s.name || 'Testing...'}</strong>
-                    <span style="width: 10px; height: 10px; background: \${statusColor}; border-radius: 50%; display:inline-block;"></span>
+                    <strong style="font-size: 14px;">${s.name || 'Testing...'}</strong>
+                    <span style="width: 10px; height: 10px; background: ${statusColor}; border-radius: 50%; display:inline-block;"></span>
                 </div>
-                \${content}
+                ${content}
             </div>
-        \`;
+        `;
     });
 
     if(Object.keys(liveStudents).length === 0) {
@@ -265,26 +265,26 @@ async function loadReports() {
     }
 
     let selectHtml = '<div style="margin-bottom: 20px;"><label class="form-label">Select Exam to View Reports</label><select id="report-exam-sel" class="form-select" onchange="fetchReportData(this.value)"><option value="">-- Choose Exam --</option>';
-    exams.forEach(e => selectHtml += \`<option value="\${e.id}">\${e.title}</option>\`);
+    exams.forEach(e => selectHtml += `<option value="${e.id}">${e.title}</option>`);
     selectHtml += '</select></div><div id="report-content"></div>';
 
-    content.innerHTML = \`
+    content.innerHTML = `
         <div class="page-header">
             <div>
                 <h1 class="page-title">Proctor Reports</h1>
                 <p class="page-subtitle">View logs, tab switches, and security flags.</p>
             </div>
         </div>
-        \${selectHtml}
-    \`;
+        ${selectHtml}
+    `;
 }
 
 async function fetchReportData(examId) {
     if(!examId) return;
-    const res = await fetch(\`/api/exams/\${examId}/reports\`);
+    const res = await fetch(`/api/exams/${examId}/reports`);
     const sessions = await res.json();
 
-    let tableHtml = \`
+    let tableHtml = `
         <div class="table-wrapper">
         <table>
             <thead>
@@ -296,24 +296,24 @@ async function fetchReportData(examId) {
                 </tr>
             </thead>
             <tbody>
-    \`;
+    `;
 
     sessions.forEach(s => {
-        let logsList = \`<ul>\`;
+        let logsList = `<ul>`;
         s.logs.forEach(l => {
-            logsList += \`<li><strong style="color:var(--danger)">\${l.event_type}</strong>: \${l.event_message} (\${new Date(l.event_timestamp).toLocaleTimeString()})</li>\`;
+            logsList += `<li><strong style="color:var(--danger)">${l.event_type}</strong>: ${l.event_message} (${new Date(l.event_timestamp).toLocaleTimeString()})</li>`;
         });
         if(s.logs.length === 0) logsList += "<li>No flags recorded. Good job!</li>";
         logsList += '</ul>';
 
-        tableHtml += \`
+        tableHtml += `
             <tr>
-                <td style="font-weight: 600;">\${s.student_name || s.student_canvas_id}</td>
-                <td><span class="status-badge status-\${s.status === 'completed' ? 'Present' : 'Late'}">\${s.status}</span></td>
-                <td>\${new Date(s.started_at).toLocaleString()}</td>
-                <td style="font-size: 13px;">\${logsList}</td>
+                <td style="font-weight: 600;">${s.student_name || s.student_canvas_id}</td>
+                <td><span class="status-badge status-${s.status === 'completed' ? 'Present' : 'Late'}">${s.status}</span></td>
+                <td>${new Date(s.started_at).toLocaleString()}</td>
+                <td style="font-size: 13px;">${logsList}</td>
             </tr>
-        \`;
+        `;
     });
 
     tableHtml += '</tbody></table></div>';
