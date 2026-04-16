@@ -335,7 +335,10 @@ async function fetchReportData(examId) {
 
         tableHtml += `
             <tr>
-                <td style="font-weight: 600;">${s.student_name || s.student_canvas_id} (Attempt ${s.attempt_number || 1})</td>
+                <td style="font-weight: 600;">
+                    ${s.student_name || s.student_canvas_id} (Attempt ${s.attempt_number || 1})
+                    <button class="btn btn-secondary" style="display:block; margin-top:8px; font-size:11px; padding:4px 8px; border: 1px solid var(--border-color); background: #f8fafc;" onclick="grantExtraAttempt(${s.exam_id}, '${s.student_canvas_id}')">+1 Override Pass</button>
+                </td>
                 <td><span class="status-badge status-${s.status === 'completed' ? 'Present' : 'Late'}">${s.status}</span></td>
                 <td>${new Date(s.started_at).toLocaleString()}</td>
                 <td style="font-size: 13px;">${logsList}</td>
@@ -348,4 +351,18 @@ async function fetchReportData(examId) {
 
     tableHtml += '</tbody></table></div>';
     document.getElementById('report-content').innerHTML = tableHtml;
+}
+
+async function grantExtraAttempt(examId, studentCanvasId) {
+    if(!confirm("Are you sure you want to grant this specific student an additional attempt?")) return;
+    try {
+        await fetch('/api/exams/' + examId + '/overrides', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ student_canvas_id: studentCanvasId })
+        });
+        showToast('Attempt Override Granted Successfully!', 'success');
+    } catch(err) {
+        console.error(err);
+        showToast('Error granting attempt', 'warning');
+    }
 }

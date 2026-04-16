@@ -63,6 +63,14 @@ async function initDatabase() {
       ALTER TABLE exams ADD COLUMN IF NOT EXISTS max_attempts INTEGER DEFAULT 1;
       ALTER TABLE exam_sessions ADD COLUMN IF NOT EXISTS attempt_number INTEGER DEFAULT 1;
       ALTER TABLE exam_sessions DROP CONSTRAINT IF EXISTS exam_sessions_exam_id_student_canvas_id_key;
+
+      CREATE TABLE IF NOT EXISTS exam_overrides (
+        id SERIAL PRIMARY KEY,
+        exam_id INTEGER REFERENCES exams(id) ON DELETE CASCADE,
+        student_canvas_id VARCHAR(255) NOT NULL,
+        extra_attempts INTEGER DEFAULT 1,
+        UNIQUE(exam_id, student_canvas_id)
+      );
     `);
     console.log('Database tables initialized successfully');
   } catch (err) {

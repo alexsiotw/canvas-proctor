@@ -153,6 +153,23 @@ app.delete('/api/exams/:id', requireInstructor, async (req, res) => {
     }
 });
 
+// API: Grant Override Extra Attempt
+app.post('/api/exams/:exam_id/overrides', requireInstructor, async (req, res) => {
+    try {
+        const { exam_id } = req.params;
+        const { student_canvas_id } = req.body;
+        await pool.query(`
+            INSERT INTO exam_overrides (exam_id, student_canvas_id, extra_attempts)
+            VALUES ($1, $2, 1)
+            ON CONFLICT (exam_id, student_canvas_id) 
+            DO UPDATE SET extra_attempts = exam_overrides.extra_attempts + 1
+        `, [exam_id, student_canvas_id]);
+        res.json({ success: true });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
 // API: Get Exam details (For Student entering / pre-flight)
 app.post('/api/exams/verify-code', requireAuth, async (req, res) => {
     try {
@@ -167,8 +184,13 @@ app.post('/api/exams/verify-code', requireAuth, async (req, res) => {
         const sessionCountQuery = await pool.query('SELECT COUNT(*) as attempt_count FROM exam_sessions WHERE exam_id = $1 AND student_canvas_id = $2', [exam.id, userId]);
         const attemptCount = parseInt(sessionCountQuery.rows[0].attempt_count, 10);
         
-        if (attemptCount >= (exam.max_attempts || 1)) {
-            return res.status(403).json({ error: `You have reached the maximum number of attempts (${exam.max_attempts}) for this exam.` });
+        const overrideQuery = await pool.query('SELECT extra_attempts FROM exam_overrides WHERE exam_id = $1 AND student_canvas_id = $2', [exam.id, userId]);
+        const extraAttempts = overrideQuery.rows.length > 0 ? parseInt(overrideQuery.rows[0].extra_attempts, 10) : 0;
+        
+        const totalAllowed = (exam.max_attempts || 1) + extraAttempts;
+        
+        if (attemptCount >= totalAllowed) {
+            return res.status(403).json({ error: `You have reached the maximum allowable attempts (${totalAllowed}) for this exam.` });
         }
         
         res.json(exam);
