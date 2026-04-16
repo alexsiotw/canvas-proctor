@@ -44,8 +44,7 @@ async function createStudentExamFolder(examTitle, studentName) {
 async function uploadVideoChunk(folderId, fileName, buffer, mimeType = 'video/webm') {
     try {
         const drive = getDriveClient();
-        const bufferStream = new stream.PassThrough();
-        bufferStream.end(buffer);
+        const bufferStream = stream.Readable.from(buffer);
 
         const response = await drive.files.create({
             resource: {
