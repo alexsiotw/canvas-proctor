@@ -11,6 +11,8 @@ const http = require('http');
 const { Server } = require('socket.io');
 const { pool, initDatabase } = require('./db');
 const driveApi = require('./services/driveApi');
+const fs = require('fs');
+const os = require('os');
 
 const upload = multer({ storage: multer.memoryStorage() });
 
@@ -269,9 +271,15 @@ app.post('/api/session/end', requireAuth, async (req, res) => {
 app.post('/api/session/upload-chunk', requireAuth, upload.single('video'), async (req, res) => {
     try {
         const { folder_id, chunk_index } = req.body;
-        if (folder_id && req.file && process.env.GOOGLE_CREDENTIALS_JSON) {
+        if (!req.file) throw new Error("Multer failed to parse the video file");
+        
+        if (folder_id && process.env.GOOGLE_CREDENTIALS_JSON) {
             const fileName = `chunk_${chunk_index}.webm`;
-            await driveApi.uploadVideoChunk(folder_id, fileName, req.file.buffer);
+            const tempFilePath = path.join(os.tmpdir(), `${uuidv4()}_${fileName}`);
+            fs.writeFileSync(tempFilePath, req.file.buffer);
+            
+            await driveApi.uploadVideoChunk(folder_id, fileName, tempFilePath);
+            fs.unlinkSync(tempFilePath);
         }
         res.json({ success: true });
     } catch (err) {

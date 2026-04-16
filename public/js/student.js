@@ -1,9 +1,9 @@
 let examConfig = null;
 let sessionInfo = null;
-let socket = io();
 let mediaRecorder = null;
 let chunkIndex = 0;
 let finalStream = null;
+let activeUploads = 0;
 
 // Wait for explicit verification
 async function verifyExamCode() {
@@ -139,10 +139,13 @@ function setupRecording() {
             formData.append('folder_id', sessionInfo.recording_folder_id);
             formData.append('chunk_index', chunkIndex);
             
+            activeUploads++;
             try {
-                fetch('/api/session/upload-chunk', { method: 'POST', body: formData });
+                await fetch('/api/session/upload-chunk', { method: 'POST', body: formData });
             } catch(uploadErr) {
                 console.error("Failed to upload chunk", uploadErr);
+            } finally {
+                activeUploads--;
             }
         }
     };
@@ -224,6 +227,15 @@ function launchQuiz() {
 async function endExam() {
     if(mediaRecorder && mediaRecorder.state !== 'inactive') {
         mediaRecorder.stop();
+    }
+    
+    document.getElementById('active-exam-container').innerHTML = '<h2>Finalizing Video...</h2><p style="color:var(--text-secondary);">Safely encrypting and uploading your footage. Please do not close the window yet.</p>';
+    
+    // Give the browser event loop a moment to trigger the final ondataavailable event payload
+    await new Promise(r => setTimeout(r, 500));
+    
+    while(activeUploads > 0) {
+        await new Promise(r => setTimeout(r, 1000));
     }
     
     logProctorEvent('exam_ended', 'Student securely finished the exam.');

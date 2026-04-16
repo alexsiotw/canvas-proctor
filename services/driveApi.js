@@ -41,10 +41,10 @@ async function createStudentExamFolder(examTitle, studentName) {
 }
 
 // Upload a video chunk (buffer) into the student's folder
-async function uploadVideoChunk(folderId, fileName, buffer, mimeType = 'video/webm') {
+async function uploadVideoChunk(folderId, fileName, filePath, mimeType = 'video/webm') {
     try {
         const drive = getDriveClient();
-        const bufferStream = stream.Readable.from(buffer);
+        const fs = require('fs');
 
         const response = await drive.files.create({
             requestBody: {
@@ -53,7 +53,7 @@ async function uploadVideoChunk(folderId, fileName, buffer, mimeType = 'video/we
             },
             media: {
                 mimeType: mimeType,
-                body: bufferStream
+                body: fs.createReadStream(filePath)
             },
             fields: 'id, webViewLink'
         });
