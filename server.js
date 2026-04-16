@@ -8,6 +8,7 @@ const { v4: uuidv4 } = require('uuid');
 const lti = require('ims-lti');
 const multer = require('multer');
 const http = require('http');
+const { Server } = require('socket.io');
 const { pool, initDatabase } = require('./db');
 const archiver = require('archiver');
 const fs = require('fs');
