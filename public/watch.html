@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Proctor Gateway - Secure Video Playback</title>
+    <link rel="stylesheet" href="/css/style.css">
+    <style>
+        body { padding: 40px; text-align: center; background: #0f172a; color: white; }
+        video { max-width: 100%; height: 75vh; border: 4px solid var(--border); border-radius: 12px; box-shadow: 0 10px 30px rgba(0,0,0,0.5); background: #000; }
+        .controls { margin-top: 20px; }
+        #status { margin-bottom: 20px; color: var(--text-secondary); font-family: monospace; }
+    </style>
+</head>
+<body>
+    <h1>Exam Session Playback Vault</h1>
+    <p id="status">Establishing secure database handshake...</p>
+    
+    <video id="player" controls></video>
+    
+    <div class="controls">
+        <button class="btn" onclick="window.close()" style="background:var(--danger); color:white;">Exit Player</button>
+    </div>
+
+    <script>
+        const urlParams = new URLSearchParams(window.location.search);
+        const sessionId = urlParams.get('session');
+        const video = document.getElementById('player');
+        const status = document.getElementById('status');
+        
+        async function loadVideo() {
+            try {
+                if(!sessionId) throw new Error("No session ID specified.");
+                status.innerText = "Querying PostgreSQL chunk table...";
+                
+                const res = await fetch(`/api/session/video-playback/${sessionId}`);
+                if(!res.ok) throw new Error((await res.json()).error || "Database rejection.");
+                const data = await res.json();
+                
+                if(!data.chunks || data.chunks.length === 0) {
+                    status.innerText = "Error: Video chunk pool is empty. Authentication likely dropped before stream began.";
+                    return;
+                }
+                
+                status.innerText = `Aggregating ${data.chunks.length} raw baseline fragments...`;
+                
+                // Aggressively map the base64 chunks directly back into native OS memory buffers to stitch them perfectly.
+                const binaryChunks = [];
+                for(let b64 of data.chunks) {
+                    const pureB64 = b64.split(',')[1] || b64;
+                    const byteStr = atob(pureB64);
+                    const buf = new Uint8Array(byteStr.length);
+                    for(let i=0; i<byteStr.length; i++) buf[i] = byteStr.charCodeAt(i);
+                    binaryChunks.push(buf);
+                }
+                
+                const masterBlob = new Blob(binaryChunks, { type: 'video/webm' });
+                video.src = URL.createObjectURL(masterBlob);
+                status.innerText = `Hardware decoding successful. Stitched File Size: ${(masterBlob.size / 1024 / 1024).toFixed(2)} MB.`;
+            } catch(e) {
+                status.innerText = 'Critical Failure: ' + e.message;
+            }
+        }
+        
+        loadVideo();
+    </script>
+</body>
+</html>
