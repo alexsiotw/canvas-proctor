@@ -103,15 +103,10 @@ async function startPreFlight() {
              document.addEventListener('contextmenu', event => event.preventDefault());
         }
 
-        setupFocusTracking();
-
         // Launch Exam
         document.getElementById('setup-container').style.display = 'none';
         document.getElementById('recording-indicator').style.display = 'block';
-        
-        const frame = document.getElementById('exam-frame');
-        frame.src = examConfig.canvas_quiz_url;
-        frame.style.display = 'block';
+        document.getElementById('active-exam-container').style.display = 'block';
 
         // Start taking snapshots
         setInterval(sendSnapshot, 3000);
@@ -209,4 +204,24 @@ function showToast(msg) {
     el.innerText = msg;
     document.getElementById('toast-container').appendChild(el);
     setTimeout(() => el.remove(), 5000);
+}
+
+function launchQuiz() {
+    window.open(examConfig.canvas_quiz_url, '_blank');
+}
+
+async function endExam() {
+    if(mediaRecorder && mediaRecorder.state !== 'inactive') {
+        mediaRecorder.stop();
+    }
+    
+    logProctorEvent('exam_ended', 'Student securely finished the exam.');
+    
+    await fetch('/api/session/end', {
+        method: 'POST', headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({ exam_session_id: sessionInfo.id })
+    });
+    
+    document.getElementById('active-exam-container').innerHTML = '<h2>Exam Completed</h2><p style="color:var(--text-secondary);">Your recording has been saved securely to Google Drive. You may now close this window.</p>';
+    document.getElementById('recording-indicator').style.display = 'none';
 }

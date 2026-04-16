@@ -202,6 +202,24 @@ app.post('/api/session/log', requireAuth, async (req, res) => {
     }
 });
 
+// API: End Exam Session
+app.post('/api/session/end', requireAuth, async (req, res) => {
+    try {
+        const { exam_session_id } = req.body;
+        await pool.query('UPDATE exam_sessions SET status=$1 WHERE id=$2', ['completed', exam_session_id]);
+        
+        const examIdQuery = await pool.query('SELECT exam_id FROM exam_sessions WHERE id=$1', [exam_session_id]);
+        if(examIdQuery.rows.length > 0) {
+            io.to('teacher_' + examIdQuery.rows[0].exam_id).emit('student_status', { 
+                session_id: exam_session_id, status: 'completed' 
+            });
+        }
+        res.json({ success: true });
+    } catch(err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
 // API: Upload Video Chunk
 app.post('/api/session/upload-chunk', requireAuth, upload.single('video'), async (req, res) => {
     try {

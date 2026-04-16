@@ -293,6 +293,7 @@ async function fetchReportData(examId) {
                     <th>Status</th>
                     <th>Started At</th>
                     <th>Flags / Events</th>
+                    <th>Recordings</th>
                 </tr>
             </thead>
             <tbody>
@@ -312,6 +313,9 @@ async function fetchReportData(examId) {
                 <td><span class="status-badge status-${s.status === 'completed' ? 'Present' : 'Late'}">${s.status}</span></td>
                 <td>${new Date(s.started_at).toLocaleString()}</td>
                 <td style="font-size: 13px;">${logsList}</td>
+                <td>
+                    ${s.recording_folder_id ? `<a href="https://drive.google.com/drive/folders/${s.recording_folder_id}" target="_blank" class="btn btn-primary" style="font-size:12px; padding:6px 10px;">Watch</a>` : '<span style="color:#888;">No Folder</span>'}
+                </td>
             </tr>
         `;
     });
