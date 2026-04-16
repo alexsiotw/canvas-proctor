@@ -31,8 +31,29 @@ socket.on('proctor_log', (data) => {
 });
 
 document.addEventListener('DOMContentLoaded', () => {
+    checkDatabaseCapacity();
     loadExams(); // Boot directly into Exams Workspace
 });
+
+async function checkDatabaseCapacity() {
+    try {
+        const res = await fetch('/api/db-status');
+        const data = await res.json();
+        const mbUsed = data.used_bytes / 1024 / 1024;
+        if (mbUsed > 350) {
+            const banner = document.createElement('div');
+            banner.style.background = 'var(--danger)';
+            banner.style.color = 'white';
+            banner.style.padding = '12px 20px';
+            banner.style.textAlign = 'center';
+            banner.style.fontWeight = 'bold';
+            banner.innerHTML = `⚠️ CRITICAL: Database Storage Running Low! (${mbUsed.toFixed(1)} MB / 500 MB limit). Please download and purge older recordings immediately to prevent data loss.`;
+            document.body.insertBefore(banner, document.body.firstChild);
+        }
+    } catch(err) {
+        console.error("Capacity check failed", err);
+    }
+}
 
 async function loadExams() {
     const res = await fetch('/api/exams');
@@ -116,7 +137,11 @@ function loadExamDashboard(examId) {
             <div class="card" style="padding: 20px; box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1);">
                 <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom: 15px; border-bottom: 1px solid var(--border-color); padding-bottom: 10px;">
                     <h2 style="font-size: 18px; font-weight: 600;">Post-Exam Reports & Video Vault</h2>
-                    <button class="btn btn-secondary" style="font-size:12px; padding: 4px 8px;" onclick="fetchReportData(${exam.id})">Refresh Reports</button>
+                    <div style="display:flex; gap: 8px;">
+                        <button class="btn btn-primary" style="font-size:12px; padding: 4px 8px; background:var(--primary);" onclick="window.open('/api/exams/${exam.id}/export-videos', '_blank')">📁 Download .ZIP Archive</button>
+                        <button class="btn btn-secondary" style="font-size:12px; padding: 4px 8px; background:var(--danger); color:white; border:none;" onclick="purgeVideosOnly(${exam.id})">🗑️ Purge Video Engine</button>
+                        <button class="btn btn-secondary" style="font-size:12px; padding: 4px 8px;" onclick="fetchReportData(${exam.id})">Refresh Reports</button>
+                    </div>
                 </div>
                 <div id="report-content"><div class="spinner" style="margin: 20px auto;"></div></div>
             </div>
@@ -218,7 +243,8 @@ async function fetchReportData(examId) {
                 <td>${new Date(s.started_at).toLocaleString()}</td>
                 <td style="font-size: 13px;">${logsList}</td>
                 <td>
-                    ${s.status === 'completed' ? `<a href="/watch.html?session=${s.id}" target="_blank" class="btn btn-primary" style="font-size:12px; padding:8px 12px; border-radius: 4px; background:#4338ca; color:white; text-decoration:none; display:inline-block;">Watch Final Video</a>` : '<span style="color:#888; font-style:italic; font-size:12px;">In Progress...</span>'}
+                    ${s.status === 'completed' && !s.video_archived ? `<a href="/watch.html?session=${s.id}" target="_blank" class="btn btn-primary" style="font-size:12px; padding:8px 12px; border-radius: 4px; background:#4338ca; color:white; text-decoration:none; display:inline-block;">Watch Final Video</a>` 
+                    : (s.video_archived ? '<span style="color:var(--danger); font-size:12px; font-weight:bold;">[Archived Off-Site]</span>' : '<span style="color:#888; font-style:italic; font-size:12px;">In Progress...</span>')}
                 </td>
             </tr>
         `;
@@ -326,6 +352,18 @@ async function deleteExam(id) {
             await fetch('/api/exams/' + id, {method: 'DELETE'});
             loadExams();
             showToast('Exam completely deleted.', 'success');
+        } catch(e) {
+            console.error(e);
+        }
+    }
+}
+
+async function purgeVideosOnly(id) {
+    if(confirm('WARNING: Are you absolutely sure you want to hard purge all video footage from the database? This is permanent. Please ensure you have downloaded the ZIP Archive first! The security reports will be safely kept.')) {
+        try {
+            await fetch('/api/exams/' + id + '/videos-only', {method: 'DELETE'});
+            fetchReportData(id); // Refresh securely inside details view!
+            showToast('Video footage hard purged. Database space reclaimed.', 'success');
         } catch(e) {
             console.error(e);
         }

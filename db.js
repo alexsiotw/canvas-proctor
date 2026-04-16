@@ -32,12 +32,14 @@ async function initDatabase() {
         id SERIAL PRIMARY KEY,
         exam_id INTEGER REFERENCES exams(id) ON DELETE CASCADE,
         student_canvas_id VARCHAR(255) NOT NULL,
-        student_name VARCHAR(500),
+        student_name VARCHAR(255),
         status VARCHAR(50) DEFAULT 'started',
-        started_at TIMESTAMP DEFAULT NOW(),
-        ended_at TIMESTAMP,
-        recording_folder_id TEXT,
-        UNIQUE(exam_id, student_canvas_id)
+        recording_folder_id VARCHAR(255),
+        video_archived BOOLEAN DEFAULT false,
+        started_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        end_time TIMESTAMP,
+        attempt_number INTEGER DEFAULT 1,
+        UNIQUE(exam_id, student_canvas_id, attempt_number)
       );
 
       CREATE TABLE IF NOT EXISTS proctor_logs (
@@ -79,6 +81,9 @@ async function initDatabase() {
         video_data TEXT NOT NULL,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       );
+      
+      -- Force add missing columns onto existing production tables implicitly without crashing
+      ALTER TABLE exam_sessions ADD COLUMN IF NOT EXISTS video_archived BOOLEAN DEFAULT false;
     `);
     console.log('Database tables initialized successfully');
   } catch (err) {

@@ -8,8 +8,8 @@ const { v4: uuidv4 } = require('uuid');
 const lti = require('ims-lti');
 const multer = require('multer');
 const http = require('http');
-const { Server } = require('socket.io');
 const { pool, initDatabase } = require('./db');
+const archiver = require('archiver');
 const fs = require('fs');
 const os = require('os');
 
@@ -293,10 +293,87 @@ app.get('/api/session/video-playback/:session_id', requireInstructor, async (req
     }
 });
 
+// API: Database Status / Capacity Check
+app.get('/api/db-status', requireInstructor, async (req, res) => {
+    try {
+        // Evaluate the raw byte footprint of the total uploaded sequence
+        const result = await pool.query(`SELECT pg_total_relation_size('video_chunks') AS size_bytes`);
+        res.json({ used_bytes: parseInt(result.rows[0].size_bytes || 0) });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// API: Export Videos completely to ZIP safely via Stream
+app.get('/api/exams/:id/export-videos', async (req, res) => {
+    const { id } = req.params;
+    try {
+        const exam = (await pool.query('SELECT title, exam_code FROM exams WHERE id = $1', [id])).rows[0];
+        if(!exam) return res.status(404).send('Exam Not found');
+
+        const sessionResult = await pool.query(`
+            SELECT id, student_canvas_id, student_name, attempt_number 
+            FROM exam_sessions 
+            WHERE exam_id = $1 AND status = 'completed' AND video_archived = false
+        `, [id]);
+
+        if (sessionResult.rows.length === 0) {
+            return res.status(404).send('No valid video chunks found. Either the exam is empty, or chunks were already deleted!');
+        }
+
+        res.setHeader('Content-Type', 'application/zip');
+        res.setHeader('Content-Disposition', \`attachment; filename="\${exam.title.replace(/[^a-z0-9]/gi, '_')}_Proctor_Vault.zip"\`);
+
+        const archive = archiver('zip', { zlib: { level: 9 } });
+        archive.pipe(res);
+        archive.on('error', (err) => { throw err; });
+
+        for (const session of sessionResult.rows) {
+            const chunkResult = await pool.query('SELECT video_data FROM video_chunks WHERE exam_session_id = $1 ORDER BY chunk_index ASC', [session.id]);
+            if (chunkResult.rows.length === 0) continue;
+
+            const binaryChunks = [];
+            for(let row of chunkResult.rows) {
+                const pureB64 = row.video_data.split(',')[1] || row.video_data;
+                binaryChunks.push(Buffer.from(pureB64, 'base64'));
+            }
+            const masterBlob = Buffer.concat(binaryChunks);
+            
+            const studentNameStr = session.student_name ? session.student_name.replace(/[^a-z0-9]/gi, '_') : session.student_canvas_id;
+            archive.append(masterBlob, { name: \`\${studentNameStr}_Attempt_\${session.attempt_number || 1}.webm\` });
+        }
+
+        archive.finalize();
+    } catch(err) {
+        console.error(err);
+        if (!res.headersSent) res.status(500).send('Error generating archive');
+    }
+});
+
+// API: Purge Videos
+app.delete('/api/exams/:id/videos-only', requireInstructor, async (req, res) => {
+    try {
+        const { id } = req.params;
+        await pool.query(`
+            DELETE FROM video_chunks WHERE exam_session_id IN (
+                SELECT id FROM exam_sessions WHERE exam_id = $1
+            )
+        `, [id]);
+        
+        await pool.query(`
+            UPDATE exam_sessions SET video_archived = true WHERE exam_id = $1
+        `, [id]);
+        
+        res.json({ success: true });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
 // API: Get Exam Report (Teacher)
 app.get('/api/exams/:exam_id/reports', requireInstructor, async (req, res) => {
     try {
-        const sessions = await pool.query('SELECT * FROM exam_sessions WHERE exam_id = $1', [req.params.exam_id]);
+        const sessions = await pool.query('SELECT id, exam_id, student_canvas_id, student_name, status, started_at, end_time, attempt_number, video_archived FROM exam_sessions WHERE exam_id = $1', [req.params.exam_id]);
         const logs = await pool.query(`
             SELECT pl.* FROM proctor_logs pl 
             JOIN exam_sessions es ON pl.exam_session_id = es.id 
@@ -314,7 +391,6 @@ app.get('/api/exams/:exam_id/reports', requireInstructor, async (req, res) => {
         res.status(500).json({ error: err.message });
     }
 });
-
 
 // Socket IO Real-Time
 io.on('connection', (socket) => {
