@@ -19,7 +19,7 @@ async function createFolder(folderName, parentFolderId) {
     try {
         const drive = getDriveClient();
         const response = await drive.files.create({
-            resource: {
+            requestBody: {
                 name: folderName,
                 mimeType: 'application/vnd.google-apps.folder',
                 parents: parentFolderId ? [parentFolderId] : []
@@ -47,7 +47,7 @@ async function uploadVideoChunk(folderId, fileName, buffer, mimeType = 'video/we
         const bufferStream = stream.Readable.from(buffer);
 
         const response = await drive.files.create({
-            resource: {
+            requestBody: {
                 name: fileName,
                 parents: [folderId]
             },
