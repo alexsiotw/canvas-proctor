@@ -82,17 +82,25 @@ app.post('/lti/launch', (req, res) => {
         const roles = req.body.roles || '';
         const isInstructor = roles.includes('Instructor') || roles.includes('Administrator') || roles.includes('urn:lti:role:ims/lis/Instructor');
 
+        const sessionToken = uuidv4();
         req.session.lti = {
             userId,
             canvasCourseId,
             userName,
-            role: isInstructor ? 'instructor' : 'student'
+            role: isInstructor ? 'instructor' : 'student',
+            sessionToken
         };
+
+        // Persist session to DB for SEB handover
+        pool.query(`
+            INSERT INTO lti_sessions (session_token, canvas_user_id, canvas_course_id, user_name, user_role)
+            VALUES ($1, $2, $3, $4, $5)
+        `, [sessionToken, userId, canvasCourseId, userName, req.session.lti.role]).catch(err => console.error('Failed to persist LTI session', err));
 
         if (isInstructor) {
             res.redirect('/index.html');
         } else {
-            res.redirect('/student.html');
+            res.redirect(`/student.html?token=${sessionToken}`);
         }
     });
 });
@@ -107,7 +115,30 @@ app.get('/dev-student', (req, res) => {
     res.redirect('/student.html');
 });
 
-function requireAuth(req, res, next) {
+async function requireAuth(req, res, next) {
+    if (req.session.lti) return next();
+
+    // Check for handover token (e.g. from SEB)
+    const token = req.query.token || req.body.token;
+    if (token) {
+        try {
+            const result = await pool.query('SELECT * FROM lti_sessions WHERE session_token = $1 AND expires_at > NOW()', [token]);
+            if (result.rows.length > 0) {
+                const s = result.rows[0];
+                req.session.lti = {
+                    userId: s.canvas_user_id,
+                    canvasCourseId: s.canvas_course_id,
+                    userName: s.user_name,
+                    role: s.user_role,
+                    sessionToken: s.session_token
+                };
+                return next();
+            }
+        } catch (err) {
+            console.error('Session restoration failed', err);
+        }
+    }
+
     if (!req.session.lti) return res.status(401).json({ error: 'Not authenticated. Launch via LTI.' });
     next();
 }
@@ -414,6 +445,53 @@ app.get('/api/exams/:exam_id/reports', requireInstructor, async (req, res) => {
         res.json(report);
     } catch (err) {
         res.status(500).json({ error: err.message });
+    }
+});
+
+// API: Generate Dynamic SEB Config
+app.get('/api/seb/config/:token', async (req, res) => {
+    const { token } = req.params;
+    try {
+        // Verify token exists (basic sanity check)
+        const result = await pool.query('SELECT * FROM lti_sessions WHERE session_token = $1', [token]);
+        if (result.rows.length === 0) return res.status(404).send('Invalid or expired session');
+
+        const baseUrl = process.env.BASE_URL || `${req.protocol}://${req.get('host')}`;
+        const startUrl = `${baseUrl}/student.html?token=${token}`;
+
+        // SEB Config XML (Plist) - Unlocked for multi-tab/window as requested
+        const sebConfig = `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>URLFilterEnable</key>
+	<false/>
+	<key>allowDisplayMirroring</key>
+	<true/>
+	<key>browserWindowAllowNewTab</key>
+	<true/>
+	<key>browserWindowAllowNewWindow</key>
+	<true/>
+	<key>browserWindowShowAddressBar</key>
+	<true/>
+	<key>browserWindowShowNavigationButtons</key>
+	<true/>
+	<key>newBrowserWindowByLinkPolicy</key>
+	<integer>1</integer>
+	<key>prohibitMultitasking</key>
+	<false/>
+	<key>showTaskBar</key>
+	<true/>
+	<key>startURL</key>
+	<string>${startUrl}</string>
+</dict>
+</plist>`;
+
+        res.setHeader('Content-Type', 'application/seb');
+        res.setHeader('Content-Disposition', `attachment; filename="ProctorExam_${token.substring(0,8)}.seb"`);
+        res.send(sebConfig);
+    } catch (err) {
+        res.status(500).send(err.message);
     }
 });
 

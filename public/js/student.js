@@ -8,6 +8,7 @@ let activeUploads = 0;
 
 let videoStream = null;
 let screenStream = null;
+let sessionToken = new URLSearchParams(window.location.search).get('token');
 
 // Wait for explicit verification
 async function verifyExamCode() {
@@ -19,7 +20,7 @@ async function verifyExamCode() {
     try {
         const res = await fetch('/api/exams/verify-code', {
             method: 'POST', headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ exam_code: code })
+            body: JSON.stringify({ exam_code: code, token: sessionToken })
         });
         
         const data = await res.json();
@@ -148,24 +149,34 @@ function showSEBBlocker() {
                 This exam requires the Safe Exam Browser to ensure a secure testing environment. 
                 You are currently using a standard browser.
             </p>
-            <div style="background: #fee2e2; border: 1px solid #fecaca; padding: 15px; border-radius: 8px; margin-bottom: 20px; text-align: left;">
-                <h3 style="margin-top:0; font-size:14px; color: #991b1b;">How to proceed:</h3>
-                <ol style="font-size:13px; color: #991b1b; padding-left: 20px;">
-                    <li>Ensure Safe Exam Browser is installed on your computer.</li>
-                    <li>Click the button below to launch this exam in SEB.</li>
-                    <li>Or copy the access code <strong>${examConfig.exam_code}</strong> and enter it directly in SEB.</li>
+            <div style="background: #eef2ff; border: 1px solid #c7d2fe; padding: 15px; border-radius: 8px; margin-bottom: 20px; text-align: left;">
+                <h3 style="margin-top:0; font-size:14px; color: #4338ca;">Unlocked Environment:</h3>
+                <p style="font-size:13px; color: #4338ca; margin-bottom:10px;">
+                    Download the configuration file below. It will launch SEB with <strong>Multiple Tabs</strong> and <strong>New Windows</strong> enabled so you can use Google Meet or other resources.
+                </p>
+                <ol style="font-size:13px; color: #4338ca; padding-left: 20px;">
+                    <li>Ensure Safe Exam Browser is installed.</li>
+                    <li>Click <strong>Download Secure Config</strong> below.</li>
+                    <li>Open the downloaded file to launch the exam securely.</li>
                 </ol>
             </div>
-            <button class="btn btn-primary" style="width: 100%; justify-content: center; padding: 14px; font-size: 16px;" onclick="launchSEB()">Launch Safe Exam Browser</button>
+            <button class="btn btn-primary" style="width: 100%; justify-content: center; padding: 14px; font-size: 16px;" onclick="downloadSEBConfig()">Download Secure Config & Launch</button>
             <button class="btn btn-secondary" style="width: 100%; justify-content: center; margin-top: 10px; border:none; background:none; color:var(--text-secondary);" onclick="location.reload()">Back to Code Entry</button>
         </div>
     `;
 }
 
+function downloadSEBConfig() {
+    if (!sessionToken) {
+        alert('Session lost. Please re-launch from Canvas.');
+        return;
+    }
+    window.location.href = `/api/seb/config/${sessionToken}`;
+}
+
 function launchSEB() {
     const protocol = window.location.protocol === 'https:' ? 'sebs' : 'seb';
-    // Construct the SEB URL. We use the current URL but change the protocol.
-    const sebUrl = `${protocol}://${window.location.host}${window.location.pathname}`;
+    const sebUrl = `${protocol}://${window.location.host}${window.location.pathname}?token=${sessionToken}`;
     window.location.href = sebUrl;
 }
 
