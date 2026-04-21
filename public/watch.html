@@ -15,9 +15,10 @@
     <h1>Exam Session Playback Vault</h1>
     <p id="status">Establishing secure database handshake...</p>
     
-    <video id="player" controls></video>
+    <video id="player" controls poster="/css/loading.gif"></video>
     
     <div class="controls">
+        <button id="btn-download" class="btn" style="background:var(--primary); color:white; display:none;" onclick="downloadRaw()">⬇️ Download Raw .webm</button>
         <button class="btn" onclick="window.close()" style="background:var(--danger); color:white;">Exit Player</button>
     </div>
 
@@ -26,7 +27,13 @@
         const sessionId = urlParams.get('session');
         const video = document.getElementById('player');
         const status = document.getElementById('status');
+        let currentBlob = null;
         
+        video.onerror = () => {
+            const error = video.error;
+            status.innerText = `Hardware Decoding Error (${error.code}): ${error.message}. Please use the Download button below.`;
+        };
+
         async function loadVideo() {
             try {
                 if(!sessionId) throw new Error("No session ID specified.");
@@ -43,7 +50,6 @@
                 
                 status.innerText = `Aggregating ${data.chunks.length} raw baseline fragments...`;
                 
-                // Aggressively map the base64 chunks directly back into native OS memory buffers to stitch them perfectly.
                 const binaryChunks = [];
                 for(let b64 of data.chunks) {
                     try {
@@ -53,16 +59,38 @@
                         binaryChunks.push(new Uint8Array(buffer));
                     } catch (decodeErr) {
                         console.error("Chunk decode failed", decodeErr);
-                        // Skip corrupted chunks instead of crashing the whole player
                     }
                 }
                 
-                const masterBlob = new Blob(binaryChunks, { type: 'video/webm' });
-                video.src = URL.createObjectURL(masterBlob);
-                status.innerText = `Hardware decoding successful. Stitched File Size: ${(masterBlob.size / 1024 / 1024).toFixed(2)} MB.`;
+                // Use explicit type with codecs to help the browser parse the concatenated stream
+                currentBlob = new Blob(binaryChunks, { type: 'video/webm; codecs="vp8, opus"' });
+                video.src = URL.createObjectURL(currentBlob);
+                
+                document.getElementById('btn-download').style.display = 'inline-block';
+                status.innerText = `Virtual stream compiled. Stitched File Size: ${(currentBlob.size / 1024 / 1024).toFixed(2)} MB.`;
+                
+                // Attempt to prime the hardware decoder
+                video.onloadedmetadata = () => {
+                    if (video.duration === Infinity) {
+                        status.innerText += " (Seeking enabled to fix duration)";
+                        video.currentTime = 1e101;
+                        video.ontimeupdate = function() {
+                            this.ontimeupdate = () => {};
+                            video.currentTime = 0;
+                        };
+                    }
+                };
             } catch(e) {
                 status.innerText = 'Critical Failure: ' + e.message;
             }
+        }
+
+        function downloadRaw() {
+            if (!currentBlob) return;
+            const a = document.createElement('a');
+            a.href = URL.createObjectURL(currentBlob);
+            a.download = `Exam_Session_${sessionId}.webm`;
+            a.click();
         }
         
         loadVideo();
