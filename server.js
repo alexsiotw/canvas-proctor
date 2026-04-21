@@ -456,6 +456,7 @@ app.get('/api/seb/config/:token/:filename?', async (req, res) => {
         const result = await pool.query('SELECT * FROM lti_sessions WHERE session_token = $1', [token]);
         if (result.rows.length === 0) return res.status(404).send('Invalid or expired session');
 
+        const baseUrl = process.env.BASE_URL || `${req.protocol}://${req.get('host')}`;
         const exam_code = req.query.exam_code || '';
         let startUrl = `${baseUrl}/student.html?token=${token}&seb=true`;
         if (exam_code) startUrl += `&exam_code=${exam_code}`;
