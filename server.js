@@ -131,12 +131,12 @@ app.get('/api/exams', requireInstructor, async (req, res) => {
 app.post('/api/exams', requireInstructor, async (req, res) => {
     try {
         const { canvasCourseId } = req.session.lti;
-        const { title, canvas_quiz_url, require_mic, require_camera, require_screen, disable_right_click, require_fullscreen, max_attempts, exam_code } = req.body;
+        const { title, canvas_quiz_url, require_mic, require_camera, require_screen, disable_right_click, require_fullscreen, require_seb, max_attempts, exam_code } = req.body;
         
         const result = await pool.query(`
-            INSERT INTO exams (canvas_course_id, title, canvas_quiz_url, require_mic, require_camera, require_screen, disable_right_click, require_fullscreen, max_attempts, exam_code, is_open)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, false) RETURNING *
-        `, [canvasCourseId, title, canvas_quiz_url, require_mic, require_camera, require_screen, disable_right_click, require_fullscreen, max_attempts || 1, exam_code]);
+            INSERT INTO exams (canvas_course_id, title, canvas_quiz_url, require_mic, require_camera, require_screen, disable_right_click, require_fullscreen, require_seb, max_attempts, exam_code, is_open)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, false) RETURNING *
+        `, [canvasCourseId, title, canvas_quiz_url, require_mic, require_camera, require_screen, disable_right_click, require_fullscreen, require_seb || false, max_attempts || 1, exam_code]);
         
         res.json(result.rows[0]);
     } catch (err) {

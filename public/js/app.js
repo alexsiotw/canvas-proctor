@@ -97,7 +97,7 @@ function renderExams() {
                     <div style="margin-top: 10px; font-weight: bold; font-size: 14px; background: #eef2ff; color: #4338ca; padding: 5px 10px; border-radius: 4px; display: inline-block;">Code: ${ex.exam_code}</div>
                     <div style="font-size: 12px; color: var(--text-secondary); margin-top: 8px;">
                         <div>Max Attempts: ${ex.max_attempts || 1}</div>
-                        <div>📷 Camera: ${ex.require_camera ? 'Yes' : 'No'} | 🎤 Mic: ${ex.require_mic ? 'Yes' : 'No'} | 💻 Screen: ${ex.require_screen ? 'Yes' : 'No'}</div>
+                        <div>📷 Camera: ${ex.require_camera ? 'Yes' : 'No'} | 🎤 Mic: ${ex.require_mic ? 'Yes' : 'No'} | 💻 Screen: ${ex.require_screen ? 'Yes' : 'No'} | 🛡️ SEB: ${ex.require_seb ? 'Yes' : 'No'}</div>
                     </div>
                 </div>
             `;
@@ -328,8 +328,11 @@ function showCreateExamModal() {
             <label class="form-check" style="margin-bottom: 8px;">
                 <input type="checkbox" id="chk-rc" checked> Disable Right Click / Tab Switches
             </label>
-            <label class="form-check">
+            <label class="form-check" style="margin-bottom: 8px;">
                 <input type="checkbox" id="chk-fs" checked> Enforce Fullscreen Mode
+            </label>
+            <label class="form-check">
+                <input type="checkbox" id="chk-seb"> Require Safe Exam Browser
             </label>
         </div>
         <div style="margin-top: 24px; text-align: right;">
@@ -352,7 +355,8 @@ async function saveExam() {
         require_mic: document.getElementById('chk-mic').checked,
         require_screen: document.getElementById('chk-screen').checked,
         disable_right_click: document.getElementById('chk-rc').checked,
-        require_fullscreen: document.getElementById('chk-fs').checked
+        require_fullscreen: document.getElementById('chk-fs').checked,
+        require_seb: document.getElementById('chk-seb').checked
     };
 
     if(!payload.title || !payload.canvas_quiz_url) return alert('Fill all fields');

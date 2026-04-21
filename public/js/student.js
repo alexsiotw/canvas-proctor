@@ -43,11 +43,18 @@ function renderRequirements() {
     if (examConfig.require_mic) reqHtml += '<li>🎤 Microphone Access Required</li>';
     if (examConfig.require_screen) reqHtml += '<li>💻 Screen Sharing (Entire Screen) Required</li>';
     if (examConfig.require_fullscreen) reqHtml += '<li>🔲 Fullscreen Mode will be enforced</li>';
+    if (examConfig.require_seb) reqHtml += '<li>🛡️ Safe Exam Browser Required</li>';
     
     document.getElementById('requirements-list').innerHTML = reqHtml;
 }
 
 async function startPreFlight() {
+    // Check SEB requirement first
+    if (examConfig.require_seb && !isSEB()) {
+        showSEBBlocker();
+        return;
+    }
+
     const errorMsg = document.getElementById('error-msg');
     errorMsg.style.display = 'none';
     
@@ -127,6 +134,39 @@ async function startPreFlight() {
         errorMsg.innerText = err.message || err.name;
         errorMsg.style.display = 'block';
     }
+}
+
+function isSEB() {
+    return navigator.userAgent.includes('SafeExamBrowser');
+}
+
+function showSEBBlocker() {
+    document.getElementById('setup-container').innerHTML = `
+        <div class="check-card">
+            <h1 style="color:var(--danger)">🛡️ Safe Exam Browser Required</h1>
+            <p style="color: var(--text-secondary); margin-bottom: 20px;">
+                This exam requires the Safe Exam Browser to ensure a secure testing environment. 
+                You are currently using a standard browser.
+            </p>
+            <div style="background: #fee2e2; border: 1px solid #fecaca; padding: 15px; border-radius: 8px; margin-bottom: 20px; text-align: left;">
+                <h3 style="margin-top:0; font-size:14px; color: #991b1b;">How to proceed:</h3>
+                <ol style="font-size:13px; color: #991b1b; padding-left: 20px;">
+                    <li>Ensure Safe Exam Browser is installed on your computer.</li>
+                    <li>Click the button below to launch this exam in SEB.</li>
+                    <li>Or copy the access code <strong>${examConfig.exam_code}</strong> and enter it directly in SEB.</li>
+                </ol>
+            </div>
+            <button class="btn btn-primary" style="width: 100%; justify-content: center; padding: 14px; font-size: 16px;" onclick="launchSEB()">Launch Safe Exam Browser</button>
+            <button class="btn btn-secondary" style="width: 100%; justify-content: center; margin-top: 10px; border:none; background:none; color:var(--text-secondary);" onclick="location.reload()">Back to Code Entry</button>
+        </div>
+    `;
+}
+
+function launchSEB() {
+    const protocol = window.location.protocol === 'https:' ? 'sebs' : 'seb';
+    // Construct the SEB URL. We use the current URL but change the protocol.
+    const sebUrl = `${protocol}://${window.location.host}${window.location.pathname}`;
+    window.location.href = sebUrl;
 }
 
 function setupRecording() {

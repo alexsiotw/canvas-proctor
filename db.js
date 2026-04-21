@@ -25,6 +25,7 @@ async function initDatabase() {
         disable_right_click BOOLEAN DEFAULT true,
         require_fullscreen BOOLEAN DEFAULT true,
         is_open BOOLEAN DEFAULT false,
+        require_seb BOOLEAN DEFAULT false,
         created_at TIMESTAMP DEFAULT NOW(),
         updated_at TIMESTAMP DEFAULT NOW()
       );
@@ -85,6 +86,7 @@ async function initDatabase() {
       
       -- Force add missing columns onto existing production tables implicitly without crashing
       ALTER TABLE exams ADD COLUMN IF NOT EXISTS is_open BOOLEAN DEFAULT false;
+      ALTER TABLE exams ADD COLUMN IF NOT EXISTS require_seb BOOLEAN DEFAULT false;
       ALTER TABLE exam_sessions ADD COLUMN IF NOT EXISTS video_archived BOOLEAN DEFAULT false;
     `);
     console.log('Database tables initialized successfully');
