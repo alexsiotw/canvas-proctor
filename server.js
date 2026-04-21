@@ -449,7 +449,7 @@ app.get('/api/exams/:exam_id/reports', requireInstructor, async (req, res) => {
 });
 
 // API: Generate Dynamic SEB Config
-app.get('/api/seb/config/:token', async (req, res) => {
+app.get('/api/seb/config/:token/:filename?', async (req, res) => {
     const { token } = req.params;
     try {
         // Verify token exists (basic sanity check)

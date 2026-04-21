@@ -190,7 +190,7 @@ function launchSEB() {
     }
     const protocol = window.location.protocol === 'https:' ? 'sebs' : 'seb';
     // Point to the CONFIG endpoint specifically to ensure settings are applied
-    const sebUrl = `${protocol}://${window.location.host}/api/seb/config/${sessionToken}`;
+    const sebUrl = `${protocol}://${window.location.host}/api/seb/config/${sessionToken}/config.seb`;
     window.location.href = sebUrl;
 }
 
