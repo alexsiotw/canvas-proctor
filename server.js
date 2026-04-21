@@ -459,8 +459,27 @@ app.get('/api/seb/config/:token', async (req, res) => {
         const baseUrl = process.env.BASE_URL || `${req.protocol}://${req.get('host')}`;
         const startUrl = `${baseUrl}/student.html?token=${token}`;
 
-        // SEB Config XML (Plist) - Unlocked for multi-tab/window as requested
-        const sebConfig = `<?xml version="1.0" encoding="UTF-8"?>
+        let sebConfig = '';
+        const templatePath = path.join(__dirname, 'public', 'config.seb');
+
+        if (fs.existsSync(templatePath)) {
+            // Use User-provided template
+            sebConfig = fs.readFileSync(templatePath, 'utf8');
+            // Dynamically inject the startURL with the token
+            // We look for the startURL key and replace the following <string> value
+            const startUrlRegex = /(<key>startURL<\/key>\s*<string>)([^<]*)(<\/string>)/;
+            if (startUrlRegex.test(sebConfig)) {
+                sebConfig = sebConfig.replace(startUrlRegex, `$1${startUrl}$3`);
+            } else {
+                // If regex fails (unlikely in valid plist), just append it to the dict if possible or fallback
+                // For safety, if we can't inject, tell the dev
+                console.log('Template exists but startURL key not found or misformatted. Using fallback.');
+            }
+        }
+
+        if (!sebConfig) {
+            // Sane Default Fallback (as previously implemented)
+            sebConfig = `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
@@ -486,6 +505,7 @@ app.get('/api/seb/config/:token', async (req, res) => {
 	<string>${startUrl}</string>
 </dict>
 </plist>`;
+        }
 
         res.setHeader('Content-Type', 'application/seb');
         res.setHeader('Content-Disposition', `attachment; filename="ProctorExam_${token.substring(0,8)}.seb"`);

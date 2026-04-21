@@ -138,7 +138,8 @@ async function startPreFlight() {
 }
 
 function isSEB() {
-    return navigator.userAgent.includes('SafeExamBrowser');
+    // If we have a token in the URL, it's a very strong indicator we've had a successful handover
+    return navigator.userAgent.includes('SafeExamBrowser') || !!sessionToken;
 }
 
 function showSEBBlocker() {
@@ -152,16 +153,20 @@ function showSEBBlocker() {
             <div style="background: #eef2ff; border: 1px solid #c7d2fe; padding: 15px; border-radius: 8px; margin-bottom: 20px; text-align: left;">
                 <h3 style="margin-top:0; font-size:14px; color: #4338ca;">Unlocked Environment:</h3>
                 <p style="font-size:13px; color: #4338ca; margin-bottom:10px;">
-                    Download the configuration file below. It will launch SEB with <strong>Multiple Tabs</strong> and <strong>New Windows</strong> enabled so you can use Google Meet or other resources.
+                    Click the button below to <strong>Launch Securely</strong>. It will open SEB with <strong>Multiple Tabs</strong> and <strong>New Windows</strong> enabled so you can use Google Meet or other resources.
                 </p>
                 <ol style="font-size:13px; color: #4338ca; padding-left: 20px;">
                     <li>Ensure Safe Exam Browser is installed.</li>
-                    <li>Click <strong>Download Secure Config</strong> below.</li>
-                    <li>Open the downloaded file to launch the exam securely.</li>
+                    <li>Click <strong>Launch Securely</strong> below.</li>
+                    <li>If prompted, allow the browser to open "Safe Exam Browser".</li>
                 </ol>
             </div>
-            <button class="btn btn-primary" style="width: 100%; justify-content: center; padding: 14px; font-size: 16px;" onclick="downloadSEBConfig()">Download Secure Config & Launch</button>
+            <button class="btn btn-primary" style="width: 100%; justify-content: center; padding: 14px; font-size: 16px;" onclick="downloadSEBConfig()">Launch Securely in SEB</button>
             <button class="btn btn-secondary" style="width: 100%; justify-content: center; margin-top: 10px; border:none; background:none; color:var(--text-secondary);" onclick="location.reload()">Back to Code Entry</button>
+            
+            <p style="font-size:11px; color:var(--text-muted); margin-top:15px;">
+                Trouble launching? <a href="javascript:void(0)" onclick="downloadSEBConfig()" style="color:var(--primary)">Download config file manually</a>
+            </p>
         </div>
     `;
 }
