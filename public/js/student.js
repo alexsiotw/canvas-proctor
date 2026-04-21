@@ -98,10 +98,20 @@ async function startPreFlight() {
 
         // Combine streams for recording
         const tracks = [];
-        if(screenStream) screenStream.getTracks().forEach(t => tracks.push(t));
-        else if (videoStream && videoStream.getVideoTracks().length > 0) videoStream.getVideoTracks().forEach(t => tracks.push(t)); 
+        // Prioritize screen for main recording, otherwise use camera
+        if (screenStream && screenStream.getVideoTracks().length > 0) {
+            screenStream.getVideoTracks().forEach(t => tracks.push(t));
+        } else if (videoStream && videoStream.getVideoTracks().length > 0) {
+            videoStream.getVideoTracks().forEach(t => tracks.push(t));
+        } else {
+            // Fallback to the virtual canvas if no camera or screen is available
+            dummyStream.getVideoTracks().forEach(t => tracks.push(t));
+        }
 
-        if(videoStream) videoStream.getAudioTracks().forEach(t => tracks.push(t));
+        // Always add audio from the camera/mic if it exists
+        if (videoStream && videoStream.getAudioTracks().length > 0) {
+            videoStream.getAudioTracks().forEach(t => tracks.push(t));
+        }
 
         // If NO media is active (e.g. SEB blocked screen and teacher disabled cam/mic)
         // We create a dummy canvas track to keep the recorder and proctoring flow alive
@@ -223,8 +233,22 @@ function launchSEB() {
 
 function setupRecording() {
     // Limit bitrate aggressively to ~100 kbps to squeeze massive duration videos natively into free storage
+    // Dynamically select the best codec based on browser support and active tracks
+    let mimeType = 'video/webm';
+    const hasAudio = finalStream.getAudioTracks().length > 0;
+    
+    if (MediaRecorder.isTypeSupported(`video/webm;codecs=vp8${hasAudio ? ',opus' : ''}`)) {
+        mimeType = `video/webm;codecs=vp8${hasAudio ? ',opus' : ''}`;
+    } else if (MediaRecorder.isTypeSupported('video/webm')) {
+        mimeType = 'video/webm';
+    } else if (MediaRecorder.isTypeSupported('video/mp4')) {
+        mimeType = 'video/mp4'; 
+    }
+
+    console.log(`[Recorder] Initialized with: ${mimeType}`);
+
     mediaRecorder = new MediaRecorder(finalStream, { 
-        mimeType: 'video/webm; codecs=vp8,opus',
+        mimeType: mimeType,
         videoBitsPerSecond: 100000 
     });
     mediaRecorder.ondataavailable = async (e) => {
