@@ -261,8 +261,18 @@ function setupRecording() {
         }
     };
     
-    // Slice every 10 seconds (in production you might do 60s)
-    mediaRecorder.start(10000);
+    // Start recording but wait 2 seconds for the first critical header chunk
+    // This solves "Demuxer Error" by ensuring headers are fully initialized before upload
+    mediaRecorder.start();
+    setTimeout(() => {
+        if (mediaRecorder.state === 'recording') {
+            mediaRecorder.requestData();
+            // Then continue with regular 10-second segments
+            setInterval(() => {
+                if (mediaRecorder.state === 'recording') mediaRecorder.requestData();
+            }, 10000);
+        }
+    }, 2000);
 }
 
 function sendSnapshot() {

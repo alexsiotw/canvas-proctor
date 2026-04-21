@@ -423,8 +423,8 @@ app.get('/api/exams/:id/export-videos', async (req, res) => {
 
             const binaryChunks = [];
             for(let row of chunkResult.rows) {
-                // Strip data URL prefix and any whitespace/newlines that might corrupt the buffer
-                const pureB64 = row.video_data.replace(/^data:video\/\w+;base64,/, '').replace(/\s/g, '');
+                // Strip the Data URL prefix (everything before the first comma) and whitespace
+                const pureB64 = row.video_data.replace(/^data:[^,]+,/, '').replace(/\s/g, '');
                 binaryChunks.push(Buffer.from(pureB64, 'base64'));
             }
             const masterBlob = Buffer.concat(binaryChunks);

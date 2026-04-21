@@ -53,7 +53,9 @@
                 const binaryChunks = [];
                 for(let b64 of data.chunks) {
                     try {
-                        const dataUrl = b64.startsWith('data:') ? b64 : `data:video/webm;base64,${b64}`;
+                        // Strip the prefix if it exists to ensure we have a clean data URL or base64 string
+                        const cleanB64 = b64.replace(/^data:[^,]+,/, '').replace(/\s/g, '');
+                        const dataUrl = `data:video/webm;base64,${cleanB64}`;
                         const response = await fetch(dataUrl);
                         const buffer = await response.arrayBuffer();
                         binaryChunks.push(new Uint8Array(buffer));
