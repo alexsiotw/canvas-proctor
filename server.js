@@ -508,7 +508,6 @@ app.get('/api/seb/config/:token/:filename?', async (req, res) => {
         }
 
         res.setHeader('Content-Type', 'application/seb');
-        res.setHeader('Content-Disposition', `attachment; filename="ProctorExam_${token.substring(0,8)}.seb"`);
         res.send(sebConfig);
     } catch (err) {
         res.status(500).send(err.message);
