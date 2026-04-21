@@ -8,7 +8,6 @@ let activeUploads = 0;
 
 let videoStream = null;
 let screenStream = null;
-let screenStream = null;
 let urlParams = new URLSearchParams(window.location.search);
 let sessionToken = urlParams.get('token');
 let isSebParam = urlParams.get('seb') === 'true';
