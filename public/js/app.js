@@ -86,7 +86,10 @@ function renderExams() {
         exams.forEach(ex => {
             html += `
                 <div class="card session-card" style="position:relative; cursor:pointer;" onclick="loadExamDashboard(${ex.id})">
-                    <button class="btn" style="position:absolute; top: 15px; right: 15px; background: var(--danger); color: white; padding: 4px 8px; font-size: 12px; border:none; border-radius: 4px;" onclick="event.stopPropagation(); deleteExam(${ex.id})">Delete</button>
+                    <div style="position:absolute; top: 15px; right: 15px; display: flex; gap: 5px;">
+                        <button class="btn" style="background: var(--primary); color: white; padding: 4px 8px; font-size: 12px; border:none; border-radius: 4px;" onclick="event.stopPropagation(); showCreateExamModal(${ex.id})">Edit</button>
+                        <button class="btn" style="background: var(--danger); color: white; padding: 4px 8px; font-size: 12px; border:none; border-radius: 4px;" onclick="event.stopPropagation(); deleteExam(${ex.id})">Delete</button>
+                    </div>
                     <div style="display:flex; align-items:center; gap:8px; margin-bottom: 4px;">
                         <div class="session-date">${new Date(ex.created_at).toLocaleDateString()}</div>
                         <span style="font-size:10px; padding: 2px 6px; border-radius: 10px; font-weight:bold; text-transform:uppercase; ${ex.is_open ? 'background:var(--success-bg); color:var(--success);' : 'background:var(--danger-bg); color:var(--danger);'}">
@@ -130,6 +133,7 @@ function loadExamDashboard(examId) {
                         onclick="toggleExamStatus(${exam.id})">
                         ${exam.is_open ? '🔓 Exam is OPEN' : '🔒 Exam is CLOSED'}
                     </button>
+                    <button class="btn btn-secondary" style="padding: 6px 14px; font-size: 13px; border-radius: 20px; font-weight: bold;" onclick="showCreateExamModal(${exam.id})">⚙️ Edit Settings</button>
                 </div>
                 <p class="page-subtitle">Now Managing Exam Code: <strong style="color:var(--primary)">${exam.exam_code}</strong></p>
             </div>
@@ -289,16 +293,17 @@ async function fetchReportData(examId) {
 }
 
 // EXAM GENERATION & DELETION MODALS
-function showCreateExamModal() {
-    const defaultCode = Math.random().toString(36).substring(2, 8).toUpperCase();
+function showCreateExamModal(examId = null) {
+    const exam = examId ? exams.find(e => e.id == examId) : null;
+    const defaultCode = exam ? exam.exam_code : Math.random().toString(36).substring(2, 8).toUpperCase();
     const html = `
         <div class="modal-header">
-            <h2 class="modal-title">Link Canvas Quiz</h2>
+            <h2 class="modal-title">${exam ? 'Edit Exam Settings' : 'Link Canvas Quiz'}</h2>
             <button class="modal-close" onclick="closeModal()">×</button>
         </div>
         <div class="form-group">
             <label class="form-label">Exam Title</label>
-            <input type="text" id="exam-title" class="form-input" placeholder="e.g. Midterm Physics">
+            <input type="text" id="exam-title" class="form-input" placeholder="e.g. Midterm Physics" value="${exam ? exam.title : ''}">
         </div>
         <div class="form-group" style="display: flex; gap: 10px;">
             <div style="flex:1;">
@@ -307,37 +312,37 @@ function showCreateExamModal() {
             </div>
             <div style="flex:1;">
                 <label class="form-label">Max Attempts</label>
-                <input type="number" id="max-attempts" class="form-input" value="1" min="1">
+                <input type="number" id="max-attempts" class="form-input" value="${exam ? exam.max_attempts : 1}" min="1">
             </div>
         </div>
         <div class="form-group">
             <label class="form-label">Canvas Quiz URL</label>
-            <input type="text" id="exam-url" class="form-input" placeholder="https://canvas.instructure.com/courses/1/quizzes/1">
+            <input type="text" id="exam-url" class="form-input" placeholder="https://canvas.instructure.com/courses/1/quizzes/1" value="${exam ? exam.canvas_quiz_url : ''}">
             <div class="form-hint">Paste the URL of the Canvas Quiz. Do NOT share this URL directly with students.</div>
         </div>
         <div style="margin-top: 20px;">
             <label class="form-check" style="margin-bottom: 8px;">
-                <input type="checkbox" id="chk-camera" checked> Require Web Camera
+                <input type="checkbox" id="chk-camera" ${!exam || exam.require_camera ? 'checked' : ''}> Require Web Camera
             </label>
             <label class="form-check" style="margin-bottom: 8px;">
-                <input type="checkbox" id="chk-mic" checked> Require Microphone
+                <input type="checkbox" id="chk-mic" ${!exam || exam.require_mic ? 'checked' : ''}> Require Microphone
             </label>
             <label class="form-check" style="margin-bottom: 8px;">
-                <input type="checkbox" id="chk-screen" checked> Require Screen Sharing (Entire Screen)
+                <input type="checkbox" id="chk-screen" ${!exam || exam.require_screen ? 'checked' : ''}> Require Screen Sharing (Entire Screen)
             </label>
             <label class="form-check" style="margin-bottom: 8px;">
-                <input type="checkbox" id="chk-rc" checked> Disable Right Click / Tab Switches
+                <input type="checkbox" id="chk-rc" ${!exam || exam.disable_right_click ? 'checked' : ''}> Disable Right Click / Tab Switches
             </label>
             <label class="form-check" style="margin-bottom: 8px;">
-                <input type="checkbox" id="chk-fs" checked> Enforce Fullscreen Mode
+                <input type="checkbox" id="chk-fs" ${!exam || exam.require_fullscreen ? 'checked' : ''}> Enforce Fullscreen Mode
             </label>
             <label class="form-check">
-                <input type="checkbox" id="chk-seb"> Require Safe Exam Browser
+                <input type="checkbox" id="chk-seb" ${exam && exam.require_seb ? 'checked' : ''}> Require Safe Exam Browser
             </label>
         </div>
         <div style="margin-top: 24px; text-align: right;">
             <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
-            <button class="btn btn-primary" onclick="saveExam()">Create</button>
+            <button class="btn btn-primary" onclick="saveExam(${examId})">${exam ? 'Save Changes' : 'Create'}</button>
         </div>
     `;
     
@@ -345,7 +350,7 @@ function showCreateExamModal() {
     document.getElementById('modal-overlay').classList.add('active');
 }
 
-async function saveExam() {
+async function saveExam(examId = null) {
     const payload = {
         title: document.getElementById('exam-title').value,
         canvas_quiz_url: document.getElementById('exam-url').value,
@@ -362,14 +367,24 @@ async function saveExam() {
     if(!payload.title || !payload.canvas_quiz_url) return alert('Fill all fields');
 
     try {
-        const res = await fetch('/api/exams', {
-            method: 'POST', headers: { 'Content-Type': 'application/json' },
+        const url = examId ? `/api/exams/${examId}` : '/api/exams';
+        const method = examId ? 'PATCH' : 'POST';
+        
+        const res = await fetch(url, {
+            method: method, headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(payload)
         });
+        
         if(res.ok) {
             closeModal();
             loadExams();
-            showToast('Exam configured securely!', 'success');
+            showToast(examId ? 'Settings updated!' : 'Exam configured securely!', 'success');
+            
+            // If we are in the dashboard, we might want to stay there
+            if (currentLiveExamId && examId == currentLiveExamId) {
+                // The exams array is reloaded by loadExams, but we need to re-render the current view
+                setTimeout(() => loadExamDashboard(currentLiveExamId), 500); 
+            }
         }
     } catch(err) {
         console.error(err);

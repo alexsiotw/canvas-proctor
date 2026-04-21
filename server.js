@@ -223,6 +223,39 @@ app.patch('/api/exams/:id/status', requireInstructor, async (req, res) => {
     }
 });
 
+// API: Update Exam Settings
+app.patch('/api/exams/:id', requireInstructor, async (req, res) => {
+    try {
+        const { id } = req.params;
+        const { canvasCourseId } = req.session.lti;
+        const { 
+            title, canvas_quiz_url, exam_code, max_attempts,
+            require_camera, require_mic, require_screen,
+            disable_right_click, require_fullscreen, require_seb
+        } = req.body;
+
+        const result = await pool.query(`
+            UPDATE exams SET 
+                title = $1, canvas_quiz_url = $2, exam_code = $3, max_attempts = $4,
+                require_camera = $5, require_mic = $6, require_screen = $7,
+                disable_right_click = $8, require_fullscreen = $9, require_seb = $10,
+                updated_at = NOW()
+            WHERE id = $11 AND canvas_course_id = $12
+            RETURNING *
+        `, [
+            title, canvas_quiz_url, exam_code, max_attempts,
+            require_camera, require_mic, require_screen,
+            disable_right_click, require_fullscreen, require_seb,
+            id, canvasCourseId
+        ]);
+
+        if (result.rows.length === 0) return res.status(404).json({ error: 'Exam not found' });
+        res.json(result.rows[0]);
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
 // API: Get Exam details (For Student entering / pre-flight)
 app.post('/api/exams/verify-code', requireAuth, async (req, res) => {
     try {
