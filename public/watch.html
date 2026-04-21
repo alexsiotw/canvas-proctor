@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <title>Proctor Gateway - Secure Video Playback</title>
-    <link rel="stylesheet" href="/css/style.css">
+    <link rel="stylesheet" href="/css/styles.css">
     <style>
         body { padding: 40px; text-align: center; background: #0f172a; color: white; }
         video { max-width: 100%; height: 75vh; border: 4px solid var(--border); border-radius: 12px; box-shadow: 0 10px 30px rgba(0,0,0,0.5); background: #000; }
@@ -31,7 +31,8 @@
         
         video.onerror = () => {
             const error = video.error;
-            status.innerText = `Hardware Decoding Error (${error.code}): ${error.message}. Please use the Download button below.`;
+            status.innerText = `Hardware Decoding Error (${error.code}): ${error.message}. Please use the Download button below and open locally in VLC.`;
+            status.style.color = "var(--danger)";
         };
 
         async function loadVideo() {
