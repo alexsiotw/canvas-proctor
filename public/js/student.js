@@ -126,7 +126,23 @@ async function startPreFlight() {
             console.log("No media selected or available. Started session with dummy track.");
         }
 
+        // Always add audio from the camera/mic if it exists
+        if (videoStream && videoStream.getAudioTracks().length > 0) {
+            videoStream.getAudioTracks().forEach(t => tracks.push(t));
+        }
+
+        // Ensure all gathered tracks are enabled and ready
+        tracks.forEach(track => {
+            track.enabled = true;
+            if (track.readyState === 'ended') console.warn(`[Media] Warning: Track ${track.label} is in 'ended' state.`);
+        });
+
         finalStream = new MediaStream(tracks);
+        
+        // Sync Guard: Wait for tracks to stabilize before allowing the recording to start later
+        await new Promise(resolve => setTimeout(resolve, 500));
+        
+        console.log(`[Media] Final stream synchronized with ${tracks.length} tracks.`);
         
         // Attach local video object for snapshot extraction (choose screen or camera)
         if(screenStream) {
@@ -232,24 +248,34 @@ function launchSEB() {
 }
 
 function setupRecording() {
-    // Limit bitrate aggressively to ~100 kbps to squeeze massive duration videos natively into free storage
-    // Dynamically select the best codec based on browser support and active tracks
+    // Dynamically select the most compatible codec for the current hardware/tracks
     let mimeType = 'video/webm';
     const hasAudio = finalStream.getAudioTracks().length > 0;
     
-    if (MediaRecorder.isTypeSupported(`video/webm;codecs=vp8${hasAudio ? ',opus' : ''}`)) {
-        mimeType = `video/webm;codecs=vp8${hasAudio ? ',opus' : ''}`;
-    } else if (MediaRecorder.isTypeSupported('video/webm')) {
-        mimeType = 'video/webm';
-    } else if (MediaRecorder.isTypeSupported('video/mp4')) {
-        mimeType = 'video/mp4'; 
+    // Priority List: H.264 is often more stable on Windows, VP8 is the WebM standard
+    const candidates = [
+        `video/webm;codecs=h264${hasAudio ? ',opus' : ''}`,
+        `video/webm;codecs=vp8${hasAudio ? ',opus' : ''}`,
+        `video/mp4;codecs=avc1${hasAudio ? '.42E01E,mp4a.40.2' : ''}`,
+        'video/webm',
+        'video/mp4'
+    ];
+
+    for (const candidate of candidates) {
+        if (MediaRecorder.isTypeSupported(candidate)) {
+            mimeType = candidate;
+            break;
+        }
     }
 
     console.log(`[Recorder] Initialized with: ${mimeType}`);
+    // Display the format to the student for debugging if needed
+    const statusEl = document.getElementById('status-msg');
+    if (statusEl) statusEl.innerText = `Recording Active (${mimeType.split(';')[0]})`;
 
     mediaRecorder = new MediaRecorder(finalStream, { 
         mimeType: mimeType,
-        videoBitsPerSecond: 100000 
+        videoBitsPerSecond: 150000 // Slightly higher bitrate for H.264 stability
     });
     mediaRecorder.ondataavailable = async (e) => {
         if (e.data && e.data.size > 0 && sessionInfo.id) {
