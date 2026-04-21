@@ -365,3 +365,13 @@ async function endExam() {
     document.getElementById('active-exam-container').innerHTML = '<h2>Exam Completed</h2><p style="color:var(--text-secondary);">Your recording has been saved securely to Google Drive. You may now close this window.</p>';
     document.getElementById('recording-indicator').style.display = 'none';
 }
+
+// Exit Handler: Attempt to save session if student quits SEB or closes browser
+window.addEventListener('beforeunload', (event) => {
+    if (sessionInfo && sessionInfo.id) {
+        const url = '/api/session/end';
+        const data = JSON.stringify({ exam_session_id: sessionInfo.id, exit_type: 'unexpected' });
+        const blob = new Blob([data], { type: 'application/json' });
+        navigator.sendBeacon(url, blob);
+    }
+});
