@@ -366,7 +366,7 @@ app.post('/api/session/upload-chunk', requireAuth, async (req, res) => {
     }
 });
 
-// API: Get Video Chunks for Playback
+// API: Get Video Chunks for Playback (Binary Stream)
 app.get('/api/session/video-playback/:session_id', requireInstructor, async (req, res) => {
     try {
         const { session_id } = req.params;
@@ -376,8 +376,24 @@ app.get('/api/session/video-playback/:session_id', requireInstructor, async (req
             ORDER BY chunk_index ASC
         `, [session_id]);
         
-        res.json({ chunks: chunkResults.rows.map(r => r.video_data) });
+        if (chunkResults.rows.length === 0) {
+            return res.status(404).json({ error: 'No video chunks found' });
+        }
+
+        const binaryChunks = [];
+        for(let row of chunkResults.rows) {
+            // Strip the Data URL prefix and whitespace
+            const pureB64 = row.video_data.replace(/^data:[^,]+,/, '').replace(/\s/g, '');
+            binaryChunks.push(Buffer.from(pureB64, 'base64'));
+        }
+        
+        const masterBuffer = Buffer.concat(binaryChunks);
+        
+        res.setHeader('Content-Type', 'video/webm');
+        res.setHeader('Content-Length', masterBuffer.length);
+        res.send(masterBuffer);
     } catch (err) {
+        console.error('Playback Error', err);
         res.status(500).json({ error: err.message });
     }
 });
