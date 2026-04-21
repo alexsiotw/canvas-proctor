@@ -46,11 +46,15 @@
                 // Aggressively map the base64 chunks directly back into native OS memory buffers to stitch them perfectly.
                 const binaryChunks = [];
                 for(let b64 of data.chunks) {
-                    const pureB64 = b64.split(',')[1] || b64;
-                    const byteStr = atob(pureB64);
-                    const buf = new Uint8Array(byteStr.length);
-                    for(let i=0; i<byteStr.length; i++) buf[i] = byteStr.charCodeAt(i);
-                    binaryChunks.push(buf);
+                    try {
+                        const dataUrl = b64.startsWith('data:') ? b64 : `data:video/webm;base64,${b64}`;
+                        const response = await fetch(dataUrl);
+                        const buffer = await response.arrayBuffer();
+                        binaryChunks.push(new Uint8Array(buffer));
+                    } catch (decodeErr) {
+                        console.error("Chunk decode failed", decodeErr);
+                        // Skip corrupted chunks instead of crashing the whole player
+                    }
                 }
                 
                 const masterBlob = new Blob(binaryChunks, { type: 'video/webm' });
