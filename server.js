@@ -457,7 +457,7 @@ app.get('/api/seb/config/:token/:filename?', async (req, res) => {
         if (result.rows.length === 0) return res.status(404).send('Invalid or expired session');
 
         const baseUrl = process.env.BASE_URL || `${req.protocol}://${req.get('host')}`;
-        const startUrl = `${baseUrl}/student.html?token=${token}&seb=true`;
+        const startUrl = `${baseUrl}/student.html?token=${token}&seb=true`.replace(/&/g, '&amp;');
 
         let sebConfig = '';
         const templatePath = path.join(__dirname, 'public', 'config.seb');
