@@ -8,7 +8,10 @@ let activeUploads = 0;
 
 let videoStream = null;
 let screenStream = null;
-let sessionToken = new URLSearchParams(window.location.search).get('token');
+let screenStream = null;
+let urlParams = new URLSearchParams(window.location.search);
+let sessionToken = urlParams.get('token');
+let isSebParam = urlParams.get('seb') === 'true';
 
 // Wait for explicit verification
 async function verifyExamCode() {
@@ -138,8 +141,10 @@ async function startPreFlight() {
 }
 
 function isSEB() {
-    // If we have a token in the URL, it's a very strong indicator we've had a successful handover
-    return navigator.userAgent.includes('SafeExamBrowser') || !!sessionToken;
+    // Check User Agent or our explicit URL flag
+    // We NO LONGER check for just !!sessionToken here because that was causing 
+    // loops/premature prompts in regular Chrome.
+    return navigator.userAgent.includes('SafeExamBrowser') || isSebParam;
 }
 
 function showSEBBlocker() {
