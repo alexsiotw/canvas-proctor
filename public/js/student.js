@@ -165,7 +165,7 @@ function showSEBBlocker() {
                     <li>If prompted, allow the browser to open "Safe Exam Browser".</li>
                 </ol>
             </div>
-            <button class="btn btn-primary" style="width: 100%; justify-content: center; padding: 14px; font-size: 16px;" onclick="downloadSEBConfig()">Launch Securely in SEB</button>
+            <button class="btn btn-primary" style="width: 100%; justify-content: center; padding: 14px; font-size: 16px;" onclick="launchSEB()">Launch Securely in SEB</button>
             <button class="btn btn-secondary" style="width: 100%; justify-content: center; margin-top: 10px; border:none; background:none; color:var(--text-secondary);" onclick="location.reload()">Back to Code Entry</button>
             
             <p style="font-size:11px; color:var(--text-muted); margin-top:15px;">
@@ -184,8 +184,13 @@ function downloadSEBConfig() {
 }
 
 function launchSEB() {
+    if (!sessionToken) {
+        alert('Session lost. Please re-launch from Canvas.');
+        return;
+    }
     const protocol = window.location.protocol === 'https:' ? 'sebs' : 'seb';
-    const sebUrl = `${protocol}://${window.location.host}${window.location.pathname}?token=${sessionToken}`;
+    // Point to the CONFIG endpoint specifically to ensure settings are applied
+    const sebUrl = `${protocol}://${window.location.host}/api/seb/config/${sessionToken}`;
     window.location.href = sebUrl;
 }
 
