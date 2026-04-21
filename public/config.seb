@@ -14,8 +14,10 @@
 	<true/>
 	<key>browserWindowShowNavigationButtons</key>
 	<true/>
+	<key>browserWindowShowTabBar</key>
+	<true/>
 	<key>newBrowserWindowByLinkPolicy</key>
-	<integer>1</integer>
+	<integer>2</integer>
 	<key>prohibitMultitasking</key>
 	<false/>
 	<key>showTaskBar</key>

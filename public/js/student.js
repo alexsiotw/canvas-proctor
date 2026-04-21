@@ -11,6 +11,14 @@ let screenStream = null;
 let urlParams = new URLSearchParams(window.location.search);
 let sessionToken = urlParams.get('token');
 let isSebParam = urlParams.get('seb') === 'true';
+let autoExamCode = urlParams.get('exam_code');
+
+window.addEventListener('load', () => {
+    if (autoExamCode && sessionToken) {
+        document.getElementById('access-code-input').value = autoExamCode;
+        verifyExamCode();
+    }
+});
 
 // Wait for explicit verification
 async function verifyExamCode() {
@@ -70,25 +78,43 @@ async function startPreFlight() {
         }
 
         if (examConfig.require_screen) {
-            screenStream = await navigator.mediaDevices.getDisplayMedia({
-                video: { cursor: "always", width: { max: 1024 }, height: { max: 768 }, frameRate: { max: 5 } },
-                audio: false
-            });
-            
-            // Basic check to ensure they shared entire screen (heuristic: surface/display surface)
-            const track = screenStream.getVideoTracks()[0];
-            const settings = track.getSettings();
-            if (settings.displaySurface && settings.displaySurface !== 'monitor') {
-                throw new Error("You must share your ENTIRE SCREEN, not just a window or tab.");
+            if (isSEB()) {
+                console.log("SEB detected: Skipping getDisplayMedia as it is blocked by SEB security policy.");
+                showToast("SEB blocks screen sharing, but your session is secured by the lockdown.");
+            } else {
+                screenStream = await navigator.mediaDevices.getDisplayMedia({
+                    video: { cursor: "always", width: { max: 1024 }, height: { max: 768 }, frameRate: { max: 5 } },
+                    audio: false
+                });
+                
+                // Basic check to ensure they shared entire screen (heuristic: surface/display surface)
+                const track = screenStream.getVideoTracks()[0];
+                const settings = track.getSettings();
+                if (settings.displaySurface && settings.displaySurface !== 'monitor') {
+                    throw new Error("You must share your ENTIRE SCREEN, not just a window or tab.");
+                }
             }
         }
 
         // Combine streams for recording
         const tracks = [];
         if(screenStream) screenStream.getTracks().forEach(t => tracks.push(t));
-        else if (videoStream) videoStream.getVideoTracks().forEach(t => tracks.push(t)); // fallback to camera if no screen
+        else if (videoStream && videoStream.getVideoTracks().length > 0) videoStream.getVideoTracks().forEach(t => tracks.push(t)); 
 
         if(videoStream) videoStream.getAudioTracks().forEach(t => tracks.push(t));
+
+        // If NO media is active (e.g. SEB blocked screen and teacher disabled cam/mic)
+        // We create a dummy canvas track to keep the recorder and proctoring flow alive
+        if (tracks.length === 0) {
+            const canvas = document.createElement('canvas');
+            canvas.width = 1; canvas.height = 1;
+            const ctx = canvas.getContext('2d');
+            ctx.fillStyle = "black";
+            ctx.fillRect(0,0,1,1);
+            const dummyStream = canvas.captureStream(1);
+            dummyStream.getTracks().forEach(t => tracks.push(t));
+            console.log("No media selected or available. Started session with dummy track.");
+        }
 
         finalStream = new MediaStream(tracks);
         
@@ -188,9 +214,10 @@ function launchSEB() {
         alert('Session lost. Please re-launch from Canvas.');
         return;
     }
+    const code = document.getElementById('access-code-input').value.trim();
     const protocol = window.location.protocol === 'https:' ? 'sebs' : 'seb';
-    // Point to the CONFIG endpoint specifically to ensure settings are applied
-    const sebUrl = `${protocol}://${window.location.host}/api/seb/config/${sessionToken}/config.seb`;
+    // Pass the exam_code into the config URL so the server can inject it into the SEB start URL
+    const sebUrl = `${protocol}://${window.location.host}/api/seb/config/${sessionToken}/config.seb${code ? '?exam_code=' + encodeURIComponent(code) : ''}`;
     window.location.href = sebUrl;
 }
 
