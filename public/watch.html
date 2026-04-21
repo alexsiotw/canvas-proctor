@@ -15,10 +15,11 @@
     <h1>Exam Session Playback Vault</h1>
     <p id="status">Establishing secure database handshake...</p>
     
-    <video id="player" controls poster="/css/loading.gif"></video>
+    <video id="player" controls autoplay poster="/css/loading.gif"></video>
     
     <div class="controls">
-        <button id="btn-download" class="btn" style="background:var(--primary); color:white; display:none;" onclick="downloadRaw()">⬇️ Download Raw .webm</button>
+        <div id="playlist-status" style="margin-bottom:10px; font-size: 14px; color: var(--primary); font-family:monospace;">Ready to play session.</div>
+        <button id="btn-download" class="btn" style="background:var(--primary); color:white; display:none;">⬇️ Download Full Recording (.zip export recommended)</button>
         <button class="btn" onclick="window.close()" style="background:var(--danger); color:white;">Exit Player</button>
     </div>
 
@@ -27,51 +28,78 @@
         const sessionId = urlParams.get('session');
         const video = document.getElementById('player');
         const status = document.getElementById('status');
-        let currentBlob = null;
+        const playlistStatus = document.getElementById('playlist-status');
         
+        let totalChunks = 0;
+        let currentChunkIndex = 1;
+
         video.onerror = () => {
-            const error = video.error;
-            status.innerText = `Hardware Decoding Error (${error.code}): ${error.message}. Please use the Download button below.`;
+            console.error("Playback error on chunk", currentChunkIndex);
+            // If a chunk fails, try to skip to the next one instead of crashing
+            if (currentChunkIndex < totalChunks) {
+                status.innerText = `Warning: Segment ${currentChunkIndex} was unplayable. Skipping...`;
+                playNextChunk();
+            } else {
+                status.innerText = "Playback ended with errors.";
+            }
         };
 
-        async function loadVideo() {
+        async function initPlaylist() {
             try {
                 if(!sessionId) throw new Error("No session ID specified.");
-                status.innerText = "Connecting to proctoring vault stream...";
+                status.innerText = "Querying playlist metadata...";
                 
-                const streamUrl = `/api/session/video-playback/${sessionId}`;
-                video.src = streamUrl;
+                // Fetch the list of chunks available for this session
+                const res = await fetch(`/api/session/video-chunks-list/${sessionId}`);
+                if(!res.ok) throw new Error("Could not retrieve playlist metadata.");
+                const data = await res.json();
                 
-                // Allow direct download via the same binary stream
-                const btnDownload = document.getElementById('btn-download');
-                btnDownload.style.display = 'inline-block';
-                btnDownload.onclick = () => {
-                    const a = document.createElement('a');
-                    a.href = streamUrl;
-                    a.download = `Exam_Session_${sessionId}.webm`;
-                    a.click();
+                totalChunks = data.chunk_count;
+                if(totalChunks === 0) {
+                    status.innerText = "Error: No recordings found in the vault for this session.";
+                    return;
+                }
+
+                status.innerText = `Secured ${totalChunks} recording fragments. Starting review player...`;
+                document.getElementById('btn-download').style.display = 'inline-block';
+                document.getElementById('btn-download').onclick = () => {
+                    // Redirect to the ZIP export which is the safest way to get the full video
+                    window.open(`/api/exams/export-all/${sessionId}`, '_blank');
                 };
-                
-                video.onloadedmetadata = () => {
-                    status.innerText = "Stream active. Synchronizing playback...";
-                    // Handle WebM duration issue in Chromium
-                    if (video.duration === Infinity) {
-                        video.currentTime = 1e101;
-                        video.ontimeupdate = function() {
-                            this.ontimeupdate = () => {};
-                            video.currentTime = 0;
-                            status.innerText = "Ready for review.";
-                        };
-                    } else {
-                        status.innerText = "Ready for review.";
-                    }
-                };
+
+                playChunk(1);
             } catch(e) {
                 status.innerText = 'Critical Failure: ' + e.message;
             }
         }
+
+        function playChunk(index) {
+            currentChunkIndex = index;
+            const streamUrl = `/api/session/video-chunk/${sessionId}/${index}`;
+            
+            playlistStatus.innerText = `PLAYING FRAGMENT: ${index} of ${totalChunks}`;
+            video.src = streamUrl;
+            video.load();
+            video.play().catch(e => {
+                console.warn("Auto-play blocked", e);
+                status.innerText = "Click Play to begin review.";
+            });
+        }
+
+        video.onended = () => {
+            playNextChunk();
+        };
+
+        function playNextChunk() {
+            if (currentChunkIndex < totalChunks) {
+                playChunk(currentChunkIndex + 1);
+            } else {
+                status.innerText = "Finalized Session Playback.";
+                playlistStatus.innerText = "END OF RECORDING.";
+            }
+        }
         
-        loadVideo();
+        initPlaylist();
     </script>
 </body>
 </html>

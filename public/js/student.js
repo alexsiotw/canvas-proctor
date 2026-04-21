@@ -288,6 +288,7 @@ function setupRecording() {
     mediaRecorder.ondataavailable = async (e) => {
         if (e.data && e.data.size > 0 && sessionInfo.id) {
             chunkIndex++;
+            const currentIdx = chunkIndex;
             activeUploads++;
             
             try {
@@ -302,7 +303,7 @@ function setupRecording() {
                             headers: { 'Content-Type': 'application/json' },
                             body: JSON.stringify({
                                 exam_session_id: sessionInfo.id,
-                                chunk_index: chunkIndex,
+                                chunk_index: currentIdx,
                                 base64_video: base64Data
                             })
                         });
@@ -319,18 +320,16 @@ function setupRecording() {
         }
     };
     
-    // Start recording but wait 2 seconds for the first critical header chunk
-    // This solves "Demuxer Error" by ensuring headers are fully initialized before upload
+    // Pulse Recording: Create a standalone, valid video file every 10 seconds.
+    // Each piece is a complete video, making playback immune to 'Format Errors'.
     mediaRecorder.start();
-    setTimeout(() => {
+    console.log("[Recorder] Pulse cycle active (10s)");
+    setInterval(() => {
         if (mediaRecorder.state === 'recording') {
-            mediaRecorder.requestData();
-            // Then continue with regular 10-second segments
-            setInterval(() => {
-                if (mediaRecorder.state === 'recording') mediaRecorder.requestData();
-            }, 10000);
+            mediaRecorder.stop(); // Fires ondataavailable
+            mediaRecorder.start(); // Starts a new standalone segment
         }
-    }, 2000);
+    }, 10000);
 }
 
 function sendSnapshot() {

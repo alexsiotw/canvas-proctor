@@ -366,6 +366,40 @@ app.post('/api/session/upload-chunk', requireAuth, async (req, res) => {
     }
 });
 
+// API: Get a single standalone video chunk (Playlist Mode)
+app.get('/api/session/video-chunk/:session_id/:index', requireInstructor, async (req, res) => {
+    try {
+        const { session_id, index } = req.params;
+        const result = await pool.query('SELECT video_data FROM video_chunks WHERE exam_session_id = $1 AND chunk_index = $2', [session_id, index]);
+        
+        if (result.rows.length === 0) return res.status(404).send('Chunk not found');
+
+        const sessionInfo = (await pool.query('SELECT mime_type FROM exam_sessions WHERE id = $1', [session_id])).rows[0];
+        const mimeType = sessionInfo ? sessionInfo.mime_type : 'video/webm';
+
+        const pureB64 = result.rows[0].video_data.replace(/^data:[^,]+,/, '').replace(/\s/g, '');
+        const buffer = Buffer.from(pureB64, 'base64');
+
+        res.setHeader('Content-Type', mimeType.split(';')[0]);
+        res.setHeader('Content-Length', buffer.length);
+        res.send(buffer);
+    } catch (err) {
+        console.error("Chunk fetch error", err);
+        res.status(500).send(err.message);
+    }
+});
+
+// API: List total chunks for the playlist player
+app.get('/api/session/video-chunks-list/:session_id', requireInstructor, async (req, res) => {
+    try {
+        const { session_id } = req.params;
+        const result = await pool.query('SELECT COUNT(*) as count FROM video_chunks WHERE exam_session_id = $1', [session_id]);
+        res.json({ chunk_count: parseInt(result.rows[0].count || 0) });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
 // API: Record the chosen MIME type for the session
 app.patch('/api/session/:id/format', requireAuth, async (req, res) => {
     try {
