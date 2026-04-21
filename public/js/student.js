@@ -269,6 +269,14 @@ function setupRecording() {
     }
 
     console.log(`[Recorder] Initialized with: ${mimeType}`);
+    // Handshake: Report the chosen format to the server so playback knows how to decode it
+    if (sessionInfo && sessionInfo.id) {
+        fetch(`/api/session/${sessionInfo.id}/format`, {
+            method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ mime_type: mimeType })
+        }).catch(err => console.warn("[Format] Handshake failed, defaulting to webm."));
+    }
+
     // Display the format to the student for debugging if needed
     const statusEl = document.getElementById('status-msg');
     if (statusEl) statusEl.innerText = `Recording Active (${mimeType.split(';')[0]})`;

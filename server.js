@@ -366,10 +366,25 @@ app.post('/api/session/upload-chunk', requireAuth, async (req, res) => {
     }
 });
 
+// API: Record the chosen MIME type for the session
+app.patch('/api/session/:id/format', requireAuth, async (req, res) => {
+    try {
+        const { id } = req.params;
+        const { mime_type } = req.body;
+        await pool.query('UPDATE exam_sessions SET mime_type = $1 WHERE id = $2', [mime_type || 'video/webm', id]);
+        res.json({ success: true });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
 // API: Get Video Chunks for Playback (Binary Stream)
 app.get('/api/session/video-playback/:session_id', requireInstructor, async (req, res) => {
     try {
         const { session_id } = req.params;
+        const sessionInfo = (await pool.query('SELECT mime_type FROM exam_sessions WHERE id = $1', [session_id])).rows[0];
+        const mimeToUse = (sessionInfo && sessionInfo.mime_type) ? sessionInfo.mime_type : 'video/webm';
+        
         const chunkResults = await pool.query(`
             SELECT video_data FROM video_chunks 
             WHERE exam_session_id = $1 
@@ -389,7 +404,8 @@ app.get('/api/session/video-playback/:session_id', requireInstructor, async (req
         
         const masterBuffer = Buffer.concat(binaryChunks);
         
-        res.setHeader('Content-Type', 'video/webm');
+        // Dynamic Content-Type based on what the student app reported
+        res.setHeader('Content-Type', mimeToUse.split(';')[0]); // Use clean mime (e.g. video/webm)
         res.setHeader('Content-Length', masterBuffer.length);
         res.send(masterBuffer);
     } catch (err) {

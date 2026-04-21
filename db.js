@@ -88,6 +88,7 @@ async function initDatabase() {
       ALTER TABLE exams ADD COLUMN IF NOT EXISTS is_open BOOLEAN DEFAULT false;
       ALTER TABLE exams ADD COLUMN IF NOT EXISTS require_seb BOOLEAN DEFAULT false;
       ALTER TABLE exam_sessions ADD COLUMN IF NOT EXISTS video_archived BOOLEAN DEFAULT false;
+      ALTER TABLE exam_sessions ADD COLUMN IF NOT EXISTS mime_type VARCHAR(255) DEFAULT 'video/webm';
     `);
     console.log('Database tables initialized successfully');
   } catch (err) {
