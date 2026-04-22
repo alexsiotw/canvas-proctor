@@ -143,12 +143,12 @@ async function startPreFlight() {
         // Environment Sync: Wait for tracks to "warm up" before starting data flow
         // This prevents corrupted initial chunks which cause DEMUXER_ERROR
         console.log("[Media] Warming up tracks for stable recording...");
-        await new Promise(resolve => setTimeout(resolve, 1200));
+        await new Promise(resolve => setTimeout(resolve, 1500));
 
-        // Start the recorder with 3-second slices
+        // Start the recorder with 5-second slices (more stable than 3s)
         if (mediaRecorder) {
-            mediaRecorder.start(3000);
-            console.log("[Recorder] Session recording started.");
+            mediaRecorder.start(5000);
+            console.log("[Recorder] Session recording started with 5s slices.");
         }
         
         // Attach local video object for snapshot extraction (choose screen or camera)
@@ -290,35 +290,62 @@ function setupRecording() {
     });
     mediaRecorder.ondataavailable = async (e) => {
         if (e.data && e.data.size > 0 && sessionInfo.id) {
-            chunkIndex++;
+            // CRITICAL: Capture the current index locally to prevent race conditions during upload
+            const currentIndex = ++chunkIndex;
             activeUploads++;
             
             try {
-                const reader = new FileReader();
-                reader.readAsDataURL(e.data);
-                reader.onloadend = async () => {
-                    const base64Data = reader.result;
-                    
-                    try {
-                        await fetch('/api/session/upload-chunk', { 
-                            method: 'POST', 
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({
-                                exam_session_id: sessionInfo.id,
-                                chunk_index: chunkIndex,
-                                base64_video: base64Data
-                            })
-                        });
-                    } catch(uploadErr) {
-                        console.error("Failed to upload chunk", uploadErr);
-                    } finally {
-                        activeUploads--;
-                    }
-                };
+                // Use ArrayBuffer for cleaner binary handling than DataURLs
+                const arrayBuffer = await e.data.arrayBuffer();
+                let binary = '';
+                const bytes = new Uint8Array(arrayBuffer);
+                const len = bytes.byteLength;
+                for (let i = 0; i < len; i++) {
+                    binary += String.fromCharCode(bytes[i]);
+                }
+                const base64Data = window.btoa(binary);
+
+                // Log the start of the upload for debugging
+                if (socket) {
+                    socket.emit('proctor_log', {
+                        exam_session_id: sessionInfo.id,
+                        event_type: 'chunk_upload',
+                        event_message: `Uploading chunk #${currentIndex} (Size: ${len} bytes)`
+                    });
+                }
+
+                await fetch('/api/session/upload-chunk', { 
+                    method: 'POST', 
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        exam_session_id: sessionInfo.id,
+                        chunk_index: currentIndex,
+                        base64_video: base64Data
+                    })
+                });
             } catch(err) {
-                console.error("Reader boundary crash:", err);
+                console.error(`[Recorder] Failed to upload chunk #${currentIndex}`, err);
+                if (socket) {
+                    socket.emit('proctor_log', {
+                        exam_session_id: sessionInfo.id,
+                        event_type: 'error',
+                        event_message: `Chunk #${currentIndex} upload failed: ${err.message}`
+                    });
+                }
+            } finally {
                 activeUploads--;
             }
+        }
+    };
+    
+    mediaRecorder.onerror = (e) => {
+        console.error("[Recorder] MediaRecorder Error:", e.error);
+        if (socket) {
+            socket.emit('proctor_log', {
+                exam_session_id: sessionInfo.id,
+                event_type: 'error',
+                event_message: `MediaRecorder Error: ${e.error ? e.error.name : 'Unknown'}`
+            });
         }
     };
     

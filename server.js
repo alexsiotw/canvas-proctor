@@ -595,9 +595,19 @@ io.on('connection', (socket) => {
         io.to('teacher_' + data.exam_id).emit('student_status', { session_id: data.exam_session_id, name: data.student_name, status: 'online' });
     });
 
-    socket.on('student_snapshot', (data) => {
-        // data: { exam_id, exam_session_id, screenshot_data_url }
         io.to('teacher_' + data.exam_id).emit('snapshot_update', data);
+    });
+
+    socket.on('proctor_log', async (data) => {
+        // data: { exam_session_id, event_type, event_message }
+        try {
+            await pool.query(
+                'INSERT INTO proctor_logs (exam_session_id, event_type, event_message) VALUES ($1, $2, $3)',
+                [data.exam_session_id, data.event_type, data.event_message]
+            );
+        } catch (err) {
+            console.error('Failed to save proctor log:', err);
+        }
     });
 
     socket.on('disconnect', () => {
