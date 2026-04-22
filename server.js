@@ -594,7 +594,8 @@ io.on('connection', (socket) => {
         socket.studentData = data;
         io.to('teacher_' + data.exam_id).emit('student_status', { session_id: data.exam_session_id, name: data.student_name, status: 'online' });
     });
-
+    socket.on('student_snapshot', (data) => {
+        // data: { exam_id, exam_session_id, screenshot_data_url }
         io.to('teacher_' + data.exam_id).emit('snapshot_update', data);
     });
 
