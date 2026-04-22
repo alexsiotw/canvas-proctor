@@ -135,11 +135,21 @@ async function startPreFlight() {
 
         // Finalize stream
         finalStream = new MediaStream(tracks);
-        
-        // Sync Guard: Wait for tracks to stabilize before allowing the recording to start later
-        await new Promise(resolve => setTimeout(resolve, 500));
-        
-        console.log(`[Media] Final stream synchronized with ${tracks.length} tracks.`);
+        console.log(`[Media] Final stream created with ${finalStream.getVideoTracks().length} video and ${finalStream.getAudioTracks().length} audio tracks.`);
+
+        // Setup Media Recorder
+        setupRecording();
+
+        // Environment Sync: Wait for tracks to "warm up" before starting data flow
+        // This prevents corrupted initial chunks which cause DEMUXER_ERROR
+        console.log("[Media] Warming up tracks for stable recording...");
+        await new Promise(resolve => setTimeout(resolve, 1200));
+
+        // Start the recorder with 3-second slices
+        if (mediaRecorder) {
+            mediaRecorder.start(3000);
+            console.log("[Recorder] Session recording started.");
+        }
         
         // Attach local video object for snapshot extraction (choose screen or camera)
         if(screenStream) {
@@ -265,9 +275,17 @@ function setupRecording() {
 
     console.log(`[Recorder] Initialized with: ${mimeType}`);
     
+    // Handshake: Report the chosen format to the server immediately so playback knows how to decode it
+    if (sessionInfo && sessionInfo.id) {
+        fetch(`/api/session/${sessionInfo.id}/format`, {
+            method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ mime_type: mimeType })
+        }).catch(err => console.warn("[Format] Handshake failed, defaulting to webm."));
+    }
+
     mediaRecorder = new MediaRecorder(finalStream, { 
         mimeType: mimeType,
-        videoBitsPerSecond: 1500000, // 1.5 Mbps for 1600x720 clarity
+        videoBitsPerSecond: 1500000, 
         audioBitsPerSecond: 128000
     });
     mediaRecorder.ondataavailable = async (e) => {
