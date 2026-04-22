@@ -107,38 +107,25 @@ async function startPreFlight() {
 
         // Combine streams for recording
         const tracks = [];
-        let masterVideoTrack = null;
+        let compositeStream = null;
 
         if (screenStream && videoStream && videoStream.getVideoTracks().length > 0) {
-            console.log("[Media] Both Screen and Camera detected. Initializing Compositor...");
-            masterVideoTrack = await createCompositeTrack(screenStream, videoStream);
+            console.log("[Media] Both Screen and Camera detected. Initializing side-by-side compositor...");
+            compositeStream = await createCompositeTrack(screenStream, videoStream);
+            compositeStream.getTracks().forEach(t => tracks.push(t));
         } else if (screenStream) {
-            masterVideoTrack = screenStream.getVideoTracks()[0];
-        } else if (videoStream && videoStream.getVideoTracks().length > 0) {
-            masterVideoTrack = videoStream.getVideoTracks()[0];
+            tracks.push(screenStream.getVideoTracks()[0]);
+            // Add mic if available
+            if (videoStream && videoStream.getAudioTracks().length > 0) {
+                videoStream.getAudioTracks().forEach(t => tracks.push(t));
+            }
+        } else if (videoStream) {
+            videoStream.getTracks().forEach(t => tracks.push(t));
         }
 
-        if (masterVideoTrack) {
-            tracks.push(masterVideoTrack);
-        } else {
-            // Fallback to a dummy canvas if no video is available (e.g. SEB blocked screen and no cam)
-            const canvas = document.createElement('canvas');
-            canvas.width = 640; canvas.height = 360;
-            const ctx = canvas.getContext('2d');
-            ctx.fillStyle = "black";
-            ctx.fillRect(0,0,640,360);
-            ctx.fillStyle = "white";
-            ctx.font = "20px Arial";
-            ctx.fillText("Proctoring Active (No Video)", 50, 180);
-            const dummyStream = canvas.captureStream(5);
-            tracks.push(dummyStream.getVideoTracks()[0]);
-            console.log("[Media] No video sources available. Started session with dummy track.");
-        }
-
-        // Always add audio from the camera/mic if it exists (exactly once)
-        if (videoStream && videoStream.getAudioTracks().length > 0) {
-            videoStream.getAudioTracks().forEach(t => tracks.push(t));
-        }
+        // Finalize stream
+        finalStream = new MediaStream(tracks);
+        console.log(`[Media] Final stream created with ${finalStream.getVideoTracks().length} video and ${finalStream.getAudioTracks().length} audio tracks.`);
 
         // Ensure all gathered tracks are enabled and ready
         tracks.forEach(track => {
@@ -279,21 +266,11 @@ function setupRecording() {
     }
 
     console.log(`[Recorder] Initialized with: ${mimeType}`);
-    // Handshake: Report the chosen format to the server so playback knows how to decode it
-    if (sessionInfo && sessionInfo.id) {
-        fetch(`/api/session/${sessionInfo.id}/format`, {
-            method: 'PATCH', headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ mime_type: mimeType })
-        }).catch(err => console.warn("[Format] Handshake failed, defaulting to webm."));
-    }
-
-    // Display the format to the student for debugging if needed
-    const statusEl = document.getElementById('status-msg');
-    if (statusEl) statusEl.innerText = `Recording Active (${mimeType.split(';')[0]})`;
-
+    
     mediaRecorder = new MediaRecorder(finalStream, { 
         mimeType: mimeType,
-        videoBitsPerSecond: 150000 // Slightly higher bitrate for H.264 stability
+        videoBitsPerSecond: 1500000, // 1.5 Mbps for 1600x720 clarity
+        audioBitsPerSecond: 128000
     });
     mediaRecorder.ondataavailable = async (e) => {
         if (e.data && e.data.size > 0 && sessionInfo.id) {
@@ -370,15 +347,11 @@ async function createCompositeTrack(screenStream, cameraStream) {
     function draw() {
         if (!compositeAnimationId && compositeAnimationId !== 0) return;
         
-        // Background for the entire recording
         ctx.fillStyle = "#0f172a";
         ctx.fillRect(0, 0, canvas.width, canvas.height);
 
-        // Draw Screen (Main Area - Left)
         ctx.drawImage(vScreen, 0, 0, 1280, 720);
         
-        // Draw Camera (Sidebar Area - Right)
-        // Center the 320x240 camera feed vertically in the 720h sidebar
         const sidebarX = 1280;
         const camW = 320;
         const camH = 240;
@@ -386,12 +359,10 @@ async function createCompositeTrack(screenStream, cameraStream) {
         
         ctx.drawImage(vCam, sidebarX, camY, camW, camH);
         
-        // Add a clean white border around the camera feed
         ctx.strokeStyle = "rgba(255,255,255,0.5)";
         ctx.lineWidth = 2;
         ctx.strokeRect(sidebarX, camY, camW, camH);
         
-        // Add text label to sidebar
         ctx.fillStyle = "white";
         ctx.font = "bold 14px Arial";
         const label = "PROCTOR FEED";
@@ -402,7 +373,18 @@ async function createCompositeTrack(screenStream, cameraStream) {
     }
     
     compositeAnimationId = requestAnimationFrame(draw);
-    return canvas.captureStream(10).getVideoTracks()[0];
+    
+    // Create a new stream that combines the canvas video with the original camera/mic audio
+    const canvasStream = canvas.captureStream(15); // Higher FPS for better sync
+    const outputStream = new MediaStream([canvasStream.getVideoTracks()[0]]);
+    
+    // Crucial: Add audio tracks to the SAME stream object for perfect sync
+    cameraStream.getAudioTracks().forEach(track => {
+        console.log(`[Media] Bonding audio track: ${track.label}`);
+        outputStream.addTrack(track);
+    });
+    
+    return outputStream;
 }
 
 function sendSnapshot() {
