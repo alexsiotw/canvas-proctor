@@ -64,7 +64,19 @@ async function uploadVideoChunk(folderId, fileName, filePath, mimeType = 'video/
     }
 }
 
+async function downloadFile(fileId) {
+    try {
+        const drive = getDriveClient();
+        const response = await drive.files.get({ fileId, alt: 'media' }, { responseType: 'arraybuffer' });
+        return Buffer.from(response.data);
+    } catch (err) {
+        console.error('Drive download failed:', err);
+        throw err;
+    }
+}
+
 module.exports = {
     createStudentExamFolder,
-    uploadVideoChunk
+    uploadVideoChunk,
+    downloadFile
 };

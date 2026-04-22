@@ -8,6 +8,7 @@ let activeUploads = 0;
 
 let videoStream = null;
 let screenStream = null;
+let compositeAnimationId = null;
 let urlParams = new URLSearchParams(window.location.search);
 let sessionToken = urlParams.get('token');
 let isSebParam = urlParams.get('seb') === 'true';
@@ -98,35 +99,35 @@ async function startPreFlight() {
 
         // Combine streams for recording
         const tracks = [];
-        // Prioritize screen for main recording, otherwise use camera
-        if (screenStream && screenStream.getVideoTracks().length > 0) {
-            screenStream.getVideoTracks().forEach(t => tracks.push(t));
+        let masterVideoTrack = null;
+
+        if (screenStream && videoStream && videoStream.getVideoTracks().length > 0) {
+            console.log("[Media] Both Screen and Camera detected. Initializing Compositor...");
+            masterVideoTrack = await createCompositeTrack(screenStream, videoStream);
+        } else if (screenStream) {
+            masterVideoTrack = screenStream.getVideoTracks()[0];
         } else if (videoStream && videoStream.getVideoTracks().length > 0) {
-            videoStream.getVideoTracks().forEach(t => tracks.push(t));
+            masterVideoTrack = videoStream.getVideoTracks()[0];
+        }
+
+        if (masterVideoTrack) {
+            tracks.push(masterVideoTrack);
         } else {
-            // Fallback to the virtual canvas if no camera or screen is available
-            dummyStream.getVideoTracks().forEach(t => tracks.push(t));
-        }
-
-        // Always add audio from the camera/mic if it exists
-        if (videoStream && videoStream.getAudioTracks().length > 0) {
-            videoStream.getAudioTracks().forEach(t => tracks.push(t));
-        }
-
-        // If NO media is active (e.g. SEB blocked screen and teacher disabled cam/mic)
-        // We create a dummy canvas track to keep the recorder and proctoring flow alive
-        if (tracks.length === 0) {
+            // Fallback to a dummy canvas if no video is available (e.g. SEB blocked screen and no cam)
             const canvas = document.createElement('canvas');
-            canvas.width = 1; canvas.height = 1;
+            canvas.width = 640; canvas.height = 360;
             const ctx = canvas.getContext('2d');
             ctx.fillStyle = "black";
-            ctx.fillRect(0,0,1,1);
-            const dummyStream = canvas.captureStream(1);
-            dummyStream.getTracks().forEach(t => tracks.push(t));
-            console.log("No media selected or available. Started session with dummy track.");
+            ctx.fillRect(0,0,640,360);
+            ctx.fillStyle = "white";
+            ctx.font = "20px Arial";
+            ctx.fillText("Proctoring Active (No Video)", 50, 180);
+            const dummyStream = canvas.captureStream(5);
+            tracks.push(dummyStream.getVideoTracks()[0]);
+            console.log("[Media] No video sources available. Started session with dummy track.");
         }
 
-        // Always add audio from the camera/mic if it exists
+        // Always add audio from the camera/mic if it exists (exactly once)
         if (videoStream && videoStream.getAudioTracks().length > 0) {
             videoStream.getAudioTracks().forEach(t => tracks.push(t));
         }
@@ -137,6 +138,7 @@ async function startPreFlight() {
             if (track.readyState === 'ended') console.warn(`[Media] Warning: Track ${track.label} is in 'ended' state.`);
         });
 
+        // Finalize stream
         finalStream = new MediaStream(tracks);
         
         // Sync Guard: Wait for tracks to stabilize before allowing the recording to start later
@@ -339,6 +341,47 @@ function setupRecording() {
     }, 3000);
 }
 
+async function createCompositeTrack(screenStream, cameraStream) {
+    const canvas = document.createElement('canvas');
+    canvas.width = 1280; 
+    canvas.height = 720;
+    const ctx = canvas.getContext('2d');
+
+    const vScreen = document.createElement('video');
+    vScreen.srcObject = screenStream;
+    vScreen.muted = true;
+    await vScreen.play();
+
+    const vCam = document.createElement('video');
+    vCam.srcObject = cameraStream;
+    vCam.muted = true;
+    await vCam.play();
+
+    function draw() {
+        if (!compositeAnimationId && compositeAnimationId !== 0) return; // Stop if cleared
+        
+        ctx.fillStyle = "black";
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+        // Draw Screen (Background)
+        ctx.drawImage(vScreen, 0, 0, canvas.width, canvas.height);
+        
+        // Draw Camera (PiP Overlay)
+        const pipW = 320;
+        const pipH = 180;
+        const margin = 20;
+        ctx.strokeStyle = "white";
+        ctx.lineWidth = 4;
+        ctx.strokeRect(canvas.width - pipW - margin, canvas.height - pipH - margin, pipW, pipH);
+        ctx.drawImage(vCam, canvas.width - pipW - margin, canvas.height - pipH - margin, pipW, pipH);
+        
+        compositeAnimationId = requestAnimationFrame(draw);
+    }
+    
+    compositeAnimationId = requestAnimationFrame(draw);
+    return canvas.captureStream(10).getVideoTracks()[0];
+}
+
 function sendSnapshot() {
     const video = document.getElementById('local-video');
     if(video.videoWidth === 0) return;
@@ -428,6 +471,8 @@ async function endExam() {
     if (videoStream) videoStream.getTracks().forEach(t => t.stop());
     if (screenStream) screenStream.getTracks().forEach(t => t.stop());
     if (finalStream) finalStream.getTracks().forEach(t => t.stop());
+    if (compositeAnimationId) cancelAnimationFrame(compositeAnimationId);
+    compositeAnimationId = null;
     
     logProctorEvent('exam_ended', 'Student securely finished the exam.');
     

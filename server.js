@@ -350,7 +350,7 @@ app.post('/api/session/end', requireAuth, async (req, res) => {
 
 // API: Upload Video Chunk directly via JSON payload to Bypass Form Boundaries
 app.post('/api/session/upload-chunk', requireAuth, async (req, res) => {
-    const { folder_id, chunk_index, exam_session_id, base64_video } = req.body;
+    const { chunk_index, exam_session_id, base64_video } = req.body;
     try {
         if (!base64_video) throw new Error("Video payload was empty");
         
@@ -483,7 +483,7 @@ app.delete('/api/exams/:id/videos-only', requireInstructor, async (req, res) => 
         `, [id]);
         
         await pool.query(`
-            UPDATE exam_sessions SET video_archived = true WHERE exam_id = $1
+            UPDATE exam_sessions SET video_archived = true, drive_folder_id = NULL WHERE exam_id = $1
         `, [id]);
         
         res.json({ success: true });

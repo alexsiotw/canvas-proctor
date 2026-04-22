@@ -12,3 +12,13 @@ services:
         value: production
       - key: PORT
         value: 10000
+      - key: DATABASE_URL
+        sync: false
+      - key: SESSION_SECRET
+        generateValue: true
+      - key: BASE_URL
+        sync: false
+      - key: LTI_KEY
+        sync: false
+      - key: LTI_SECRET
+        sync: false
