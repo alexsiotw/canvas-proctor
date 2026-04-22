@@ -73,9 +73,17 @@ async function startPreFlight() {
     try {
         if (examConfig.require_camera || examConfig.require_mic) {
             videoStream = await navigator.mediaDevices.getUserMedia({
-                video: examConfig.require_camera ? { width: { max: 640 }, height: { max: 360 }, frameRate: { max: 5 } } : false,
+                video: examConfig.require_camera ? { width: { max: 640 }, height: { max: 360 }, frameRate: { max: 10 } } : false,
                 audio: examConfig.require_mic
             });
+
+            // Confidence Preview for Student
+            const previewEl = document.getElementById('camera-preview');
+            const previewContainer = document.getElementById('camera-preview-container');
+            if (previewEl && previewContainer && examConfig.require_camera) {
+                previewEl.srcObject = videoStream;
+                previewContainer.style.display = 'block';
+            }
         }
 
         if (examConfig.require_screen) {
@@ -343,37 +351,52 @@ function setupRecording() {
 
 async function createCompositeTrack(screenStream, cameraStream) {
     const canvas = document.createElement('canvas');
-    canvas.width = 1280; 
+    canvas.width = 1600; // 1280 (screen) + 320 (sidebar)
     canvas.height = 720;
     const ctx = canvas.getContext('2d');
 
     const vScreen = document.createElement('video');
     vScreen.srcObject = screenStream;
     vScreen.muted = true;
+    vScreen.setAttribute('playsinline', ''); 
     await vScreen.play();
 
     const vCam = document.createElement('video');
     vCam.srcObject = cameraStream;
     vCam.muted = true;
+    vCam.setAttribute('playsinline', '');
     await vCam.play();
 
     function draw() {
-        if (!compositeAnimationId && compositeAnimationId !== 0) return; // Stop if cleared
+        if (!compositeAnimationId && compositeAnimationId !== 0) return;
         
-        ctx.fillStyle = "black";
+        // Background for the entire recording
+        ctx.fillStyle = "#0f172a";
         ctx.fillRect(0, 0, canvas.width, canvas.height);
 
-        // Draw Screen (Background)
-        ctx.drawImage(vScreen, 0, 0, canvas.width, canvas.height);
+        // Draw Screen (Main Area - Left)
+        ctx.drawImage(vScreen, 0, 0, 1280, 720);
         
-        // Draw Camera (PiP Overlay)
-        const pipW = 320;
-        const pipH = 180;
-        const margin = 20;
-        ctx.strokeStyle = "white";
-        ctx.lineWidth = 4;
-        ctx.strokeRect(canvas.width - pipW - margin, canvas.height - pipH - margin, pipW, pipH);
-        ctx.drawImage(vCam, canvas.width - pipW - margin, canvas.height - pipH - margin, pipW, pipH);
+        // Draw Camera (Sidebar Area - Right)
+        // Center the 320x240 camera feed vertically in the 720h sidebar
+        const sidebarX = 1280;
+        const camW = 320;
+        const camH = 240;
+        const camY = (720 - camH) / 2;
+        
+        ctx.drawImage(vCam, sidebarX, camY, camW, camH);
+        
+        // Add a clean white border around the camera feed
+        ctx.strokeStyle = "rgba(255,255,255,0.5)";
+        ctx.lineWidth = 2;
+        ctx.strokeRect(sidebarX, camY, camW, camH);
+        
+        // Add text label to sidebar
+        ctx.fillStyle = "white";
+        ctx.font = "bold 14px Arial";
+        const label = "PROCTOR FEED";
+        const textWidth = ctx.measureText(label).width;
+        ctx.fillText(label, sidebarX + (320 - textWidth) / 2, camY - 15);
         
         compositeAnimationId = requestAnimationFrame(draw);
     }
