@@ -383,10 +383,11 @@ async function createCompositeTrack(screenStream, cameraStream) {
 
         function updateVolume() {
             if (!compositeAnimationId && compositeAnimationId !== 0) return;
+            if (audioCtx.state === 'suspended') audioCtx.resume();
             analyser.getByteFrequencyData(dataArray);
-            let sum = 0;
-            for (let i = 0; i < dataArray.length; i++) sum += dataArray[i];
-            volumeLevel = sum / dataArray.length;
+            let max = 0;
+            for (let i = 0; i < dataArray.length; i++) if(dataArray[i] > max) max = dataArray[i];
+            volumeLevel = max;
             requestAnimationFrame(updateVolume);
         }
         updateVolume();
@@ -431,8 +432,8 @@ async function createCompositeTrack(screenStream, cameraStream) {
         ctx.strokeStyle = "rgba(255,255,255,0.2)";
         ctx.stroke();
 
-        // Pulsing Mic Indicator
-        const isSpeaking = volumeLevel > 10;
+        // Pulsing Mic Indicator - Higher Sensitivity
+        const isSpeaking = volumeLevel > 20;
         const dotColor = isSpeaking ? `rgba(34, 197, 94, ${0.5 + Math.sin(Date.now()/200)*0.5})` : "#ef4444";
         
         ctx.fillStyle = dotColor;
