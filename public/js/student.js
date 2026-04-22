@@ -249,13 +249,11 @@ function setupRecording() {
     let mimeType = 'video/webm';
     const hasAudio = finalStream.getAudioTracks().length > 0;
     
-    // Priority List: H.264 is often more stable on Windows, VP8 is the WebM standard
+    // Strictly use the most standard and reliable WebM codec to prevent DEMUXER_ERROR
     const candidates = [
-        `video/webm;codecs=h264${hasAudio ? ',opus' : ''}`,
-        `video/webm;codecs=vp8${hasAudio ? ',opus' : ''}`,
-        `video/mp4;codecs=avc1${hasAudio ? '.42E01E,mp4a.40.2' : ''}`,
-        'video/webm',
-        'video/mp4'
+        'video/webm;codecs=vp8,opus',
+        'video/webm;codecs=vp8',
+        'video/webm'
     ];
 
     for (const candidate of candidates) {
@@ -344,6 +342,29 @@ async function createCompositeTrack(screenStream, cameraStream) {
     vCam.setAttribute('playsinline', '');
     await vCam.play();
 
+    // Volume Detection for visual feedback
+    let volumeLevel = 0;
+    try {
+        const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        const analyser = audioCtx.createAnalyser();
+        const source = audioCtx.createMediaStreamSource(cameraStream);
+        source.connect(analyser);
+        analyser.fftSize = 256;
+        const dataArray = new Uint8Array(analyser.frequencyBinCount);
+
+        function updateVolume() {
+            if (!compositeAnimationId && compositeAnimationId !== 0) return;
+            analyser.getByteFrequencyData(dataArray);
+            let sum = 0;
+            for (let i = 0; i < dataArray.length; i++) sum += dataArray[i];
+            volumeLevel = sum / dataArray.length;
+            requestAnimationFrame(updateVolume);
+        }
+        updateVolume();
+    } catch (e) {
+        console.warn("[Media] Audio context failed, mic indicator will be static.", e);
+    }
+
     function draw() {
         if (!compositeAnimationId && compositeAnimationId !== 0) return;
         
@@ -355,32 +376,54 @@ async function createCompositeTrack(screenStream, cameraStream) {
         const sidebarX = 1280;
         const camW = 320;
         const camH = 240;
-        const camY = (720 - camH) / 2;
+        const camY = (720 - camH) / 2 - 40; // Shift up slightly to make room for mic box
         
+        // Draw Camera
         ctx.drawImage(vCam, sidebarX, camY, camW, camH);
-        
         ctx.strokeStyle = "rgba(255,255,255,0.5)";
         ctx.lineWidth = 2;
         ctx.strokeRect(sidebarX, camY, camW, camH);
         
         ctx.fillStyle = "white";
         ctx.font = "bold 14px Arial";
-        const label = "PROCTOR FEED";
-        const textWidth = ctx.measureText(label).width;
-        ctx.fillText(label, sidebarX + (320 - textWidth) / 2, camY - 15);
+        const camLabel = "PROCTOR FEED";
+        ctx.fillText(camLabel, sidebarX + (320 - ctx.measureText(camLabel).width) / 2, camY - 15);
+
+        // Draw Mic Status Box
+        const micBoxY = camY + camH + 40;
+        const micBoxW = 240;
+        const micBoxH = 60;
+        const micBoxX = sidebarX + (320 - micBoxW) / 2;
+
+        ctx.fillStyle = "rgba(15, 23, 42, 0.8)";
+        ctx.beginPath();
+        ctx.roundRect(micBoxX, micBoxY, micBoxW, micBoxH, 10);
+        ctx.fill();
+        ctx.strokeStyle = "rgba(255,255,255,0.2)";
+        ctx.stroke();
+
+        // Pulsing Mic Indicator
+        const isSpeaking = volumeLevel > 10;
+        const dotColor = isSpeaking ? `rgba(34, 197, 94, ${0.5 + Math.sin(Date.now()/200)*0.5})` : "#ef4444";
+        
+        ctx.fillStyle = dotColor;
+        ctx.beginPath();
+        ctx.arc(micBoxX + 25, micBoxY + 30, 8, 0, Math.PI * 2);
+        ctx.fill();
+
+        ctx.fillStyle = "white";
+        ctx.font = "bold 13px Arial";
+        ctx.fillText(isSpeaking ? "MIC ACTIVE" : "MIC SILENT", micBoxX + 45, micBoxY + 35);
         
         compositeAnimationId = requestAnimationFrame(draw);
     }
     
     compositeAnimationId = requestAnimationFrame(draw);
     
-    // Create a new stream that combines the canvas video with the original camera/mic audio
-    const canvasStream = canvas.captureStream(15); // Higher FPS for better sync
+    const canvasStream = canvas.captureStream(15); 
     const outputStream = new MediaStream([canvasStream.getVideoTracks()[0]]);
     
-    // Crucial: Add audio tracks to the SAME stream object for perfect sync
     cameraStream.getAudioTracks().forEach(track => {
-        console.log(`[Media] Bonding audio track: ${track.label}`);
         outputStream.addTrack(track);
     });
     
