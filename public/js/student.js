@@ -419,7 +419,8 @@ async function createCompositeTrack(screenStream, cameraStream) {
         const camLabel = "PROCTOR FEED";
         ctx.fillText(camLabel, sidebarX + (320 - ctx.measureText(camLabel).width) / 2, camY - 15);
 
-        // Draw Mic Status Box
+        // Mic Status Box - Hardware connectivity based
+        const hasMic = cameraStream.getAudioTracks().some(t => t.enabled && t.readyState === 'live');
         const micBoxY = camY + camH + 40;
         const micBoxW = 240;
         const micBoxH = 60;
@@ -432,9 +433,7 @@ async function createCompositeTrack(screenStream, cameraStream) {
         ctx.strokeStyle = "rgba(255,255,255,0.2)";
         ctx.stroke();
 
-        // Pulsing Mic Indicator - Higher Sensitivity
-        const isSpeaking = volumeLevel > 20;
-        const dotColor = isSpeaking ? `rgba(34, 197, 94, ${0.5 + Math.sin(Date.now()/200)*0.5})` : "#ef4444";
+        const dotColor = hasMic ? "#22c55e" : "#ef4444";
         
         ctx.fillStyle = dotColor;
         ctx.beginPath();
@@ -443,7 +442,7 @@ async function createCompositeTrack(screenStream, cameraStream) {
 
         ctx.fillStyle = "white";
         ctx.font = "bold 13px Arial";
-        ctx.fillText(isSpeaking ? "MIC ACTIVE" : "MIC SILENT", micBoxX + 45, micBoxY + 35);
+        ctx.fillText(hasMic ? "MICROPHONE: ON" : "MICROPHONE: OFF", micBoxX + 45, micBoxY + 35);
         
         compositeAnimationId = requestAnimationFrame(draw);
     }
