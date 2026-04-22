@@ -322,24 +322,8 @@ function setupRecording() {
         }
     };
     
-    // Start recording but wait 3 seconds for the hardware to fully warm up and sync
-    // This solves "Demuxer Error" by ensuring headers are fully initialized before upload
-    mediaRecorder.start();
-    console.log("[Recorder] Hardware warm-up initiated (3s guard)...");
-    
-    setTimeout(() => {
-        if (mediaRecorder.state === 'recording') {
-            console.log("[Recorder] Warm-up complete. Capturing master headers...");
-            mediaRecorder.requestData();
-            
-            // Then continue with regular 10-second segments
-            setInterval(() => {
-                if (mediaRecorder.state === 'recording') {
-                    mediaRecorder.requestData();
-                }
-            }, 10000);
-        }
-    }, 3000);
+    // Note: The actual recording start is now handled in startPreFlight
+    // with a specific warm-up delay to prevent DEMUXER_ERRORs.
 }
 
 async function createCompositeTrack(screenStream, cameraStream) {
