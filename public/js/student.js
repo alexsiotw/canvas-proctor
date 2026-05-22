@@ -198,6 +198,9 @@ async function startPreFlight() {
         document.getElementById('active-exam-container').style.display = 'flex';
         document.getElementById('quiz-iframe').src = examConfig.canvas_quiz_url;
 
+        // Initialize focus tracking to catch tab switches/blurs
+        setupFocusTracking();
+
         // Start taking snapshots
         setInterval(sendSnapshot, 3000);
 
@@ -565,7 +568,7 @@ async function endExam() {
         body: JSON.stringify({ exam_session_id: sessionInfo.id })
     });
     
-    document.getElementById('active-exam-container').innerHTML = '<div style="margin: auto; text-align: center; padding: 40px; background: white; border-radius: 8px;"><h2>Exam Completed</h2><p style="color:var(--text-secondary);">Your recording has been securely archived. You may now close this window.</p></div>';
+    document.getElementById('active-exam-container').innerHTML = '<div style="margin: auto; text-align: center; padding: 40px; background: white; border-radius: 8px;"><h2>Exam Completed</h2><p style="color:var(--text-secondary);">You may safely close this window.</p></div>';
 }
 
 // Exit Handler: Attempt to save session if student quits SEB or closes browser
