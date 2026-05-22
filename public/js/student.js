@@ -186,8 +186,8 @@ async function startPreFlight() {
 
         // Launch Exam
         document.getElementById('setup-container').style.display = 'none';
-        document.getElementById('recording-indicator').style.display = 'block';
-        document.getElementById('active-exam-container').style.display = 'block';
+        document.getElementById('active-exam-container').style.display = 'flex';
+        document.getElementById('quiz-iframe').src = examConfig.canvas_quiz_url;
 
         // Start taking snapshots
         setInterval(sendSnapshot, 3000);
@@ -525,12 +525,10 @@ function showToast(msg) {
     setTimeout(() => el.remove(), 5000);
 }
 
-function launchQuiz() {
-    window.open(examConfig.canvas_quiz_url, '_blank');
-}
+
 
 async function endExam() {
-    document.getElementById('active-exam-container').innerHTML = '<h2>Finalizing Video...</h2><p style="color:var(--text-secondary);">Safely encrypting and uploading your footage. Please do not close the window yet.</p>';
+    document.getElementById('active-exam-container').innerHTML = '<div style="margin: auto; text-align: center; padding: 40px; background: white; border-radius: 8px;"><h2>Finalizing Video...</h2><p style="color:var(--text-secondary);">Safely encrypting and uploading your footage. Please do not close the window yet.</p></div>';
 
     if(mediaRecorder && mediaRecorder.state !== 'inactive') {
         const stopPromise = new Promise(resolve => {
@@ -558,8 +556,7 @@ async function endExam() {
         body: JSON.stringify({ exam_session_id: sessionInfo.id })
     });
     
-    document.getElementById('active-exam-container').innerHTML = '<h2>Exam Completed</h2><p style="color:var(--text-secondary);">Your recording has been saved securely to Google Drive. You may now close this window.</p>';
-    document.getElementById('recording-indicator').style.display = 'none';
+    document.getElementById('active-exam-container').innerHTML = '<div style="margin: auto; text-align: center; padding: 40px; background: white; border-radius: 8px;"><h2>Exam Completed</h2><p style="color:var(--text-secondary);">Your recording has been securely archived. You may now close this window.</p></div>';
 }
 
 // Exit Handler: Attempt to save session if student quits SEB or closes browser
