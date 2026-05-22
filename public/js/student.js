@@ -314,14 +314,7 @@ function setupRecording() {
                 }
                 const base64Data = window.btoa(binary);
 
-                // Log the start of the upload for debugging
-                if (socket) {
-                    socket.emit('proctor_log', {
-                        exam_session_id: sessionInfo.id,
-                        event_type: 'chunk_upload',
-                        event_message: `Uploading chunk #${currentIndex} (Size: ${len} bytes)`
-                    });
-                }
+
 
                 await fetch('/api/session/upload-chunk', { 
                     method: 'POST', 
@@ -491,6 +484,7 @@ function setupFocusTracking() {
     document.addEventListener('visibilitychange', () => {
         if (document.visibilityState === 'hidden') {
             logProctorEvent('tab_blur', 'Student switched tabs or minimized browser');
+            document.getElementById('focus-violation-overlay').style.display = 'flex';
         } else {
             logProctorEvent('tab_focus', 'Student returned to the exam tab');
         }
@@ -498,11 +492,13 @@ function setupFocusTracking() {
 
     window.addEventListener('blur', () => {
         logProctorEvent('window_blur', 'Exam window lost focus');
+        document.getElementById('focus-violation-overlay').style.display = 'flex';
     });
 
     window.addEventListener('resize', () => {
         if (examConfig.require_fullscreen && !document.fullscreenElement) {
             logProctorEvent('fullscreen_exit', 'Student exited fullscreen mode');
+            document.getElementById('focus-violation-overlay').style.display = 'flex';
         }
     });
 }
@@ -537,6 +533,10 @@ function showToast(msg) {
 
 
 async function endExam() {
+    if (document.fullscreenElement) {
+        document.exitFullscreen().catch(err => console.log('Exit fullscreen failed:', err));
+    }
+    
     document.getElementById('active-exam-container').innerHTML = '<div style="margin: auto; text-align: center; padding: 40px; background: white; border-radius: 8px;"><h2>Finalizing Video...</h2><p style="color:var(--text-secondary);">Safely encrypting and uploading your footage. Please do not close the window yet.</p></div>';
 
     if(mediaRecorder && mediaRecorder.state !== 'inactive') {
