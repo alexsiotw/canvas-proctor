@@ -47,7 +47,7 @@ app.get('/lti/config.xml', (req, res) => {
     xmlns:lticp="http://www.imsglobal.org/xsd/imslticp_v1p0"
     xmlns:canvas="http://canvas.instructure.com/lti/course_navigation">
   <blti:title>Proctor Gateway</blti:title>
-  <blti:description>Secure Proctoring environment for Canvas Quizzes.</blti:description>
+  <blti:description>Secure Proctoring environment for LMS Quizzes.</blti:description>
   <blti:launch_url>${baseUrl}/lti/launch</blti:launch_url>
   <blti:extensions platform="canvas.instructure.com">
     <lticm:property name="privacy_level">public</lticm:property>

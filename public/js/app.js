@@ -79,7 +79,7 @@ function renderExams() {
             <div class="empty-state" style="grid-column: 1/-1;">
                 <div class="empty-icon">📝</div>
                 <div class="empty-text">No Exams configured yet</div>
-                <div class="empty-hint">Click the button above to link a Canvas Quiz.</div>
+                <div class="empty-hint">Click the button above to link an LMS Quiz.</div>
             </div>
         `;
     } else {
@@ -298,7 +298,7 @@ function showCreateExamModal(examId = null) {
     const defaultCode = exam ? exam.exam_code : Math.random().toString(36).substring(2, 8).toUpperCase();
     const html = `
         <div class="modal-header">
-            <h2 class="modal-title">${exam ? 'Edit Exam Settings' : 'Link Canvas Quiz'}</h2>
+            <h2 class="modal-title">${exam ? 'Edit Exam Settings' : 'Link LMS Quiz'}</h2>
             <button class="modal-close" onclick="closeModal()">×</button>
         </div>
         <div class="form-group">
@@ -316,9 +316,9 @@ function showCreateExamModal(examId = null) {
             </div>
         </div>
         <div class="form-group">
-            <label class="form-label">Canvas Quiz URL</label>
+            <label class="form-label">LMS Quiz URL</label>
             <input type="text" id="exam-url" class="form-input" placeholder="https://canvas.instructure.com/courses/1/quizzes/1" value="${exam ? exam.canvas_quiz_url : ''}">
-            <div class="form-hint">Paste the URL of the Canvas Quiz. Do NOT share this URL directly with students.</div>
+            <div class="form-hint">Paste the URL of the LMS Quiz. Do NOT share this URL directly with students.</div>
         </div>
         <div style="margin-top: 20px;">
             <label class="form-check" style="margin-bottom: 8px;">

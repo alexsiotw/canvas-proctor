@@ -236,7 +236,7 @@ function showSEBBlocker() {
 
 function downloadSEBConfig() {
     if (!sessionToken) {
-        alert('Session lost. Please re-launch from Canvas.');
+        alert('Session lost. Please re-launch from your LMS.');
         return;
     }
     window.location.href = `/api/seb/config/${sessionToken}`;
@@ -244,7 +244,7 @@ function downloadSEBConfig() {
 
 function launchSEB() {
     if (!sessionToken) {
-        alert('Session lost. Please re-launch from Canvas.');
+        alert('Session lost. Please re-launch from your LMS.');
         return;
     }
     const code = document.getElementById('access-code-input').value.trim();
