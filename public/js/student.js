@@ -494,8 +494,14 @@ function setupFocusTracking() {
     });
 
     window.addEventListener('blur', () => {
-        logProctorEvent('window_blur', 'Exam window lost focus');
-        document.getElementById('focus-violation-overlay').style.display = 'flex';
+        setTimeout(() => {
+            // If they clicked the iframe, document.hasFocus() remains true. 
+            // If they clicked off the browser entirely, it becomes false.
+            if (!document.hasFocus()) {
+                logProctorEvent('window_blur', 'Exam window lost focus');
+                document.getElementById('focus-violation-overlay').style.display = 'flex';
+            }
+        }, 100);
     });
 
     window.addEventListener('resize', () => {
