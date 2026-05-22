@@ -9,6 +9,7 @@ let activeUploads = 0;
 let videoStream = null;
 let screenStream = null;
 let compositeAnimationId = null;
+let isExamCompleted = false;
 let urlParams = new URLSearchParams(window.location.search);
 let sessionToken = urlParams.get('token');
 let isSebParam = urlParams.get('seb') === 'true';
@@ -485,6 +486,7 @@ function sendSnapshot() {
 
 function setupFocusTracking() {
     document.addEventListener('visibilitychange', () => {
+        if (isExamCompleted) return;
         if (document.visibilityState === 'hidden') {
             logProctorEvent('tab_blur', 'Student switched tabs or minimized browser');
             document.getElementById('focus-violation-overlay').style.display = 'flex';
@@ -493,18 +495,23 @@ function setupFocusTracking() {
         }
     });
 
-    window.addEventListener('blur', () => {
-        setTimeout(() => {
-            // If they clicked the iframe, document.hasFocus() remains true. 
-            // If they clicked off the browser entirely, it becomes false.
-            if (!document.hasFocus()) {
-                logProctorEvent('window_blur', 'Exam window lost focus');
-                document.getElementById('focus-violation-overlay').style.display = 'flex';
-            }
-        }, 100);
-    });
+    let wasFocused = true;
+    setInterval(() => {
+        if (isExamCompleted) return;
+        
+        // document.hasFocus() is true even if the user is typing inside the iframe.
+        // It ONLY becomes false if the user clicks out to another monitor or application.
+        const isFocused = document.hasFocus();
+        
+        if (wasFocused && !isFocused) {
+            logProctorEvent('window_blur', 'Exam window lost focus');
+            document.getElementById('focus-violation-overlay').style.display = 'flex';
+        }
+        wasFocused = isFocused;
+    }, 500);
 
     window.addEventListener('resize', () => {
+        if (isExamCompleted) return;
         if (examConfig.require_fullscreen && !document.fullscreenElement) {
             logProctorEvent('fullscreen_exit', 'Student exited fullscreen mode');
             document.getElementById('focus-violation-overlay').style.display = 'flex';
@@ -542,6 +549,8 @@ function showToast(msg) {
 
 
 async function endExam() {
+    isExamCompleted = true; // Instantly disable focus tracking
+    
     if (document.fullscreenElement) {
         document.exitFullscreen().catch(err => console.log('Exit fullscreen failed:', err));
     }
@@ -560,12 +569,25 @@ async function endExam() {
         await new Promise(r => setTimeout(r, 1000));
     }
     
-    // Disable the browser's hardware tracking logic so the screen recording icons shut off cleanly
-    if (videoStream) videoStream.getTracks().forEach(t => t.stop());
-    if (screenStream) screenStream.getTracks().forEach(t => t.stop());
-    if (finalStream) finalStream.getTracks().forEach(t => t.stop());
+    // Aggressively disable the browser's hardware tracking logic so the screen/mic recording icons shut off cleanly
+    const allStreams = [videoStream, screenStream, finalStream];
+    allStreams.forEach(stream => {
+        if (stream) stream.getTracks().forEach(t => {
+            try { t.stop(); } catch(e){}
+        });
+    });
+    
+    const localVideo = document.getElementById('local-video');
+    if (localVideo && localVideo.srcObject) {
+        localVideo.srcObject.getTracks().forEach(t => t.stop());
+        localVideo.srcObject = null;
+    }
+
     if (compositeAnimationId) cancelAnimationFrame(compositeAnimationId);
     compositeAnimationId = null;
+    
+    // Clear the iframe immediately to stop any lingering background noise from the quiz
+    document.getElementById('quiz-iframe').src = '';
     
     logProctorEvent('exam_ended', 'Student securely finished the exam.');
     
