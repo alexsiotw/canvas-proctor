@@ -91,16 +91,25 @@ async function startPreFlight() {
                 console.log("SEB detected: Skipping getDisplayMedia as it is blocked by SEB security policy.");
                 showToast("SEB blocks screen sharing, but your session is secured by the lockdown.");
             } else {
-                screenStream = await navigator.mediaDevices.getDisplayMedia({
-                    video: { cursor: "always", width: { max: 1024 }, height: { max: 768 }, frameRate: { max: 5 } },
-                    audio: false
-                });
-                
-                // Basic check to ensure they shared entire screen (heuristic: surface/display surface)
-                const track = screenStream.getVideoTracks()[0];
-                const settings = track.getSettings();
-                if (settings.displaySurface && settings.displaySurface !== 'monitor') {
-                    throw new Error("You must share your ENTIRE SCREEN, not just a window or tab.");
+                try {
+                    screenStream = await navigator.mediaDevices.getDisplayMedia({
+                        video: { cursor: "always", width: { max: 1024 }, height: { max: 768 }, frameRate: { max: 5 } },
+                        audio: false
+                    });
+                    
+                    const track = screenStream.getVideoTracks()[0];
+                    const settings = track.getSettings();
+                    if (settings.displaySurface && settings.displaySurface !== 'monitor') {
+                        throw new Error("You must share your ENTIRE SCREEN, not just a window or tab.");
+                    }
+                } catch (screenErr) {
+                    if (screenErr.name === 'NotAllowedError' || screenErr.message.includes('disallowed by permissions policy')) {
+                        throw new Error("Screen Sharing blocked! 1) iPads/iPhones do NOT support web screen sharing. 2) If on a computer, your LMS is blocking it. Please ask your instructor to set the Moodle tool to open in a 'New Window'.");
+                    } else if (screenErr.message.includes("ENTIRE SCREEN")) {
+                        throw screenErr;
+                    } else {
+                        throw new Error("Failed to start screen sharing. " + screenErr.message);
+                    }
                 }
             }
         }
