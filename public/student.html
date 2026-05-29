@@ -10,16 +10,119 @@
   <style>
     body, html { margin: 0; padding: 0; height: 100%; overflow: hidden; background: #f5f6f7; }
     #setup-container {
-        display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100%; padding: 20px;
+        display: none;
+        flex-direction: column;
+        width: 100%;
+        max-width: 900px;
+        margin: 40px auto;
+        background: white;
+        border-radius: 8px;
+        box-shadow: 0 4px 20px rgba(0,0,0,0.15);
+        overflow: hidden;
+        border: 1px solid #cbd5e1;
     }
-    .check-card {
-        background: white; border-radius: 8px; padding: 40px; box-shadow: 0 4px 20px rgba(0,0,0,0.1); text-align: center; max-width: 600px;
+    .setup-header {
+        background: #1e3a8a;
+        color: white;
+        padding: 15px 20px;
+        font-size: 16px;
+        font-weight: bold;
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        border-bottom: 2px solid #1d4ed8;
     }
-    .status-list { list-style: none; padding: 0; margin: 20px 0; text-align: left; }
-    .status-list li { margin-bottom: 10px; display: flex; align-items: center; gap: 10px; }
-    #active-exam-container { display: none; flex-direction: column; height: 100vh; width: 100vw; position: absolute; top: 0; left: 0; background: white; z-index: 1000; }
-    @keyframes pulse { 0% { opacity: 1; } 50% { opacity: 0.6; } 100% { opacity: 1; } }
-    video { width: 1px; height: 1px; position: absolute; opacity: 0; pointer-events: none; }
+    .setup-body {
+        display: flex;
+        min-height: 480px;
+    }
+    .setup-sidebar {
+        width: 250px;
+        background: #f1f5f9;
+        border-right: 1px solid #e2e8f0;
+        display: flex;
+        flex-direction: column;
+    }
+    .sidebar-step {
+        padding: 15px 20px;
+        font-size: 12px;
+        font-weight: 600;
+        color: #64748b;
+        border-bottom: 1px solid #e2e8f0;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        position: relative;
+    }
+    .sidebar-step.active {
+        background: white;
+        color: #1e293b;
+    }
+    .sidebar-step.active::before {
+        content: '';
+        position: absolute;
+        left: 0;
+        top: 0;
+        bottom: 0;
+        width: 4px;
+        background: #f97316;
+    }
+    .sidebar-step.completed {
+        color: #059669;
+    }
+    .setup-content {
+        flex: 1;
+        padding: 30px;
+        display: flex;
+        flex-direction: column;
+        justify-content: space-between;
+    }
+    .step-title {
+        font-size: 20px;
+        font-weight: 700;
+        color: #0f172a;
+        margin-bottom: 15px;
+    }
+    .step-description {
+        font-size: 14px;
+        line-height: 1.6;
+        color: #475569;
+        margin-bottom: 20px;
+    }
+    .volume-meter {
+        width: 100%;
+        height: 15px;
+        background: #e2e8f0;
+        border-radius: 8px;
+        overflow: hidden;
+        margin: 15px 0;
+        border: 1px solid #cbd5e1;
+    }
+    .volume-fill {
+        height: 100%;
+        width: 0%;
+        background: #22c55e;
+        transition: width 0.1s ease;
+    }
+    .video-preview-box {
+        width: 100%;
+        max-width: 400px;
+        aspect-ratio: 4/3;
+        background: black;
+        border-radius: 6px;
+        overflow: hidden;
+        position: relative;
+        margin: 15px 0;
+        border: 2px solid #cbd5e1;
+    }
+    #setup-container video {
+        width: 100% !important;
+        height: 100% !important;
+        position: relative !important;
+        opacity: 1 !important;
+        pointer-events: auto !important;
+        object-fit: cover !important;
+    }
   </style>
 </head>
 
@@ -37,25 +140,21 @@
       </div>
   </div>
 
-  <div id="setup-container" style="display: none;">
-      <div class="check-card">
-          <h1>Proctored Exam Setup</h1>
-          <p style="color: var(--text-secondary); margin-bottom: 20px;">
-              You are about to start a secure exam. Please grant the required permissions.
-          </p>
-          <ul class="status-list" id="requirements-list">
-              <!-- Dynamically populated based on exam config -->
-          </ul>
-
-          <!-- Camera Preview for student confidence -->
-          <div id="camera-preview-container" style="display: none; margin: 20px 0; border: 2px solid #eef2ff; border-radius: 12px; overflow: hidden; background: #000; line-height: 0;">
-              <div style="background: #eef2ff; padding: 8px; font-size: 11px; font-weight: bold; color: #4338ca; border-bottom: 2px solid #eef2ff; text-align: left;">📸 LIVE CAMERA PREVIEW</div>
-              <video id="camera-preview" autoplay muted playsinline style="width: 100%; height: auto; display: block;"></video>
+  <div id="setup-container">
+      <div class="setup-header">
+          <span>🔒 Proctor Gateway Secure Browser Check</span>
+      </div>
+      <div class="setup-body">
+          <div class="setup-sidebar" id="setup-sidebar">
+              <div class="sidebar-step active" id="step-nav-1">STEP 1: MICROPHONE CHECK</div>
+              <div class="sidebar-step" id="step-nav-2">STEP 2: WEBCAM CHECK</div>
+              <div class="sidebar-step" id="step-nav-3">STEP 3: FULLSCREEN MODE</div>
+              <div class="sidebar-step" id="step-nav-4">STEP 4: SCREEN SHARE</div>
+              <div class="sidebar-step" id="step-nav-5">STEP 5: BEGIN EXAM</div>
           </div>
-
-          <button id="btn-start" class="btn btn-primary" style="width: 100%; justify-content: center; padding: 14px; font-size: 16px;" onclick="startPreFlight()">Start System Check</button>
-          
-          <div id="error-msg" style="color: var(--danger); margin-top: 15px; display: none;"></div>
+          <div class="setup-content" id="setup-content">
+              <!-- Dynamically populated step content -->
+          </div>
       </div>
   </div>
 

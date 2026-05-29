@@ -87,6 +87,7 @@ async function initDatabase() {
       -- Force add missing columns onto existing production tables implicitly without crashing
       ALTER TABLE exams ADD COLUMN IF NOT EXISTS is_open BOOLEAN DEFAULT false;
       ALTER TABLE exams ADD COLUMN IF NOT EXISTS require_seb BOOLEAN DEFAULT false;
+      ALTER TABLE exams ADD COLUMN IF NOT EXISTS max_violations INTEGER DEFAULT 0;
       ALTER TABLE exam_sessions ADD COLUMN IF NOT EXISTS video_archived BOOLEAN DEFAULT false;
       ALTER TABLE exam_sessions ADD COLUMN IF NOT EXISTS mime_type VARCHAR(255) DEFAULT 'video/webm';
     `);

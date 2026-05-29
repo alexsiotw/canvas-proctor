@@ -99,7 +99,7 @@ function renderExams() {
                     <div class="session-title">${ex.title}</div>
                     <div style="margin-top: 10px; font-weight: bold; font-size: 14px; background: #eef2ff; color: #4338ca; padding: 5px 10px; border-radius: 4px; display: inline-block;">Code: ${ex.exam_code}</div>
                     <div style="font-size: 12px; color: var(--text-secondary); margin-top: 8px;">
-                        <div>Max Attempts: ${ex.max_attempts || 1}</div>
+                        <div>Max Attempts: ${ex.max_attempts || 1} | Boot Limit: ${ex.max_violations > 0 ? ex.max_violations + ' leaves' : 'Disabled'}</div>
                         <div>📷 Camera: ${ex.require_camera ? 'Yes' : 'No'} | 🎤 Mic: ${ex.require_mic ? 'Yes' : 'No'} | 💻 Screen: ${ex.require_screen ? 'Yes' : 'No'} | 🛡️ SEB: ${ex.require_seb ? 'Yes' : 'No'}</div>
                     </div>
                 </div>
@@ -314,6 +314,11 @@ function showCreateExamModal(examId = null) {
                 <label class="form-label">Max Attempts</label>
                 <input type="number" id="max-attempts" class="form-input" value="${exam ? exam.max_attempts : 1}" min="1">
             </div>
+            <div style="flex:1;">
+                <label class="form-label">Boot Limit (Tab Leaves)</label>
+                <input type="number" id="max-violations" class="form-input" value="${exam ? exam.max_violations : 0}" min="0">
+                <div style="font-size:9px; color:var(--text-muted); margin-top:2px;">0 = Unlimited (no boot)</div>
+            </div>
         </div>
         <div class="form-group">
             <label class="form-label">LMS Quiz URL</label>
@@ -356,6 +361,7 @@ async function saveExam(examId = null) {
         canvas_quiz_url: document.getElementById('exam-url').value,
         exam_code: document.getElementById('exam-code').value,
         max_attempts: parseInt(document.getElementById('max-attempts').value) || 1,
+        max_violations: parseInt(document.getElementById('max-violations').value) || 0,
         require_camera: document.getElementById('chk-camera').checked,
         require_mic: document.getElementById('chk-mic').checked,
         require_screen: document.getElementById('chk-screen').checked,

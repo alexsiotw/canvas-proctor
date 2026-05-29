@@ -43,79 +43,324 @@ async function verifyExamCode() {
         examConfig = data;
         document.getElementById('code-container').style.display = 'none';
         document.getElementById('setup-container').style.display = 'flex';
-        renderRequirements();
+        initStepWizard();
     } catch(err) {
         errorMsg.innerText = err.message;
         errorMsg.style.display = 'block';
     }
 }
 
-function renderRequirements() {
-    let reqHtml = '';
-    if (examConfig.require_camera) reqHtml += '<li>📷 Web Camera Access Required</li>';
-    if (examConfig.require_mic) reqHtml += '<li>🎤 Microphone Access Required</li>';
-    if (examConfig.require_screen) reqHtml += '<li>💻 Screen Sharing (Entire Screen) Required</li>';
-    if (examConfig.require_fullscreen) reqHtml += '<li>🔲 Fullscreen Mode will be enforced</li>';
-    if (examConfig.require_seb) reqHtml += '<li>🛡️ Safe Exam Browser Required</li>';
-    
-    document.getElementById('requirements-list').innerHTML = reqHtml;
+let currentStep = 1;
+let localMicStream = null;
+let localCamStream = null;
+let localScreenStream = null;
+let micAudioContext = null;
+let micAnalyser = null;
+let micVolInterval = null;
+let webcamRecorder = null;
+let webcamChunks = [];
+let webcamVideoUrl = null;
+let violationCount = 0;
+
+function isIOS() {
+    return /iPad|iPhone|iPod/.test(navigator.userAgent) || 
+           (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
 }
 
-async function startPreFlight() {
-    // Check SEB requirement first
+function updateSidebarNav() {
+    for (let i = 1; i <= 5; i++) {
+        const navEl = document.getElementById(`step-nav-${i}`);
+        if (!navEl) continue;
+        navEl.className = 'sidebar-step';
+        if (i === currentStep) {
+            navEl.classList.add('active');
+        } else if (i < currentStep) {
+            navEl.classList.add('completed');
+            navEl.innerHTML = `STEP ${i}: ${getStepName(i)} ✓`;
+        } else {
+            navEl.innerHTML = `STEP ${i}: ${getStepName(i)}`;
+        }
+    }
+}
+
+function getStepName(step) {
+    switch(step) {
+        case 1: return 'MICROPHONE CHECK';
+        case 2: return 'WEBCAM CHECK';
+        case 3: return 'FULLSCREEN MODE';
+        case 4: return 'SCREEN SHARE';
+        case 5: return 'BEGIN EXAM';
+    }
+}
+
+function initStepWizard() {
     if (examConfig.require_seb && !isSEB()) {
         showSEBBlocker();
         return;
     }
+    currentStep = 1;
+    goToStep(1);
+}
 
-    const errorMsg = document.getElementById('error-msg');
-    errorMsg.style.display = 'none';
+function goToStep(step) {
+    currentStep = step;
+    updateSidebarNav();
     
+    if (step !== 1 && micVolInterval) {
+        clearInterval(micVolInterval);
+        micVolInterval = null;
+    }
+    if (step !== 1 && micAudioContext) {
+        try { micAudioContext.close(); } catch(e){}
+        micAudioContext = null;
+    }
+
+    const contentEl = document.getElementById('setup-content');
+    
+    switch(step) {
+        case 1:
+            contentEl.innerHTML = `
+                <div>
+                    <h2 class="step-title">Microphone Check</h2>
+                    <p class="step-description">
+                        Speak into your microphone in a normal voice. The indicator below should move as you speak to confirm your microphone levels are good.
+                    </p>
+                    <div class="volume-meter">
+                        <div id="mic-volume-fill" class="volume-fill"></div>
+                    </div>
+                    <div id="step-error" style="color: var(--danger); font-size: 14px; margin-top: 10px; display: none;"></div>
+                </div>
+                <div style="display: flex; justify-content: flex-end; gap: 15px; margin-top: 20px;">
+                    <button class="btn btn-primary" onclick="startMicCheck()">Check Microphone</button>
+                    <button id="btn-next-step" class="btn btn-primary" style="background:#f97316; color:white; border:none;" onclick="goToStep(2)" disabled>Next Step</button>
+                </div>
+            `;
+            if (localMicStream) {
+                startMicCheck();
+            }
+            break;
+            
+        case 2:
+            contentEl.innerHTML = `
+                <div>
+                    <h2 class="step-title">Webcam Check</h2>
+                    <p class="step-description">
+                        Adjust the camera so your image appears properly in the window.<br><br>
+                        While speaking in your normal voice (say the alphabet or count to 10), click <strong>"Record Five Second Video."</strong><br><br>
+                        (This video will be discarded after the webcam check).
+                    </p>
+                    <div class="video-preview-box">
+                        <video id="webcam-check-preview" autoplay muted playsinline></video>
+                    </div>
+                    <div id="webcam-timer" style="font-weight: bold; color: #1e3a8a; margin: 10px 0;"></div>
+                    <div id="step-error" style="color: var(--danger); font-size: 14px; margin-top: 10px; display: none;"></div>
+                </div>
+                <div style="display: flex; justify-content: flex-end; gap: 15px; margin-top: 20px;">
+                    <button id="btn-record-webcam" class="btn btn-primary" onclick="startWebcam5sRecord()">Record Five Second Video</button>
+                    <button id="btn-next-step" class="btn btn-primary" style="background:#f97316; color:white; border:none;" onclick="goToStep(3)" disabled>Next Step</button>
+                </div>
+            `;
+            startWebcamCheck();
+            break;
+            
+        case 3:
+            contentEl.innerHTML = `
+                <div>
+                    <h2 class="step-title">Fullscreen Mode</h2>
+                    <p class="step-description">
+                        This exam must be taken in Fullscreen Mode to prevent multitasking or accessing other tabs/windows.
+                    </p>
+                    <div id="fullscreen-status" style="font-weight: bold; color: #059669; margin: 15px 0;">
+                        ${document.fullscreenElement ? '✓ Fullscreen Mode Enabled' : 'Fullscreen not yet active'}
+                    </div>
+                    <div id="step-error" style="color: var(--danger); font-size: 14px; margin-top: 10px; display: none;"></div>
+                </div>
+                <div style="display: flex; justify-content: flex-end; gap: 15px; margin-top: 20px;">
+                    <button class="btn btn-primary" onclick="requestFullscreenStep()">Enter Fullscreen</button>
+                    <button id="btn-next-step" class="btn btn-primary" style="background:#f97316; color:white; border:none;" onclick="goToStep(4)" ${document.fullscreenElement ? '' : 'disabled'}>Next Step</button>
+                </div>
+            `;
+            break;
+            
+        case 4:
+            const ios = isIOS();
+            contentEl.innerHTML = `
+                <div>
+                    <h2 class="step-title">Screen Share</h2>
+                    ${ios ? `
+                        <p class="step-description" style="color: #1e3a8a; font-weight: bold; background: #eff6ff; padding: 15px; border-radius: 6px; border: 1px solid #bfdbfe;">
+                            📱 iPad / iPhone Detected: Apple iOS does not support screen-sharing in Safari. This requirement has been bypassed for your device, but webcam and microphone monitoring will remain active.
+                        </p>
+                    ` : `
+                        <p class="step-description">
+                            You must share your <strong>ENTIRE SCREEN</strong> (not just a window or Chrome tab) to secure the exam session.
+                        </p>
+                        <div id="screenshare-status" style="font-weight: bold; color: #059669; margin: 15px 0;">
+                            ${localScreenStream ? '✓ Screen Share Active' : 'Screen share not yet active'}
+                        </div>
+                    `}
+                    <div id="step-error" style="color: var(--danger); font-size: 14px; margin-top: 10px; display: none;"></div>
+                </div>
+                <div style="display: flex; justify-content: flex-end; gap: 15px; margin-top: 20px;">
+                    ${ios ? '' : `<button class="btn btn-primary" onclick="requestScreenShareStep()">Share Entire Screen</button>`}
+                    <button id="btn-next-step" class="btn btn-primary" style="background:#f97316; color:white; border:none;" onclick="goToStep(5)" ${ios || localScreenStream ? '' : 'disabled'}>Next Step</button>
+                </div>
+            `;
+            break;
+            
+        case 5:
+            contentEl.innerHTML = `
+                <div>
+                    <h2 class="step-title">Begin Exam</h2>
+                    <p class="step-description">
+                        All checks have passed successfully. Click the button below to start your proctored session.
+                    </p>
+                </div>
+                <div style="display: flex; justify-content: flex-end; gap: 15px; margin-top: 20px;">
+                    <button class="btn btn-success" style="padding: 15px 40px; font-size: 16px; font-weight: bold;" onclick="startMainExamSession()">Begin Exam Now</button>
+                </div>
+            `;
+            break;
+    }
+}
+
+function showStepError(msg) {
+    const errEl = document.getElementById('step-error');
+    if (errEl) {
+        errEl.innerText = msg;
+        errEl.style.display = 'block';
+    }
+}
+
+async function startMicCheck() {
     try {
-        if (examConfig.require_camera || examConfig.require_mic) {
-            videoStream = await navigator.mediaDevices.getUserMedia({
-                video: examConfig.require_camera ? { width: { max: 640 }, height: { max: 360 }, frameRate: { max: 10 } } : false,
-                audio: examConfig.require_mic
-            });
-
-            // Confidence Preview for Student
-            const previewEl = document.getElementById('camera-preview');
-            const previewContainer = document.getElementById('camera-preview-container');
-            if (previewEl && previewContainer && examConfig.require_camera) {
-                previewEl.srcObject = videoStream;
-                previewContainer.style.display = 'block';
+        localMicStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        micAudioContext = new (window.AudioContext || window.webkitAudioContext)();
+        micAnalyser = micAudioContext.createAnalyser();
+        const source = micAudioContext.createMediaStreamSource(localMicStream);
+        source.connect(micAnalyser);
+        micAnalyser.fftSize = 256;
+        const dataArray = new Uint8Array(micAnalyser.frequencyBinCount);
+        
+        const meterFill = document.getElementById('mic-volume-fill');
+        const nextBtn = document.getElementById('btn-next-step');
+        if (nextBtn) nextBtn.disabled = false;
+        
+        micVolInterval = setInterval(() => {
+            micAnalyser.getByteFrequencyData(dataArray);
+            let sum = 0;
+            for (let i = 0; i < dataArray.length; i++) {
+                sum += dataArray[i];
             }
-        }
+            const average = sum / dataArray.length;
+            const percentage = Math.min(100, Math.round((average / 128) * 100));
+            if (meterFill) meterFill.style.width = `${percentage}%`;
+        }, 50);
+    } catch (err) {
+        showStepError("Microphone access denied or not found: " + err.message);
+    }
+}
 
-        if (examConfig.require_screen) {
-            if (isSEB()) {
-                console.log("SEB detected: Skipping getDisplayMedia as it is blocked by SEB security policy.");
-                showToast("SEB blocks screen sharing, but your session is secured by the lockdown.");
-            } else {
-                try {
-                    screenStream = await navigator.mediaDevices.getDisplayMedia({
-                        video: { cursor: "always", width: { max: 1024 }, height: { max: 768 }, frameRate: { max: 5 } },
-                        audio: false
-                    });
-                    
-                    const track = screenStream.getVideoTracks()[0];
-                    const settings = track.getSettings();
-                    if (settings.displaySurface && settings.displaySurface !== 'monitor') {
-                        throw new Error("You must share your ENTIRE SCREEN, not just a window or tab.");
-                    }
-                } catch (screenErr) {
-                    if (screenErr.name === 'NotAllowedError' || screenErr.message.includes('disallowed by permissions policy')) {
-                        throw new Error("Screen Sharing blocked! 1) iPads/iPhones do NOT support web screen sharing. 2) If on a computer, your LMS is blocking it. Please ask your instructor to set the Moodle tool to open in a 'New Window'.");
-                    } else if (screenErr.message.includes("ENTIRE SCREEN")) {
-                        throw screenErr;
-                    } else {
-                        throw new Error("Failed to start screen sharing. " + screenErr.message);
-                    }
-                }
+async function startWebcamCheck() {
+    try {
+        localCamStream = await navigator.mediaDevices.getUserMedia({ video: { width: 640, height: 480 }, audio: true });
+        const videoEl = document.getElementById('webcam-check-preview');
+        if (videoEl) videoEl.srcObject = localCamStream;
+    } catch (err) {
+        showStepError("Camera access denied or not found: " + err.message);
+    }
+}
+
+function startWebcam5sRecord() {
+    const recordBtn = document.getElementById('btn-record-webcam');
+    const timerEl = document.getElementById('webcam-timer');
+    if (!localCamStream) return;
+    
+    webcamChunks = [];
+    webcamRecorder = new MediaRecorder(localCamStream, { mimeType: 'video/webm' });
+    webcamRecorder.ondataavailable = (e) => {
+        if (e.data && e.data.size > 0) webcamChunks.push(e.data);
+    };
+    webcamRecorder.onstop = () => {
+        const blob = new Blob(webcamChunks, { type: 'video/webm' });
+        webcamVideoUrl = URL.createObjectURL(blob);
+        
+        const videoEl = document.getElementById('webcam-check-preview');
+        if (videoEl) {
+            videoEl.srcObject = null;
+            videoEl.src = webcamVideoUrl;
+            videoEl.muted = false;
+            videoEl.loop = true;
+            videoEl.play();
+        }
+        
+        recordBtn.innerText = "Record Again";
+        recordBtn.disabled = false;
+        document.getElementById('btn-next-step').disabled = false;
+    };
+    
+    webcamRecorder.start();
+    recordBtn.disabled = true;
+    
+    let secondsLeft = 5;
+    timerEl.innerText = `Recording: ${secondsLeft}s`;
+    
+    const interval = setInterval(() => {
+        secondsLeft--;
+        if (secondsLeft <= 0) {
+            clearInterval(interval);
+            timerEl.innerText = "Reviewing recorded clip...";
+            if (webcamRecorder && webcamRecorder.state !== 'inactive') {
+                webcamRecorder.stop();
             }
+        } else {
+            timerEl.innerText = `Recording: ${secondsLeft}s`;
         }
+    }, 1000);
+}
 
-        // Combine streams for recording
+function requestFullscreenStep() {
+    document.documentElement.requestFullscreen()
+        .then(() => {
+            document.getElementById('fullscreen-status').innerHTML = "✓ Fullscreen Mode Enabled";
+            document.getElementById('btn-next-step').disabled = false;
+        })
+        .catch(err => {
+            showStepError("Failed to enter Fullscreen mode: " + err.message);
+        });
+}
+
+async function requestScreenShareStep() {
+    try {
+        localScreenStream = await navigator.mediaDevices.getDisplayMedia({
+            video: { cursor: "always", width: { max: 1024 }, height: { max: 768 }, frameRate: { max: 5 } },
+            audio: false
+        });
+        
+        const track = localScreenStream.getVideoTracks()[0];
+        const settings = track.getSettings();
+        if (settings.displaySurface && settings.displaySurface !== 'monitor') {
+            throw new Error("You must share your ENTIRE SCREEN, not just a window or tab.");
+        }
+        
+        document.getElementById('screenshare-status').innerHTML = "✓ Screen Share Active";
+        document.getElementById('btn-next-step').disabled = false;
+    } catch (screenErr) {
+        showStepError(screenErr.message);
+    }
+}
+
+async function startMainExamSession() {
+    try {
+        // Clean up checking URLs/Timers
+        if (webcamVideoUrl) {
+            URL.revokeObjectURL(webcamVideoUrl);
+            webcamVideoUrl = null;
+        }
+        
+        videoStream = localCamStream;
+        screenStream = localScreenStream;
+        
         const tracks = [];
         let compositeStream = null;
 
@@ -125,7 +370,6 @@ async function startPreFlight() {
             compositeStream.getTracks().forEach(t => tracks.push(t));
         } else if (screenStream) {
             tracks.push(screenStream.getVideoTracks()[0]);
-            // Add mic if available
             if (videoStream && videoStream.getAudioTracks().length > 0) {
                 videoStream.getAudioTracks().forEach(t => tracks.push(t));
             }
@@ -133,60 +377,38 @@ async function startPreFlight() {
             videoStream.getTracks().forEach(t => tracks.push(t));
         }
 
-        // Finalize stream
         finalStream = new MediaStream(tracks);
         console.log(`[Media] Final stream created with ${finalStream.getVideoTracks().length} video and ${finalStream.getAudioTracks().length} audio tracks.`);
 
-        // Ensure all gathered tracks are enabled and ready
-        tracks.forEach(track => {
-            track.enabled = true;
-            if (track.readyState === 'ended') console.warn(`[Media] Warning: Track ${track.label} is in 'ended' state.`);
-        });
-
-        // Finalize stream
-        finalStream = new MediaStream(tracks);
-        console.log(`[Media] Final stream created with ${finalStream.getVideoTracks().length} video and ${finalStream.getAudioTracks().length} audio tracks.`);
-
-        // Setup Media Recorder
         setupRecording();
 
-        // Environment Sync: Wait for tracks to "warm up" before starting data flow
-        // This prevents corrupted initial chunks which cause DEMUXER_ERROR
         console.log("[Media] Warming up tracks for stable recording...");
         await new Promise(resolve => setTimeout(resolve, 1500));
 
-        // Start the recorder with 5-second slices (more stable than 3s)
         if (mediaRecorder) {
             mediaRecorder.start(5000);
             console.log("[Recorder] Session recording started with 5s slices.");
         }
         
-        // Attach local video object for snapshot extraction (choose screen or camera)
         if(screenStream) {
             document.getElementById('local-video').srcObject = screenStream;
         } else if(videoStream) {
             document.getElementById('local-video').srcObject = videoStream;
         }
 
-        // Tell server session started
         const sessionRes = await fetch('/api/session/start', {
             method: 'POST', headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ exam_id: examConfig.id })
         });
         sessionInfo = await sessionRes.json();
 
-        // Join socket room
         socket.emit('join_student', {
             exam_id: examConfig.id,
             exam_session_id: sessionInfo.id,
             student_name: sessionInfo.student_name
         });
 
-        // Setup Media Recorder
-        setupRecording();
-
-        // Setup environment
-        if (examConfig.require_fullscreen) {
+        if (examConfig.require_fullscreen && !document.fullscreenElement) {
              await document.documentElement.requestFullscreen().catch(e => console.log('Fullscreen failed:', e));
         }
 
@@ -194,20 +416,16 @@ async function startPreFlight() {
              document.addEventListener('contextmenu', event => event.preventDefault());
         }
 
-        // Launch Exam
         document.getElementById('setup-container').style.display = 'none';
         document.getElementById('active-exam-container').style.display = 'flex';
         document.getElementById('quiz-iframe').src = examConfig.canvas_quiz_url;
 
-        // Initialize focus tracking to catch tab switches/blurs
         setupFocusTracking();
 
-        // Start taking snapshots
         setInterval(sendSnapshot, 3000);
 
     } catch(err) {
-        errorMsg.innerText = err.message || err.name;
-        errorMsg.style.display = 'block';
+        alert("Failed to initialize proctoring session: " + err.message);
     }
 }
 
@@ -485,11 +703,27 @@ function sendSnapshot() {
 }
 
 function setupFocusTracking() {
+    function handleViolation(type, message) {
+        if (isExamCompleted) return;
+        violationCount++;
+        logProctorEvent(type, `${message} (Violation #${violationCount})`);
+        
+        if (examConfig.max_violations > 0 && violationCount >= examConfig.max_violations) {
+            bootStudent();
+        } else {
+            let msg = 'You have left the exam tab or lost focus of the window. This action has been logged and flagged for your instructor to review.';
+            if (examConfig.max_violations > 0) {
+                msg += ` Warning: You have ${violationCount} / ${examConfig.max_violations} focus violations. Exceeding this limit will automatically terminate your exam session.`;
+            }
+            document.getElementById('focus-violation-overlay').querySelector('p').innerText = msg;
+            document.getElementById('focus-violation-overlay').style.display = 'flex';
+        }
+    }
+
     document.addEventListener('visibilitychange', () => {
         if (isExamCompleted) return;
         if (document.visibilityState === 'hidden') {
-            logProctorEvent('tab_blur', 'Student switched tabs or minimized browser');
-            document.getElementById('focus-violation-overlay').style.display = 'flex';
+            handleViolation('tab_blur', 'Student switched tabs or minimized browser');
         } else {
             logProctorEvent('tab_focus', 'Student returned to the exam tab');
         }
@@ -498,14 +732,9 @@ function setupFocusTracking() {
     let wasFocused = true;
     setInterval(() => {
         if (isExamCompleted) return;
-        
-        // document.hasFocus() is true even if the user is typing inside the iframe.
-        // It ONLY becomes false if the user clicks out to another monitor or application.
         const isFocused = document.hasFocus();
-        
         if (wasFocused && !isFocused) {
-            logProctorEvent('window_blur', 'Exam window lost focus');
-            document.getElementById('focus-violation-overlay').style.display = 'flex';
+            handleViolation('window_blur', 'Exam window lost focus');
         }
         wasFocused = isFocused;
     }, 500);
@@ -513,10 +742,58 @@ function setupFocusTracking() {
     window.addEventListener('resize', () => {
         if (isExamCompleted) return;
         if (examConfig.require_fullscreen && !document.fullscreenElement) {
-            logProctorEvent('fullscreen_exit', 'Student exited fullscreen mode');
-            document.getElementById('focus-violation-overlay').style.display = 'flex';
+            handleViolation('fullscreen_exit', 'Student exited fullscreen mode');
         }
     });
+}
+
+async function bootStudent() {
+    isExamCompleted = true; // Stop tracking violations
+    
+    if (document.fullscreenElement) {
+        document.exitFullscreen().catch(err => console.log('Exit fullscreen failed:', err));
+    }
+    
+    // Clear overlay
+    document.getElementById('focus-violation-overlay').style.display = 'none';
+
+    // Teardown tracks
+    const allStreams = [videoStream, screenStream, finalStream, localMicStream, localCamStream, localScreenStream];
+    allStreams.forEach(stream => {
+        if (stream) stream.getTracks().forEach(t => {
+            try { t.stop(); } catch(e){}
+        });
+    });
+    
+    const localVideo = document.getElementById('local-video');
+    if (localVideo && localVideo.srcObject) {
+        localVideo.srcObject.getTracks().forEach(t => t.stop());
+        localVideo.srcObject = null;
+    }
+    
+    if (compositeAnimationId) cancelAnimationFrame(compositeAnimationId);
+    compositeAnimationId = null;
+    
+    document.getElementById('quiz-iframe').src = '';
+    
+    logProctorEvent('booted', 'Student was automatically booted for exceeding focus limit.');
+    
+    await fetch('/api/session/end', {
+        method: 'POST', headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({ exam_session_id: sessionInfo.id, status: 'booted' })
+    });
+    
+    document.getElementById('active-exam-container').innerHTML = `
+        <div style="margin: auto; text-align: center; padding: 40px; background: white; border-radius: 8px; max-width: 600px; box-shadow: 0 4px 20px rgba(0,0,0,0.15); font-family: sans-serif;">
+            <h1 style="color: var(--danger); margin-bottom: 20px; font-size: 28px;">⚠️ Exam Session Terminated</h1>
+            <p style="color: var(--text-secondary); font-size: 16px; line-height: 1.6; margin-bottom: 20px;">
+                Your session has been terminated because you exceeded the limit of allowed window/tab departures (${examConfig.max_violations}) permitted by your instructor.
+            </p>
+            <p style="color: var(--text-muted); font-size: 14px;">
+                This violation has been logged and flagged for review. Please contact your instructor.
+            </p>
+        </div>
+    `;
 }
 
 function logProctorEvent(type, message) {

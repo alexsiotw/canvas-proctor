@@ -162,12 +162,12 @@ app.get('/api/exams', requireInstructor, async (req, res) => {
 app.post('/api/exams', requireInstructor, async (req, res) => {
     try {
         const { canvasCourseId } = req.session.lti;
-        const { title, canvas_quiz_url, require_mic, require_camera, require_screen, disable_right_click, require_fullscreen, require_seb, max_attempts, exam_code } = req.body;
+        const { title, canvas_quiz_url, require_mic, require_camera, require_screen, disable_right_click, require_fullscreen, require_seb, max_attempts, exam_code, max_violations } = req.body;
         
         const result = await pool.query(`
-            INSERT INTO exams (canvas_course_id, title, canvas_quiz_url, require_mic, require_camera, require_screen, disable_right_click, require_fullscreen, require_seb, max_attempts, exam_code, is_open)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, false) RETURNING *
-        `, [canvasCourseId, title, canvas_quiz_url, require_mic, require_camera, require_screen, disable_right_click, require_fullscreen, require_seb || false, max_attempts || 1, exam_code]);
+            INSERT INTO exams (canvas_course_id, title, canvas_quiz_url, require_mic, require_camera, require_screen, disable_right_click, require_fullscreen, require_seb, max_attempts, exam_code, max_violations, is_open)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, false) RETURNING *
+        `, [canvasCourseId, title, canvas_quiz_url, require_mic, require_camera, require_screen, disable_right_click, require_fullscreen, require_seb || false, max_attempts || 1, exam_code, max_violations || 0]);
         
         res.json(result.rows[0]);
     } catch (err) {
@@ -231,7 +231,8 @@ app.patch('/api/exams/:id', requireInstructor, async (req, res) => {
         const { 
             title, canvas_quiz_url, exam_code, max_attempts,
             require_camera, require_mic, require_screen,
-            disable_right_click, require_fullscreen, require_seb
+            disable_right_click, require_fullscreen, require_seb,
+            max_violations
         } = req.body;
 
         const result = await pool.query(`
@@ -239,14 +240,14 @@ app.patch('/api/exams/:id', requireInstructor, async (req, res) => {
                 title = $1, canvas_quiz_url = $2, exam_code = $3, max_attempts = $4,
                 require_camera = $5, require_mic = $6, require_screen = $7,
                 disable_right_click = $8, require_fullscreen = $9, require_seb = $10,
-                updated_at = NOW()
-            WHERE id = $11 AND canvas_course_id = $12
+                max_violations = $11, updated_at = NOW()
+            WHERE id = $12 AND canvas_course_id = $13
             RETURNING *
         `, [
             title, canvas_quiz_url, exam_code, max_attempts,
             require_camera, require_mic, require_screen,
             disable_right_click, require_fullscreen, require_seb,
-            id, canvasCourseId
+            max_violations || 0, id, canvasCourseId
         ]);
 
         if (result.rows.length === 0) return res.status(404).json({ error: 'Exam not found' });
@@ -333,13 +334,14 @@ app.post('/api/session/log', requireAuth, async (req, res) => {
 // API: End Exam Session
 app.post('/api/session/end', requireAuth, async (req, res) => {
     try {
-        const { exam_session_id } = req.body;
-        await pool.query('UPDATE exam_sessions SET status=$1 WHERE id=$2', ['completed', exam_session_id]);
+        const { exam_session_id, status } = req.body;
+        const finalStatus = status || 'completed';
+        await pool.query('UPDATE exam_sessions SET status=$1 WHERE id=$2', [finalStatus, exam_session_id]);
         
         const examIdQuery = await pool.query('SELECT exam_id FROM exam_sessions WHERE id=$1', [exam_session_id]);
         if(examIdQuery.rows.length > 0) {
             io.to('teacher_' + examIdQuery.rows[0].exam_id).emit('student_status', { 
-                session_id: exam_session_id, status: 'completed' 
+                session_id: exam_session_id, status: finalStatus 
             });
         }
         res.json({ success: true });
