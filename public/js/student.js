@@ -274,15 +274,43 @@ async function startWebcamCheck() {
 function startWebcam5sRecord() {
     const recordBtn = document.getElementById('btn-record-webcam');
     const timerEl = document.getElementById('webcam-timer');
-    if (!localCamStream) return;
+    if (!localCamStream) {
+        showStepError("Camera stream not available. Please allow camera access.");
+        return;
+    }
     
     webcamChunks = [];
-    webcamRecorder = new MediaRecorder(localCamStream, { mimeType: 'video/webm' });
+    let options = {};
+    const candidates = [
+        'video/webm;codecs=vp8,opus',
+        'video/webm',
+        'video/mp4;codecs=avc1',
+        'video/mp4'
+    ];
+    for (const candidate of candidates) {
+        if (MediaRecorder.isTypeSupported(candidate)) {
+            options = { mimeType: candidate };
+            break;
+        }
+    }
+    
+    try {
+        webcamRecorder = new MediaRecorder(localCamStream, options);
+    } catch (e) {
+        try {
+            webcamRecorder = new MediaRecorder(localCamStream);
+        } catch (err) {
+            showStepError("MediaRecorder error: " + err.message);
+            return;
+        }
+    }
+    
     webcamRecorder.ondataavailable = (e) => {
         if (e.data && e.data.size > 0) webcamChunks.push(e.data);
     };
     webcamRecorder.onstop = () => {
-        const blob = new Blob(webcamChunks, { type: 'video/webm' });
+        const mimeToUse = webcamRecorder.mimeType || 'video/webm';
+        const blob = new Blob(webcamChunks, { type: mimeToUse });
         webcamVideoUrl = URL.createObjectURL(blob);
         
         const videoEl = document.getElementById('webcam-check-preview');
@@ -291,7 +319,7 @@ function startWebcam5sRecord() {
             videoEl.src = webcamVideoUrl;
             videoEl.muted = false;
             videoEl.loop = true;
-            videoEl.play();
+            videoEl.play().catch(pErr => console.log('Preview check failed:', pErr));
         }
         
         recordBtn.innerText = "Record Again";
@@ -299,24 +327,29 @@ function startWebcam5sRecord() {
         document.getElementById('btn-next-step').disabled = false;
     };
     
-    webcamRecorder.start();
-    recordBtn.disabled = true;
-    
-    let secondsLeft = 5;
-    timerEl.innerText = `Recording: ${secondsLeft}s`;
-    
-    const interval = setInterval(() => {
-        secondsLeft--;
-        if (secondsLeft <= 0) {
-            clearInterval(interval);
-            timerEl.innerText = "Reviewing recorded clip...";
-            if (webcamRecorder && webcamRecorder.state !== 'inactive') {
-                webcamRecorder.stop();
+    try {
+        webcamRecorder.start();
+        recordBtn.disabled = true;
+        
+        let secondsLeft = 5;
+        timerEl.innerText = `Recording: ${secondsLeft}s`;
+        
+        const interval = setInterval(() => {
+            secondsLeft--;
+            if (secondsLeft <= 0) {
+                clearInterval(interval);
+                timerEl.innerText = "Reviewing recorded clip...";
+                if (webcamRecorder && webcamRecorder.state !== 'inactive') {
+                    webcamRecorder.stop();
+                }
+            } else {
+                timerEl.innerText = `Recording: ${secondsLeft}s`;
             }
-        } else {
-            timerEl.innerText = `Recording: ${secondsLeft}s`;
-        }
-    }, 1000);
+        }, 1000);
+    } catch (startErr) {
+        showStepError("Failed to start recording: " + startErr.message);
+        recordBtn.disabled = false;
+    }
 }
 
 function requestFullscreenStep() {
