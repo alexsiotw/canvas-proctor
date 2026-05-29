@@ -123,6 +123,29 @@
         pointer-events: auto !important;
         object-fit: cover !important;
     }
+    #active-exam-container {
+        display: none;
+        flex-direction: column;
+        height: 100vh;
+        width: 100vw;
+        position: absolute;
+        top: 0;
+        left: 0;
+        background: white;
+        z-index: 1000;
+    }
+    #local-video {
+        width: 1px;
+        height: 1px;
+        position: absolute;
+        opacity: 0;
+        pointer-events: none;
+    }
+    @keyframes pulse {
+        0% { opacity: 1; }
+        50% { opacity: 0.6; }
+        100% { opacity: 1; }
+    }
   </style>
 </head>
 
