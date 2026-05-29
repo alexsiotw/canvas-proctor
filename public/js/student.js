@@ -888,8 +888,10 @@ async function endExam() {
         await stopPromise;
     }
     
-    while(activeUploads > 0) {
-        await new Promise(r => setTimeout(r, 1000));
+    // Limit the wait for active uploads to a maximum of 5 seconds to prevent getting stuck if a request hangs
+    const waitStart = Date.now();
+    while (activeUploads > 0 && (Date.now() - waitStart < 5000)) {
+        await new Promise(r => setTimeout(r, 500));
     }
     
     // Aggressively disable the browser's hardware tracking logic so the screen/mic recording icons shut off cleanly
