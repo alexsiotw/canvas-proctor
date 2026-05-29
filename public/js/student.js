@@ -263,7 +263,7 @@ async function startMicCheck() {
 
 async function startWebcamCheck() {
     try {
-        localCamStream = await navigator.mediaDevices.getUserMedia({ video: { width: 640, height: 480 }, audio: true });
+        localCamStream = await navigator.mediaDevices.getUserMedia({ video: { width: 640, height: 480 }, audio: false });
         const videoEl = document.getElementById('webcam-check-preview');
         if (videoEl) videoEl.srcObject = localCamStream;
     } catch (err) {
@@ -294,11 +294,20 @@ function startWebcam5sRecord() {
         }
     }
     
+    // Combine webcam video tracks with the already active microphone tracks to record both audio and video
+    const tracks = [
+        ...localCamStream.getVideoTracks()
+    ];
+    if (localMicStream) {
+        localMicStream.getAudioTracks().forEach(t => tracks.push(t));
+    }
+    const combinedStream = new MediaStream(tracks);
+    
     try {
-        webcamRecorder = new MediaRecorder(localCamStream, options);
+        webcamRecorder = new MediaRecorder(combinedStream, options);
     } catch (e) {
         try {
-            webcamRecorder = new MediaRecorder(localCamStream);
+            webcamRecorder = new MediaRecorder(combinedStream);
         } catch (err) {
             showStepError("MediaRecorder error: " + err.message);
             return;
