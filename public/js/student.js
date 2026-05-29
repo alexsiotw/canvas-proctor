@@ -87,8 +87,8 @@ function getStepName(step) {
     switch(step) {
         case 1: return 'MICROPHONE CHECK';
         case 2: return 'WEBCAM CHECK';
-        case 3: return 'FULLSCREEN MODE';
-        case 4: return 'SCREEN SHARE';
+        case 3: return 'SCREEN SHARE';
+        case 4: return 'FULLSCREEN MODE';
         case 5: return 'BEGIN EXAM';
     }
 }
@@ -164,25 +164,6 @@ function goToStep(step) {
             break;
             
         case 3:
-            contentEl.innerHTML = `
-                <div>
-                    <h2 class="step-title">Fullscreen Mode</h2>
-                    <p class="step-description">
-                        This exam must be taken in Fullscreen Mode to prevent multitasking or accessing other tabs/windows.
-                    </p>
-                    <div id="fullscreen-status" style="font-weight: bold; color: #059669; margin: 15px 0;">
-                        ${document.fullscreenElement ? '✓ Fullscreen Mode Enabled' : 'Fullscreen not yet active'}
-                    </div>
-                    <div id="step-error" style="color: var(--danger); font-size: 14px; margin-top: 10px; display: none;"></div>
-                </div>
-                <div style="display: flex; justify-content: flex-end; gap: 15px; margin-top: 20px;">
-                    <button class="btn btn-primary" onclick="requestFullscreenStep()">Enter Fullscreen</button>
-                    <button id="btn-next-step" class="btn btn-primary" style="background:#f97316; color:white; border:none;" onclick="goToStep(4)" ${document.fullscreenElement ? '' : 'disabled'}>Next Step</button>
-                </div>
-            `;
-            break;
-            
-        case 4:
             const ios = isIOS();
             contentEl.innerHTML = `
                 <div>
@@ -203,7 +184,26 @@ function goToStep(step) {
                 </div>
                 <div style="display: flex; justify-content: flex-end; gap: 15px; margin-top: 20px;">
                     ${ios ? '' : `<button class="btn btn-primary" onclick="requestScreenShareStep()">Share Entire Screen</button>`}
-                    <button id="btn-next-step" class="btn btn-primary" style="background:#f97316; color:white; border:none;" onclick="goToStep(5)" ${ios || localScreenStream ? '' : 'disabled'}>Next Step</button>
+                    <button id="btn-next-step" class="btn btn-primary" style="background:#f97316; color:white; border:none;" onclick="goToStep(4)" ${ios || localScreenStream ? '' : 'disabled'}>Next Step</button>
+                </div>
+            `;
+            break;
+            
+        case 4:
+            contentEl.innerHTML = `
+                <div>
+                    <h2 class="step-title">Fullscreen Mode</h2>
+                    <p class="step-description">
+                        This exam must be taken in Fullscreen Mode to prevent multitasking or accessing other tabs/windows.
+                    </p>
+                    <div id="fullscreen-status" style="font-weight: bold; color: #059669; margin: 15px 0;">
+                        ${document.fullscreenElement ? '✓ Fullscreen Mode Enabled' : 'Fullscreen not yet active'}
+                    </div>
+                    <div id="step-error" style="color: var(--danger); font-size: 14px; margin-top: 10px; display: none;"></div>
+                </div>
+                <div style="display: flex; justify-content: flex-end; gap: 15px; margin-top: 20px;">
+                    <button class="btn btn-primary" onclick="requestFullscreenStep()">Enter Fullscreen</button>
+                    <button id="btn-next-step" class="btn btn-primary" style="background:#f97316; color:white; border:none;" onclick="goToStep(5)" ${document.fullscreenElement ? '' : 'disabled'}>Next Step</button>
                 </div>
             `;
             break;
@@ -329,6 +329,10 @@ function startWebcam5sRecord() {
             videoEl.muted = false;
             videoEl.loop = true;
             videoEl.play().catch(pErr => console.log('Preview check failed:', pErr));
+        }
+        
+        if (timerEl) {
+            timerEl.innerHTML = '<span style="color: #059669;">✓ Review Complete</span>';
         }
         
         recordBtn.innerText = "Record Again";
