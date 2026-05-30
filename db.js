@@ -92,6 +92,7 @@ async function initDatabase() {
       ALTER TABLE exam_sessions ADD COLUMN IF NOT EXISTS video_archived BOOLEAN DEFAULT false;
       ALTER TABLE exam_sessions ADD COLUMN IF NOT EXISTS mime_type VARCHAR(255) DEFAULT 'video/webm';
       ALTER TABLE lti_sessions ADD COLUMN IF NOT EXISTS alternative_canvas_course_id VARCHAR(255);
+      ALTER TABLE lti_sessions ADD COLUMN IF NOT EXISTS debug_info TEXT;
 
       CREATE TABLE IF NOT EXISTS exam_placements (
         id SERIAL PRIMARY KEY,

@@ -80,7 +80,18 @@ async function loadExams() {
 
 function renderExams() {
     let bannerHtml = '';
-    if (activeResourceLinkId) {
+    if (contentItemReturnUrl) {
+        bannerHtml = `
+            <div style="background: #eff6ff; border: 1px solid #bfdbfe; padding: 15px; border-radius: 8px; margin-bottom: 20px; display: flex; justify-content: space-between; align-items: center; font-family: sans-serif;">
+                <div>
+                    <strong style="color:#1e3a8a; font-size: 14px;">📝 Canvas Content Selection Active</strong>
+                    <div style="font-size:12px; color:#475569; margin-top:2px;">
+                        Select an exam below and click "Select and Embed" to add it to your Canvas Module.
+                    </div>
+                </div>
+            </div>
+        `;
+    } else if (activeResourceLinkId) {
         const linkedExam = currentPlacementMapping ? exams.find(e => e.id == currentPlacementMapping.exam_id) : null;
         bannerHtml = `
             <div style="background: #eff6ff; border: 1px solid #bfdbfe; padding: 15px; border-radius: 8px; margin-bottom: 20px; display: flex; justify-content: space-between; align-items: center; font-family: sans-serif;">
@@ -136,11 +147,15 @@ function renderExams() {
                         <div>Max Attempts: ${ex.max_attempts || 1} | Boot Limit: ${ex.max_violations > 0 ? ex.max_violations + ' leaves' : 'Disabled'}</div>
                         <div>📷 Camera: ${ex.require_camera ? 'Yes' : 'No'} | 🎤 Mic: ${ex.require_mic ? 'Yes' : 'No'} | 💻 Screen: ${ex.require_screen ? 'Yes' : 'No'} | 🛡️ SEB: ${ex.require_seb ? 'Yes' : 'No'}</div>
                     </div>
-                    ${activeResourceLinkId ? `
+                    ${contentItemReturnUrl ? `
+                        <button class="btn" style="margin-top: 12px; width: 100%; justify-content: center; font-size:12px; padding: 8px; border:none; background:#2563eb; color:white;" onclick="event.stopPropagation(); embedExamSelection(${ex.id})">
+                            Select and Embed Exam
+                        </button>
+                    ` : (activeResourceLinkId ? `
                         <button class="btn" style="margin-top: 12px; width: 100%; justify-content: center; font-size:12px; padding: 8px; border:none; ${currentPlacementMapping && currentPlacementMapping.exam_id == ex.id ? 'background:#059669; color:white;' : 'background:#2563eb; color:white;'}" onclick="event.stopPropagation(); linkPlacement(${ex.id})">
                             ${currentPlacementMapping && currentPlacementMapping.exam_id == ex.id ? '✓ Linked to this placement' : 'Link to this Canvas Placement'}
                         </button>
-                    ` : ''}
+                    ` : '')}
                 </div>
             `;
         });
@@ -567,4 +582,13 @@ async function linkPlacement(examId) {
         console.error(err);
         showToast('Connection error', 'warning');
     }
+}
+
+function embedExamSelection(examId) {
+    if (!contentItemReturnUrl) return;
+    const exam = exams.find(e => e.id == examId);
+    const examTitle = exam ? exam.title : 'Proctor Gateway Assignment';
+    // Embed the exam_id in the launch URL returned to Canvas
+    const launchUrl = `${window.location.origin}/lti/launch?exam_id=${examId}`;
+    window.location.href = `/api/placements/lti-return?content_item_return_url=${encodeURIComponent(contentItemReturnUrl)}&exam_title=${encodeURIComponent(examTitle)}&launch_url=${encodeURIComponent(launchUrl)}`;
 }

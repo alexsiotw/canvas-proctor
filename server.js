@@ -131,9 +131,9 @@ app.post('/lti/launch', (req, res) => {
 
         // Persist session to DB for SEB handover
         pool.query(`
-            INSERT INTO lti_sessions (session_token, canvas_user_id, canvas_course_id, alternative_canvas_course_id, user_name, user_role)
-            VALUES ($1, $2, $3, $4, $5, $6)
-        `, [sessionToken, userId, canvasCourseId, alternativeCourseId, userName, req.session.lti.role]).catch(err => console.error('Failed to persist LTI session', err));
+            INSERT INTO lti_sessions (session_token, canvas_user_id, canvas_course_id, alternative_canvas_course_id, user_name, user_role, debug_info)
+            VALUES ($1, $2, $3, $4, $5, $6, $7)
+        `, [sessionToken, userId, canvasCourseId, alternativeCourseId, userName, req.session.lti.role, JSON.stringify(req.body)]).catch(err => console.error('Failed to persist LTI session', err));
 
         if (isInstructor) {
             let redirectUrl = `/index.html?resource_link_id=${encodeURIComponent(resourceLinkId)}`;
@@ -145,7 +145,8 @@ app.post('/lti/launch', (req, res) => {
             }
             res.redirect(redirectUrl);
         } else {
-            res.redirect(`/student.html?token=${sessionToken}${resourceLinkId ? '&placement_id=' + encodeURIComponent(resourceLinkId) : ''}`);
+            const queryExamId = req.query.exam_id || '';
+            res.redirect(`/student.html?token=${sessionToken}${resourceLinkId ? '&placement_id=' + encodeURIComponent(resourceLinkId) : ''}${queryExamId ? '&exam_id=' + encodeURIComponent(queryExamId) : ''}`);
         }
     });
 });
@@ -361,15 +362,21 @@ app.post('/api/exams/verify-code', requireAuth, async (req, res) => {
 app.post('/api/exams/verify-placement', requireAuth, async (req, res) => {
     try {
         const { canvasCourseId, userId } = req.session.lti;
-        const { placement_id } = req.body;
+        const { placement_id, exam_id } = req.body;
         
-        const placementResult = await pool.query('SELECT exam_id FROM exam_placements WHERE resource_link_id = $1', [placement_id]);
-        if (placementResult.rows.length === 0) {
+        let targetExamId = exam_id;
+        if (!targetExamId && placement_id) {
+            const placementResult = await pool.query('SELECT exam_id FROM exam_placements WHERE resource_link_id = $1', [placement_id]);
+            if (placementResult.rows.length > 0) {
+                targetExamId = placementResult.rows[0].exam_id;
+            }
+        }
+        
+        if (!targetExamId) {
             return res.status(404).json({ error: 'This Canvas placement is not configured yet. Please ask your instructor to link it to an exam.' });
         }
         
-        const exam_id = placementResult.rows[0].exam_id;
-        const examResult = await pool.query('SELECT * FROM exams WHERE id = $1', [exam_id]);
+        const examResult = await pool.query('SELECT * FROM exams WHERE id = $1', [targetExamId]);
         if (examResult.rows.length === 0) return res.status(404).json({ error: 'Linked exam not found' });
         
         const exam = examResult.rows[0];
@@ -748,9 +755,11 @@ app.get('/api/seb/config/:token/:filename?', async (req, res) => {
         const baseUrl = process.env.BASE_URL || `${req.protocol}://${req.get('host')}`;
         const exam_code = req.query.exam_code || '';
         const placement_id = req.query.placement_id || '';
+        const exam_id = req.query.exam_id || '';
         let startUrl = `${baseUrl}/student.html?token=${token}&seb=true`;
         if (exam_code) startUrl += `&exam_code=${encodeURIComponent(exam_code)}`;
         if (placement_id) startUrl += `&placement_id=${encodeURIComponent(placement_id)}`;
+        if (exam_id) startUrl += `&exam_id=${encodeURIComponent(exam_id)}`;
         startUrl = startUrl.replace(/&/g, '&amp;');
 
         let sebConfig = '';

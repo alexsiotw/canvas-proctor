@@ -15,11 +15,12 @@ let sessionToken = urlParams.get('token');
 let isSebParam = urlParams.get('seb') === 'true';
 let autoExamCode = urlParams.get('exam_code');
 let placementId = urlParams.get('placement_id');
+let directExamId = urlParams.get('exam_id');
 
 window.addEventListener('load', () => {
-    if (placementId && sessionToken) {
+    if ((placementId || directExamId) && sessionToken) {
         document.getElementById('code-container').style.display = 'none';
-        verifyPlacement(placementId);
+        verifyPlacement(placementId, directExamId);
     } else if (autoExamCode && sessionToken) {
         document.getElementById('access-code-input').value = autoExamCode;
         verifyExamCode();
@@ -54,14 +55,14 @@ async function verifyExamCode() {
     }
 }
 
-async function verifyPlacement(pId) {
+async function verifyPlacement(pId, eId = null) {
     const errorMsg = document.getElementById('code-error-msg');
     errorMsg.style.display = 'none';
     
     try {
         const res = await fetch('/api/exams/verify-placement', {
             method: 'POST', headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ placement_id: pId, token: sessionToken })
+            body: JSON.stringify({ placement_id: pId, exam_id: eId, token: sessionToken })
         });
         
         const data = await res.json();
@@ -564,6 +565,7 @@ function downloadSEBConfig() {
     const params = [];
     if (code) params.push(`exam_code=${encodeURIComponent(code)}`);
     if (placementId) params.push(`placement_id=${encodeURIComponent(placementId)}`);
+    if (directExamId) params.push(`exam_id=${encodeURIComponent(directExamId)}`);
     
     let url = `/api/seb/config/${sessionToken}`;
     if (params.length > 0) url += `?${params.join('&')}`;
@@ -582,6 +584,7 @@ function launchSEB() {
     const params = [];
     if (code) params.push(`exam_code=${encodeURIComponent(code)}`);
     if (placementId) params.push(`placement_id=${encodeURIComponent(placementId)}`);
+    if (directExamId) params.push(`exam_id=${encodeURIComponent(directExamId)}`);
     
     let configPath = `/api/seb/config/${sessionToken}/config.seb`;
     if (params.length > 0) configPath += `?${params.join('&')}`;
