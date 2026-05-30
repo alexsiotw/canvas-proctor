@@ -494,23 +494,38 @@ async function startMainExamSession() {
         if (examConfig.disable_right_click) {
              document.addEventListener('contextmenu', event => event.preventDefault());
         }
-
+        
         document.getElementById('setup-container').style.display = 'none';
         document.getElementById('active-exam-container').style.display = 'flex';
         
-        const pwdDisplay = document.getElementById('quiz-password-display');
-        if (pwdDisplay) {
-            if (examConfig.canvas_quiz_password && examConfig.canvas_quiz_password.trim() !== '') {
-                pwdDisplay.innerText = `Access Code: ${examConfig.canvas_quiz_password}`;
-                pwdDisplay.style.display = 'inline-block';
-            } else {
-                pwdDisplay.style.display = 'none';
-            }
-        }
-        
-        document.getElementById('quiz-iframe').src = examConfig.canvas_quiz_url;
+        // Open the Canvas quiz URL in a new tab/window
+        window.open(examConfig.canvas_quiz_url, '_blank');
 
-        setupFocusTracking();
+        // Show instructional text in place of the iframe to prevent nested framing blocks
+        document.getElementById('active-exam-container').innerHTML = `
+            <div style="background: #0f172a; padding: 10px 20px; display: flex; justify-content: space-between; align-items: center; color: white; flex-shrink: 0; box-shadow: 0 2px 10px rgba(0,0,0,0.3); z-index: 1001; width: 100%; box-sizing: border-box;">
+                <div style="display: flex; align-items: center; gap: 15px;">
+                    <div style="background: rgba(220, 38, 38, 0.9); padding: 5px 15px; border-radius: 20px; font-weight: bold; font-size: 14px; animation: pulse 2s infinite;">🔴 Recording Active</div>
+                    <span style="font-size: 14px; color: #cbd5e1;">Your session is secured.</span>
+                    <span id="quiz-password-display" style="${examConfig.canvas_quiz_password ? 'display: inline-block;' : 'display: none;'} background: #2563eb; color: white; padding: 5px 15px; border-radius: 4px; font-weight: bold; font-size: 14px; font-family: monospace;">${examConfig.canvas_quiz_password ? 'Access Code: ' + examConfig.canvas_quiz_password : ''}</span>
+                </div>
+                <button class="btn btn-secondary" style="background: var(--danger); color: white; border: none; padding: 8px 20px; font-weight: bold; font-size: 15px;" onclick="endExam()">End Exam & Submit</button>
+            </div>
+            <div style="flex-grow: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 40px; text-align: center; background: #f8fafc; font-family: sans-serif; height: 100%;">
+                <div style="background: white; padding: 40px; border-radius: 12px; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1), 0 2px 4px -1px rgba(0,0,0,0.06); max-width: 600px; border: 1px solid #e2e8f0; margin: auto;">
+                    <h2 style="color: #1e3a8a; margin-top: 0; font-size: 24px; font-weight: 700;">🚀 Secure Exam Tab Opened</h2>
+                    <p style="color: #475569; font-size: 15px; line-height: 1.6; margin: 20px 0;">
+                        We have opened your Canvas Quiz in a new tab. Please complete the quiz in that tab.
+                    </p>
+                    <div style="background: #fffbeb; border: 1px solid #fef3c7; color: #b45309; padding: 15px; border-radius: 8px; font-size: 14px; font-weight: 500; text-align: left; margin-bottom: 25px;">
+                        ⚠️ <strong>IMPORTANT:</strong> Keep this proctoring tab open in the background! Closing it will terminate the recording and invalidate your session.
+                    </div>
+                    <button class="btn btn-primary" style="margin: 0 auto; padding: 12px 30px; font-size: 15px; font-weight: 600; display: inline-flex;" onclick="window.open('${examConfig.canvas_quiz_url}', '_blank')">Re-open Quiz Tab</button>
+                </div>
+            </div>
+        `;
+
+        setupFocusTracking(true);
 
         setInterval(sendSnapshot, 3000);
 
@@ -810,9 +825,13 @@ function sendSnapshot() {
     });
 }
 
-function setupFocusTracking() {
+function setupFocusTracking(skipOverlay = false) {
     function handleViolation(type, message) {
         if (isExamCompleted) return;
+        if (skipOverlay) {
+            logProctorEvent(type, message);
+            return;
+        }
         violationCount++;
         logProctorEvent(type, `${message} (Violation #${violationCount})`);
         
