@@ -103,7 +103,11 @@ app.post('/lti/launch', (req, res) => {
         // Log launch request body for inspection
         const fs = require('fs');
         const path = require('path');
-        const logPath = path.join(__dirname, 'scratch', 'launch-log.txt');
+        const logDir = path.join(__dirname, 'scratch');
+        if (!fs.existsSync(logDir)) {
+            fs.mkdirSync(logDir, { recursive: true });
+        }
+        const logPath = path.join(logDir, 'launch-log.txt');
         const logContent = `\n--- LAUNCH AT ${new Date().toISOString()} ---\n` + 
             `URL: ${req.url}\n` +
             `Body: ${JSON.stringify(req.body, null, 2)}\n`;
@@ -154,6 +158,18 @@ app.get('/dev-launch', (req, res) => {
 app.get('/dev-student', (req, res) => {
     req.session.lti = { userId: req.query.userId || 'dev_student_1', canvasCourseId: req.query.courseId || 'demo_course', userName: 'Dev Student', role: 'student' };
     res.redirect('/student.html');
+});
+
+app.get('/api/dev/logs', (req, res) => {
+    const fs = require('fs');
+    const path = require('path');
+    const logPath = path.join(__dirname, 'scratch', 'launch-log.txt');
+    if (fs.existsSync(logPath)) {
+        res.setHeader('Content-Type', 'text/plain');
+        res.sendFile(logPath);
+    } else {
+        res.send('No logs found yet');
+    }
 });
 
 async function requireAuth(req, res, next) {
