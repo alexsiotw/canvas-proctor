@@ -59,6 +59,7 @@ let urlParams = new URLSearchParams(window.location.search);
 let activeResourceLinkId = urlParams.get('resource_link_id');
 let launchReturnUrl = urlParams.get('launch_presentation_return_url');
 let contentItemReturnUrl = urlParams.get('content_item_return_url');
+let ltiData = urlParams.get('lti_data');
 let currentPlacementMapping = null;
 
 async function checkActivePlacement() {
@@ -590,5 +591,9 @@ function embedExamSelection(examId) {
     const examTitle = exam ? exam.title : 'Proctor Gateway Assignment';
     // Embed the exam_id in the launch URL returned to Canvas
     const launchUrl = `${window.location.origin}/lti/launch?exam_id=${examId}`;
-    window.location.href = `/api/placements/lti-return?content_item_return_url=${encodeURIComponent(contentItemReturnUrl)}&exam_title=${encodeURIComponent(examTitle)}&launch_url=${encodeURIComponent(launchUrl)}`;
+    let targetUrl = `/api/placements/lti-return?content_item_return_url=${encodeURIComponent(contentItemReturnUrl)}&exam_title=${encodeURIComponent(examTitle)}&launch_url=${encodeURIComponent(launchUrl)}`;
+    if (ltiData) {
+        targetUrl += `&lti_data=${encodeURIComponent(ltiData)}`;
+    }
+    window.location.href = targetUrl;
 }

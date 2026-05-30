@@ -143,6 +143,9 @@ app.post('/lti/launch', (req, res) => {
             if (contentItemReturnUrl) {
                 redirectUrl += `&content_item_return_url=${encodeURIComponent(contentItemReturnUrl)}`;
             }
+            if (req.body.data) {
+                redirectUrl += `&lti_data=${encodeURIComponent(req.body.data)}`;
+            }
             res.redirect(redirectUrl);
         } else {
             const queryExamId = req.query.exam_id || '';
@@ -455,7 +458,7 @@ function signLti1Response(url, params, secret) {
 
 // API: Handle LTI ContentItemSelection signed return POST
 app.get('/api/placements/lti-return', requireInstructor, (req, res) => {
-    const { content_item_return_url, exam_title, launch_url } = req.query;
+    const { content_item_return_url, exam_title, launch_url, lti_data } = req.query;
     if (!content_item_return_url) {
         return res.status(400).send('Missing content_item_return_url');
     }
@@ -489,6 +492,10 @@ app.get('/api/placements/lti-return', requireInstructor, (req, res) => {
         oauth_nonce: crypto.randomBytes(16).toString('hex'),
         oauth_version: '1.0'
     };
+
+    if (lti_data) {
+        params.data = lti_data;
+    }
 
     const signature = signLti1Response(content_item_return_url, params, consumerSecret);
     params.oauth_signature = signature;
