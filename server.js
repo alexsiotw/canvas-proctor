@@ -164,6 +164,20 @@ app.get('/dev-student', (req, res) => {
     res.redirect('/student.html');
 });
 
+app.get('/api/dev/check-config', (req, res) => {
+    const key = process.env.LTI_KEY || 'NOT_SET';
+    const secret = process.env.LTI_SECRET || 'NOT_SET';
+    res.json({
+        has_key: key !== 'NOT_SET',
+        key_value: key,
+        has_secret: secret !== 'NOT_SET',
+        secret_length: secret.length,
+        secret_start: secret.substring(0, 3),
+        secret_end: secret.substring(secret.length - 3),
+        base_url: process.env.BASE_URL || 'NOT_SET'
+    });
+});
+
 app.get('/api/dev/logs', (req, res) => {
     const fs = require('fs');
     const path = require('path');
