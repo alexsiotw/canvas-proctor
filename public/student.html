@@ -187,7 +187,8 @@
       <div style="background: #0f172a; padding: 10px 20px; display: flex; justify-content: space-between; align-items: center; color: white; flex-shrink: 0; box-shadow: 0 2px 10px rgba(0,0,0,0.3); z-index: 1001;">
           <div style="display: flex; align-items: center; gap: 15px;">
               <div style="background: rgba(220, 38, 38, 0.9); padding: 5px 15px; border-radius: 20px; font-weight: bold; font-size: 14px; animation: pulse 2s infinite;">🔴 Recording Active</div>
-              <span style="font-size: 14px; color: #cbd5e1; display: none; @media(min-width: 768px) { display: inline; }">Your session is secured. Click End Exam when finished.</span>
+              <span style="font-size: 14px; color: #cbd5e1; display: none; @media(min-width: 768px) { display: inline; }">Your session is secured.</span>
+              <span id="quiz-password-display" style="display: none; background: #2563eb; color: white; padding: 5px 15px; border-radius: 4px; font-weight: bold; font-size: 14px; font-family: monospace;"></span>
           </div>
           <button class="btn btn-secondary" style="background: var(--danger); color: white; border: none; padding: 8px 20px; font-weight: bold; font-size: 15px;" onclick="endExam()">End Exam & Submit</button>
       </div>

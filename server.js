@@ -91,6 +91,7 @@ app.post('/lti/launch', (req, res) => {
         const userName = req.body.lis_person_name_full || 'Instructor';
         const roles = req.body.roles || '';
         const isInstructor = roles.includes('Instructor') || roles.includes('Administrator') || roles.includes('urn:lti:role:ims/lis/Instructor');
+        const resourceLinkId = req.body.resource_link_id || '';
 
         const sessionToken = uuidv4();
         req.session.lti = {
@@ -98,7 +99,8 @@ app.post('/lti/launch', (req, res) => {
             canvasCourseId,
             userName,
             role: isInstructor ? 'instructor' : 'student',
-            sessionToken
+            sessionToken,
+            resourceLinkId
         };
 
         // Persist session to DB for SEB handover
@@ -108,9 +110,9 @@ app.post('/lti/launch', (req, res) => {
         `, [sessionToken, userId, canvasCourseId, userName, req.session.lti.role]).catch(err => console.error('Failed to persist LTI session', err));
 
         if (isInstructor) {
-            res.redirect('/index.html');
+            res.redirect(`/index.html${resourceLinkId ? '?resource_link_id=' + encodeURIComponent(resourceLinkId) : ''}`);
         } else {
-            res.redirect(`/student.html?token=${sessionToken}`);
+            res.redirect(`/student.html?token=${sessionToken}${resourceLinkId ? '&placement_id=' + encodeURIComponent(resourceLinkId) : ''}`);
         }
     });
 });
@@ -172,12 +174,12 @@ app.get('/api/exams', requireInstructor, async (req, res) => {
 app.post('/api/exams', requireInstructor, async (req, res) => {
     try {
         const { canvasCourseId } = req.session.lti;
-        const { title, canvas_quiz_url, require_mic, require_camera, require_screen, disable_right_click, require_fullscreen, require_seb, max_attempts, exam_code, max_violations } = req.body;
+        const { title, canvas_quiz_url, require_mic, require_camera, require_screen, disable_right_click, require_fullscreen, require_seb, max_attempts, exam_code, max_violations, canvas_quiz_password } = req.body;
         
         const result = await pool.query(`
-            INSERT INTO exams (canvas_course_id, title, canvas_quiz_url, require_mic, require_camera, require_screen, disable_right_click, require_fullscreen, require_seb, max_attempts, exam_code, max_violations, is_open)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, false) RETURNING *
-        `, [canvasCourseId, title, canvas_quiz_url, require_mic, require_camera, require_screen, disable_right_click, require_fullscreen, require_seb || false, max_attempts || 1, exam_code, max_violations || 0]);
+            INSERT INTO exams (canvas_course_id, title, canvas_quiz_url, require_mic, require_camera, require_screen, disable_right_click, require_fullscreen, require_seb, max_attempts, exam_code, max_violations, canvas_quiz_password, is_open)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, false) RETURNING *
+        `, [canvasCourseId, title, canvas_quiz_url, require_mic, require_camera, require_screen, disable_right_click, require_fullscreen, require_seb || false, max_attempts || 1, exam_code, max_violations || 0, canvas_quiz_password || '']);
         
         res.json(result.rows[0]);
     } catch (err) {
@@ -242,7 +244,7 @@ app.patch('/api/exams/:id', requireInstructor, async (req, res) => {
             title, canvas_quiz_url, exam_code, max_attempts,
             require_camera, require_mic, require_screen,
             disable_right_click, require_fullscreen, require_seb,
-            max_violations
+            max_violations, canvas_quiz_password
         } = req.body;
 
         const result = await pool.query(`
@@ -250,14 +252,14 @@ app.patch('/api/exams/:id', requireInstructor, async (req, res) => {
                 title = $1, canvas_quiz_url = $2, exam_code = $3, max_attempts = $4,
                 require_camera = $5, require_mic = $6, require_screen = $7,
                 disable_right_click = $8, require_fullscreen = $9, require_seb = $10,
-                max_violations = $11, updated_at = NOW()
-            WHERE id = $12 AND canvas_course_id = $13
+                max_violations = $11, canvas_quiz_password = $12, updated_at = NOW()
+            WHERE id = $13 AND canvas_course_id = $14
             RETURNING *
         `, [
             title, canvas_quiz_url, exam_code, max_attempts,
             require_camera, require_mic, require_screen,
             disable_right_click, require_fullscreen, require_seb,
-            max_violations || 0, id, canvasCourseId
+            max_violations || 0, canvas_quiz_password || '', id, canvasCourseId
         ]);
 
         if (result.rows.length === 0) return res.status(404).json({ error: 'Exam not found' });
@@ -295,6 +297,73 @@ app.post('/api/exams/verify-code', requireAuth, async (req, res) => {
         }
         
         res.json(exam);
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// API: Verify and Authorize placement-based launch directly
+app.post('/api/exams/verify-placement', requireAuth, async (req, res) => {
+    try {
+        const { canvasCourseId, userId } = req.session.lti;
+        const { placement_id } = req.body;
+        
+        const placementResult = await pool.query('SELECT exam_id FROM exam_placements WHERE resource_link_id = $1', [placement_id]);
+        if (placementResult.rows.length === 0) {
+            return res.status(404).json({ error: 'This Canvas placement is not configured yet. Please ask your instructor to link it to an exam.' });
+        }
+        
+        const exam_id = placementResult.rows[0].exam_id;
+        const examResult = await pool.query('SELECT * FROM exams WHERE id = $1', [exam_id]);
+        if (examResult.rows.length === 0) return res.status(404).json({ error: 'Linked exam not found' });
+        
+        const exam = examResult.rows[0];
+        
+        if (!exam.is_open) {
+            return res.status(403).json({ error: 'This exam is currently closed by the instructor.' });
+        }
+        
+        const sessionCountQuery = await pool.query('SELECT COUNT(*) as attempt_count FROM exam_sessions WHERE exam_id = $1 AND student_canvas_id = $2', [exam.id, userId]);
+        const attemptCount = parseInt(sessionCountQuery.rows[0].attempt_count, 10);
+        
+        const overrideQuery = await pool.query('SELECT extra_attempts FROM exam_overrides WHERE exam_id = $1 AND student_canvas_id = $2', [exam.id, userId]);
+        const extraAttempts = overrideQuery.rows.length > 0 ? parseInt(overrideQuery.rows[0].extra_attempts, 10) : 0;
+        
+        const totalAllowed = (exam.max_attempts || 1) + extraAttempts;
+        
+        if (attemptCount >= totalAllowed) {
+            return res.status(403).json({ error: `You have reached the maximum allowable attempts (${totalAllowed}) for this exam.` });
+        }
+        
+        res.json(exam);
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// API: Get active placement details
+app.get('/api/placements/:resource_link_id', requireInstructor, async (req, res) => {
+    try {
+        const { resource_link_id } = req.params;
+        const result = await pool.query('SELECT * FROM exam_placements WHERE resource_link_id = $1', [resource_link_id]);
+        res.json(result.rows[0] || null);
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// API: Create or update placement mapping
+app.post('/api/placements', requireInstructor, async (req, res) => {
+    try {
+        const { resource_link_id, exam_id } = req.body;
+        const result = await pool.query(`
+            INSERT INTO exam_placements (resource_link_id, exam_id)
+            VALUES ($1, $2)
+            ON CONFLICT (resource_link_id) 
+            DO UPDATE SET exam_id = EXCLUDED.exam_id
+            RETURNING *
+        `, [resource_link_id, exam_id]);
+        res.json(result.rows[0]);
     } catch (err) {
         res.status(500).json({ error: err.message });
     }
@@ -536,8 +605,10 @@ app.get('/api/seb/config/:token/:filename?', async (req, res) => {
 
         const baseUrl = process.env.BASE_URL || `${req.protocol}://${req.get('host')}`;
         const exam_code = req.query.exam_code || '';
+        const placement_id = req.query.placement_id || '';
         let startUrl = `${baseUrl}/student.html?token=${token}&seb=true`;
-        if (exam_code) startUrl += `&exam_code=${exam_code}`;
+        if (exam_code) startUrl += `&exam_code=${encodeURIComponent(exam_code)}`;
+        if (placement_id) startUrl += `&placement_id=${encodeURIComponent(placement_id)}`;
         startUrl = startUrl.replace(/&/g, '&amp;');
 
         let sebConfig = '';

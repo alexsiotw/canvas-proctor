@@ -55,13 +55,44 @@ async function checkDatabaseCapacity() {
     }
 }
 
+let urlParams = new URLSearchParams(window.location.search);
+let activeResourceLinkId = urlParams.get('resource_link_id');
+let currentPlacementMapping = null;
+
+async function checkActivePlacement() {
+    if (!activeResourceLinkId) return;
+    try {
+        const res = await fetch(`/api/placements/${encodeURIComponent(activeResourceLinkId)}`);
+        currentPlacementMapping = await res.json();
+    } catch (err) {
+        console.error('Failed to get active placement mapping', err);
+    }
+}
+
 async function loadExams() {
+    await checkActivePlacement();
     const res = await fetch('/api/exams');
     exams = await res.json();
     renderExams();
 }
 
 function renderExams() {
+    let bannerHtml = '';
+    if (activeResourceLinkId) {
+        const linkedExam = currentPlacementMapping ? exams.find(e => e.id == currentPlacementMapping.exam_id) : null;
+        bannerHtml = `
+            <div style="background: #eff6ff; border: 1px solid #bfdbfe; padding: 15px; border-radius: 8px; margin-bottom: 20px; display: flex; justify-content: space-between; align-items: center; font-family: sans-serif;">
+                <div>
+                    <strong style="color:#1e3a8a; font-size: 14px;">🔗 Canvas Placement Integration Active</strong>
+                    <div style="font-size:12px; color:#475569; margin-top:2px;">
+                        ${linkedExam ? `This assignment/module link is bound to: <strong>${linkedExam.title}</strong>` 
+                        : 'This assignment/module link is NOT linked to an exam yet. Select or create an exam below, then click "Link to this Canvas Placement" to activate it.'}
+                    </div>
+                </div>
+            </div>
+        `;
+    }
+
     const content = document.getElementById('content');
     let html = `
         <div class="page-header">
@@ -71,6 +102,7 @@ function renderExams() {
             </div>
             <button class="btn btn-primary" onclick="showCreateExamModal()">+ New Proctored Exam</button>
         </div>
+        ${bannerHtml}
         <div class="session-grid">
     `;
 
@@ -102,6 +134,11 @@ function renderExams() {
                         <div>Max Attempts: ${ex.max_attempts || 1} | Boot Limit: ${ex.max_violations > 0 ? ex.max_violations + ' leaves' : 'Disabled'}</div>
                         <div>📷 Camera: ${ex.require_camera ? 'Yes' : 'No'} | 🎤 Mic: ${ex.require_mic ? 'Yes' : 'No'} | 💻 Screen: ${ex.require_screen ? 'Yes' : 'No'} | 🛡️ SEB: ${ex.require_seb ? 'Yes' : 'No'}</div>
                     </div>
+                    ${activeResourceLinkId ? `
+                        <button class="btn" style="margin-top: 12px; width: 100%; justify-content: center; font-size:12px; padding: 8px; border:none; ${currentPlacementMapping && currentPlacementMapping.exam_id == ex.id ? 'background:#059669; color:white;' : 'background:#2563eb; color:white;'}" onclick="event.stopPropagation(); linkPlacement(${ex.id})">
+                            ${currentPlacementMapping && currentPlacementMapping.exam_id == ex.id ? '✓ Linked to this placement' : 'Link to this Canvas Placement'}
+                        </button>
+                    ` : ''}
                 </div>
             `;
         });
@@ -325,6 +362,11 @@ function showCreateExamModal(examId = null) {
             <input type="text" id="exam-url" class="form-input" placeholder="https://canvas.instructure.com/courses/1/quizzes/1" value="${exam ? exam.canvas_quiz_url : ''}">
             <div class="form-hint">Paste the URL of the LMS Quiz. Do NOT share this URL directly with students.</div>
         </div>
+        <div class="form-group">
+            <label class="form-label">Canvas Quiz Password / Access Code (Optional)</label>
+            <input type="text" id="quiz-password" class="form-input" placeholder="e.g. SECURE-WWI-QUIZ" value="${exam && exam.canvas_quiz_password ? exam.canvas_quiz_password : ''}">
+            <div class="form-hint">If your Canvas quiz requires a password/access code to start, enter it here. It will be securely shown to verified students when the exam begins.</div>
+        </div>
         <div style="margin-top: 20px;">
             <label class="form-check" style="margin-bottom: 8px;">
                 <input type="checkbox" id="chk-camera" ${!exam || exam.require_camera ? 'checked' : ''}> Require Web Camera
@@ -362,6 +404,7 @@ async function saveExam(examId = null) {
         exam_code: document.getElementById('exam-code').value,
         max_attempts: parseInt(document.getElementById('max-attempts').value) || 1,
         max_violations: parseInt(document.getElementById('max-violations').value) || 0,
+        canvas_quiz_password: document.getElementById('quiz-password').value.trim(),
         require_camera: document.getElementById('chk-camera').checked,
         require_mic: document.getElementById('chk-mic').checked,
         require_screen: document.getElementById('chk-screen').checked,
@@ -481,4 +524,25 @@ function showToast(msg, type='info') {
     el.innerText = msg;
     document.getElementById('toast-container').appendChild(el);
     setTimeout(() => el.remove(), 4000);
+}
+
+async function linkPlacement(examId) {
+    if (!activeResourceLinkId) return;
+    try {
+        const res = await fetch('/api/placements', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ resource_link_id: activeResourceLinkId, exam_id: examId })
+        });
+        if (res.ok) {
+            showToast('Successfully linked Canvas placement to this exam!', 'success');
+            const mapping = await res.json();
+            currentPlacementMapping = mapping;
+            loadExams();
+        } else {
+            showToast('Failed to save link mapping', 'warning');
+        }
+    } catch (err) {
+        console.error(err);
+        showToast('Connection error', 'warning');
+    }
 }

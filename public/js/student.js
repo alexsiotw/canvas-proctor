@@ -14,9 +14,13 @@ let urlParams = new URLSearchParams(window.location.search);
 let sessionToken = urlParams.get('token');
 let isSebParam = urlParams.get('seb') === 'true';
 let autoExamCode = urlParams.get('exam_code');
+let placementId = urlParams.get('placement_id');
 
 window.addEventListener('load', () => {
-    if (autoExamCode && sessionToken) {
+    if (placementId && sessionToken) {
+        document.getElementById('code-container').style.display = 'none';
+        verifyPlacement(placementId);
+    } else if (autoExamCode && sessionToken) {
         document.getElementById('access-code-input').value = autoExamCode;
         verifyExamCode();
     }
@@ -49,6 +53,34 @@ async function verifyExamCode() {
         errorMsg.style.display = 'block';
     }
 }
+
+async function verifyPlacement(pId) {
+    const errorMsg = document.getElementById('code-error-msg');
+    errorMsg.style.display = 'none';
+    
+    try {
+        const res = await fetch('/api/exams/verify-placement', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ placement_id: pId, token: sessionToken })
+        });
+        
+        const data = await res.json();
+        if(!res.ok) {
+            throw new Error(data.error || 'Verification of placement failed');
+        }
+        
+        examConfig = data;
+        document.getElementById('code-container').style.display = 'none';
+        document.getElementById('setup-container').style.display = 'flex';
+        initStepWizard();
+    } catch(err) {
+        // If automatic placement check fails, show code container and display error
+        document.getElementById('code-container').style.display = 'flex';
+        errorMsg.innerText = err.message;
+        errorMsg.style.display = 'block';
+    }
+}
+
 
 let currentStep = 1;
 let localMicStream = null;
@@ -464,6 +496,17 @@ async function startMainExamSession() {
 
         document.getElementById('setup-container').style.display = 'none';
         document.getElementById('active-exam-container').style.display = 'flex';
+        
+        const pwdDisplay = document.getElementById('quiz-password-display');
+        if (pwdDisplay) {
+            if (examConfig.canvas_quiz_password && examConfig.canvas_quiz_password.trim() !== '') {
+                pwdDisplay.innerText = `Access Code: ${examConfig.canvas_quiz_password}`;
+                pwdDisplay.style.display = 'inline-block';
+            } else {
+                pwdDisplay.style.display = 'none';
+            }
+        }
+        
         document.getElementById('quiz-iframe').src = examConfig.canvas_quiz_url;
 
         setupFocusTracking();
@@ -516,7 +559,15 @@ function downloadSEBConfig() {
         alert('Session lost. Please re-launch from your LMS.');
         return;
     }
-    window.location.href = `/api/seb/config/${sessionToken}`;
+    const codeInput = document.getElementById('access-code-input');
+    const code = codeInput ? codeInput.value.trim() : '';
+    const params = [];
+    if (code) params.push(`exam_code=${encodeURIComponent(code)}`);
+    if (placementId) params.push(`placement_id=${encodeURIComponent(placementId)}`);
+    
+    let url = `/api/seb/config/${sessionToken}`;
+    if (params.length > 0) url += `?${params.join('&')}`;
+    window.location.href = url;
 }
 
 function launchSEB() {
@@ -524,10 +575,18 @@ function launchSEB() {
         alert('Session lost. Please re-launch from your LMS.');
         return;
     }
-    const code = document.getElementById('access-code-input').value.trim();
+    const codeInput = document.getElementById('access-code-input');
+    const code = codeInput ? codeInput.value.trim() : '';
     const protocol = window.location.protocol === 'https:' ? 'sebs' : 'seb';
-    // Pass the exam_code into the config URL so the server can inject it into the SEB start URL
-    const sebUrl = `${protocol}://${window.location.host}/api/seb/config/${sessionToken}/config.seb${code ? '?exam_code=' + encodeURIComponent(code) : ''}`;
+    
+    const params = [];
+    if (code) params.push(`exam_code=${encodeURIComponent(code)}`);
+    if (placementId) params.push(`placement_id=${encodeURIComponent(placementId)}`);
+    
+    let configPath = `/api/seb/config/${sessionToken}/config.seb`;
+    if (params.length > 0) configPath += `?${params.join('&')}`;
+    
+    const sebUrl = `${protocol}://${window.location.host}${configPath}`;
     window.location.href = sebUrl;
 }
 

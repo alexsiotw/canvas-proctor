@@ -88,8 +88,16 @@ async function initDatabase() {
       ALTER TABLE exams ADD COLUMN IF NOT EXISTS is_open BOOLEAN DEFAULT false;
       ALTER TABLE exams ADD COLUMN IF NOT EXISTS require_seb BOOLEAN DEFAULT false;
       ALTER TABLE exams ADD COLUMN IF NOT EXISTS max_violations INTEGER DEFAULT 0;
+      ALTER TABLE exams ADD COLUMN IF NOT EXISTS canvas_quiz_password VARCHAR(255);
       ALTER TABLE exam_sessions ADD COLUMN IF NOT EXISTS video_archived BOOLEAN DEFAULT false;
       ALTER TABLE exam_sessions ADD COLUMN IF NOT EXISTS mime_type VARCHAR(255) DEFAULT 'video/webm';
+
+      CREATE TABLE IF NOT EXISTS exam_placements (
+        id SERIAL PRIMARY KEY,
+        resource_link_id VARCHAR(255) UNIQUE NOT NULL,
+        exam_id INTEGER REFERENCES exams(id) ON DELETE CASCADE,
+        created_at TIMESTAMP DEFAULT NOW()
+      );
     `);
     console.log('Database tables initialized successfully');
   } catch (err) {
