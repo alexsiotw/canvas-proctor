@@ -62,7 +62,7 @@ app.get('/lti/config.xml', (req, res) => {
     <lticm:options name="assignment_selection">
       <lticm:property name="enabled">true</lticm:property>
       <lticm:property name="text">Proctor Gateway Assignment</lticm:property>
-      <lticm:property name="message_type">basic-lti-launch-request</lticm:property>
+      <lticm:property name="message_type">ContentItemSelectionRequest</lticm:property>
       <lticm:property name="url">${baseUrl}/lti/launch</lticm:property>
       <lticm:property name="selection_width">1000</lticm:property>
       <lticm:property name="selection_height">800</lticm:property>
@@ -70,7 +70,7 @@ app.get('/lti/config.xml', (req, res) => {
     <lticm:options name="link_selection">
       <lticm:property name="enabled">true</lticm:property>
       <lticm:property name="text">Proctor Gateway Module Item</lticm:property>
-      <lticm:property name="message_type">basic-lti-launch-request</lticm:property>
+      <lticm:property name="message_type">ContentItemSelectionRequest</lticm:property>
       <lticm:property name="url">${baseUrl}/lti/launch</lticm:property>
       <lticm:property name="selection_width">1000</lticm:property>
       <lticm:property name="selection_height">800</lticm:property>
@@ -101,6 +101,7 @@ app.post('/lti/launch', (req, res) => {
 
         const sessionToken = uuidv4();
         const launchReturnUrl = req.body.launch_presentation_return_url || '';
+        const contentItemReturnUrl = req.body.content_item_return_url || '';
 
         req.session.lti = {
             userId,
@@ -109,7 +110,8 @@ app.post('/lti/launch', (req, res) => {
             role: isInstructor ? 'instructor' : 'student',
             sessionToken,
             resourceLinkId,
-            launchReturnUrl
+            launchReturnUrl,
+            contentItemReturnUrl
         };
 
         // Persist session to DB for SEB handover
@@ -122,6 +124,9 @@ app.post('/lti/launch', (req, res) => {
             let redirectUrl = `/index.html?resource_link_id=${encodeURIComponent(resourceLinkId)}`;
             if (launchReturnUrl) {
                 redirectUrl += `&launch_presentation_return_url=${encodeURIComponent(launchReturnUrl)}`;
+            }
+            if (contentItemReturnUrl) {
+                redirectUrl += `&content_item_return_url=${encodeURIComponent(contentItemReturnUrl)}`;
             }
             res.redirect(redirectUrl);
         } else {
@@ -380,6 +385,93 @@ app.post('/api/placements', requireInstructor, async (req, res) => {
     } catch (err) {
         res.status(500).json({ error: err.message });
     }
+});
+
+const crypto = require('crypto');
+
+function signLti1Response(url, params, secret) {
+    const consumerSecret = encodeURIComponent(secret) + '&';
+    
+    // Sort parameters
+    const sortedKeys = Object.keys(params).sort();
+    const parameterString = sortedKeys.map(key => {
+        return `${encodeURIComponent(key)}=${encodeURIComponent(params[key])}`;
+    }).join('&');
+    
+    const signatureBase = [
+        'POST',
+        encodeURIComponent(url),
+        encodeURIComponent(parameterString)
+    ].join('&');
+    
+    return crypto.createHmac('sha1', consumerSecret)
+        .update(signatureBase)
+        .digest('base64');
+}
+
+// API: Handle LTI ContentItemSelection signed return POST
+app.get('/api/placements/lti-return', requireInstructor, (req, res) => {
+    const { content_item_return_url, exam_title, launch_url } = req.query;
+    if (!content_item_return_url) {
+        return res.status(400).send('Missing content_item_return_url');
+    }
+
+    const consumerKey = process.env.LTI_KEY || 'proctor-lti-key';
+    const consumerSecret = process.env.LTI_SECRET || 'proctor-lti-secret';
+
+    const contentItems = {
+        "@context": "http://purl.imsglobal.org/ctx/lti/v1/ContentItem",
+        "@graph": [
+            {
+                "@type": "LtiLinkItem",
+                "mediaType": "application/vnd.ims.lti.v1.ltilink",
+                "url": launch_url,
+                "title": exam_title,
+                "text": exam_title,
+                "placementAdvice": {
+                    "presentationDocumentTarget": "iframe"
+                }
+            }
+        ]
+    };
+
+    const params = {
+        lti_message_type: 'ContentItemSelection',
+        lti_version: 'LTI-1p0',
+        content_items: JSON.stringify(contentItems),
+        oauth_consumer_key: consumerKey,
+        oauth_signature_method: 'HMAC-SHA1',
+        oauth_timestamp: Math.floor(Date.now() / 1000).toString(),
+        oauth_nonce: crypto.randomBytes(16).toString('hex'),
+        oauth_version: '1.0'
+    };
+
+    const signature = signLti1Response(content_item_return_url, params, consumerSecret);
+    params.oauth_signature = signature;
+
+    let formFields = '';
+    for (let key in params) {
+        const escapedVal = params[key].replace(/"/g, '&quot;');
+        formFields += `<input type="hidden" name="${key}" value="${escapedVal}">\n`;
+    }
+
+    const html = `
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Returning Content to Canvas...</title>
+</head>
+<body>
+    <form id="lti-form" action="${content_item_return_url}" method="POST">
+        ${formFields}
+    </form>
+    <script>
+        document.getElementById('lti-form').submit();
+    </script>
+</body>
+</html>
+    `;
+    res.send(html);
 });
 
 // API: Start Exam Session (Student)

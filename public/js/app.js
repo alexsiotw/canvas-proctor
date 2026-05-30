@@ -58,6 +58,7 @@ async function checkDatabaseCapacity() {
 let urlParams = new URLSearchParams(window.location.search);
 let activeResourceLinkId = urlParams.get('resource_link_id');
 let launchReturnUrl = urlParams.get('launch_presentation_return_url');
+let contentItemReturnUrl = urlParams.get('content_item_return_url');
 let currentPlacementMapping = null;
 
 async function checkActivePlacement() {
@@ -539,7 +540,12 @@ async function linkPlacement(examId) {
             const mapping = await res.json();
             currentPlacementMapping = mapping;
             
-            if (launchReturnUrl) {
+            if (contentItemReturnUrl) {
+                const exam = exams.find(e => e.id == examId);
+                const examTitle = exam ? exam.title : 'Proctor Gateway Assignment';
+                const launchUrl = window.location.origin + '/lti/launch';
+                window.location.href = `/api/placements/lti-return?content_item_return_url=${encodeURIComponent(contentItemReturnUrl)}&exam_title=${encodeURIComponent(examTitle)}&launch_url=${encodeURIComponent(launchUrl)}`;
+            } else if (launchReturnUrl) {
                 const exam = exams.find(e => e.id == examId);
                 const examTitle = exam ? exam.title : 'Proctor Gateway Assignment';
                 const launchUrl = window.location.origin + '/lti/launch';
