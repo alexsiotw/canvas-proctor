@@ -420,56 +420,6 @@ app.post('/api/exams/verify-placement', requireAuth, async (req, res) => {
     }
 });
 
-// API: Get active placement details
-app.get('/api/placements/:resource_link_id', requireInstructor, async (req, res) => {
-    try {
-        const { resource_link_id } = req.params;
-        const result = await pool.query('SELECT * FROM exam_placements WHERE resource_link_id = $1', [resource_link_id]);
-        res.json(result.rows[0] || null);
-    } catch (err) {
-        res.status(500).json({ error: err.message });
-    }
-});
-
-// API: Create or update placement mapping
-app.post('/api/placements', requireInstructor, async (req, res) => {
-    try {
-        const { resource_link_id, exam_id } = req.body;
-        const result = await pool.query(`
-            INSERT INTO exam_placements (resource_link_id, exam_id)
-            VALUES ($1, $2)
-            ON CONFLICT (resource_link_id) 
-            DO UPDATE SET exam_id = EXCLUDED.exam_id
-            RETURNING *
-        `, [resource_link_id, exam_id]);
-        res.json(result.rows[0]);
-    } catch (err) {
-        res.status(500).json({ error: err.message });
-    }
-});
-
-const crypto = require('crypto');
-
-function signLti1Response(url, params, secret) {
-    const consumerSecret = encodeURIComponent(secret) + '&';
-    
-    // Sort parameters
-    const sortedKeys = Object.keys(params).sort();
-    const parameterString = sortedKeys.map(key => {
-        return `${encodeURIComponent(key)}=${encodeURIComponent(params[key])}`;
-    }).join('&');
-    
-    const signatureBase = [
-        'POST',
-        encodeURIComponent(url),
-        encodeURIComponent(parameterString)
-    ].join('&');
-    
-    return crypto.createHmac('sha1', consumerSecret)
-        .update(signatureBase)
-        .digest('base64');
-}
-
 // API: Handle LTI ContentItemSelection signed return POST
 app.get('/api/placements/lti-return', (req, res) => {
     pool.query('INSERT INTO api_debug_logs (endpoint, query_params, request_body) VALUES ($1, $2, $3)', [
@@ -544,6 +494,56 @@ app.get('/api/placements/lti-return', (req, res) => {
     `;
     res.send(html);
 });
+
+// API: Get active placement details
+app.get('/api/placements/:resource_link_id', requireInstructor, async (req, res) => {
+    try {
+        const { resource_link_id } = req.params;
+        const result = await pool.query('SELECT * FROM exam_placements WHERE resource_link_id = $1', [resource_link_id]);
+        res.json(result.rows[0] || null);
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// API: Create or update placement mapping
+app.post('/api/placements', requireInstructor, async (req, res) => {
+    try {
+        const { resource_link_id, exam_id } = req.body;
+        const result = await pool.query(`
+            INSERT INTO exam_placements (resource_link_id, exam_id)
+            VALUES ($1, $2)
+            ON CONFLICT (resource_link_id) 
+            DO UPDATE SET exam_id = EXCLUDED.exam_id
+            RETURNING *
+        `, [resource_link_id, exam_id]);
+        res.json(result.rows[0]);
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+const crypto = require('crypto');
+
+function signLti1Response(url, params, secret) {
+    const consumerSecret = encodeURIComponent(secret) + '&';
+    
+    // Sort parameters
+    const sortedKeys = Object.keys(params).sort();
+    const parameterString = sortedKeys.map(key => {
+        return `${encodeURIComponent(key)}=${encodeURIComponent(params[key])}`;
+    }).join('&');
+    
+    const signatureBase = [
+        'POST',
+        encodeURIComponent(url),
+        encodeURIComponent(parameterString)
+    ].join('&');
+    
+    return crypto.createHmac('sha1', consumerSecret)
+        .update(signatureBase)
+        .digest('base64');
+}
 
 // API: Start Exam Session (Student)
 app.post('/api/session/start', requireAuth, async (req, res) => {
