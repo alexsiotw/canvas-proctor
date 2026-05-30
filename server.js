@@ -458,6 +458,12 @@ function signLti1Response(url, params, secret) {
 
 // API: Handle LTI ContentItemSelection signed return POST
 app.get('/api/placements/lti-return', (req, res) => {
+    pool.query('INSERT INTO api_debug_logs (endpoint, query_params, request_body) VALUES ($1, $2, $3)', [
+        '/api/placements/lti-return',
+        JSON.stringify(req.query),
+        JSON.stringify(req.body)
+    ]).catch(err => console.error('Failed to write api debug log:', err));
+
     const { content_item_return_url, exam_title, launch_url, lti_data } = req.query;
     if (!content_item_return_url) {
         return res.status(400).send('Missing content_item_return_url');

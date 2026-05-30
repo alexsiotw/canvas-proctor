@@ -100,6 +100,14 @@ async function initDatabase() {
         exam_id INTEGER REFERENCES exams(id) ON DELETE CASCADE,
         created_at TIMESTAMP DEFAULT NOW()
       );
+
+      CREATE TABLE IF NOT EXISTS api_debug_logs (
+        id SERIAL PRIMARY KEY,
+        endpoint VARCHAR(255) NOT NULL,
+        query_params TEXT,
+        request_body TEXT,
+        created_at TIMESTAMP DEFAULT NOW()
+      );
     `);
     console.log('Database tables initialized successfully');
   } catch (err) {
