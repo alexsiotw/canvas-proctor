@@ -94,13 +94,16 @@ app.post('/lti/launch', (req, res) => {
         const resourceLinkId = req.body.resource_link_id || '';
 
         const sessionToken = uuidv4();
+        const launchReturnUrl = req.body.launch_presentation_return_url || '';
+
         req.session.lti = {
             userId,
             canvasCourseId,
             userName,
             role: isInstructor ? 'instructor' : 'student',
             sessionToken,
-            resourceLinkId
+            resourceLinkId,
+            launchReturnUrl
         };
 
         // Persist session to DB for SEB handover
@@ -110,7 +113,11 @@ app.post('/lti/launch', (req, res) => {
         `, [sessionToken, userId, canvasCourseId, userName, req.session.lti.role]).catch(err => console.error('Failed to persist LTI session', err));
 
         if (isInstructor) {
-            res.redirect(`/index.html${resourceLinkId ? '?resource_link_id=' + encodeURIComponent(resourceLinkId) : ''}`);
+            let redirectUrl = `/index.html?resource_link_id=${encodeURIComponent(resourceLinkId)}`;
+            if (launchReturnUrl) {
+                redirectUrl += `&launch_presentation_return_url=${encodeURIComponent(launchReturnUrl)}`;
+            }
+            res.redirect(redirectUrl);
         } else {
             res.redirect(`/student.html?token=${sessionToken}${resourceLinkId ? '&placement_id=' + encodeURIComponent(resourceLinkId) : ''}`);
         }

@@ -57,6 +57,7 @@ async function checkDatabaseCapacity() {
 
 let urlParams = new URLSearchParams(window.location.search);
 let activeResourceLinkId = urlParams.get('resource_link_id');
+let launchReturnUrl = urlParams.get('launch_presentation_return_url');
 let currentPlacementMapping = null;
 
 async function checkActivePlacement() {
@@ -537,7 +538,22 @@ async function linkPlacement(examId) {
             showToast('Successfully linked Canvas placement to this exam!', 'success');
             const mapping = await res.json();
             currentPlacementMapping = mapping;
-            loadExams();
+            
+            if (launchReturnUrl) {
+                const exam = exams.find(e => e.id == examId);
+                const examTitle = exam ? exam.title : 'Proctor Gateway Assignment';
+                const launchUrl = window.location.origin + '/lti/launch';
+                const returnRedirectUrl = `${launchReturnUrl}?return_type=lti_launch_url&url=${encodeURIComponent(launchUrl)}&title=${encodeURIComponent(examTitle)}&text=${encodeURIComponent(examTitle)}`;
+                
+                // Redirect top/parent frame to finalize and close selection modal
+                if (window.parent && window.parent !== window) {
+                    window.parent.location.href = returnRedirectUrl;
+                } else {
+                    window.location.href = returnRedirectUrl;
+                }
+            } else {
+                loadExams();
+            }
         } else {
             showToast('Failed to save link mapping', 'warning');
         }
