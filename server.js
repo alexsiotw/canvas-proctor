@@ -185,6 +185,15 @@ function requireInstructor(req, res, next) {
 app.get('/api/exams', requireInstructor, async (req, res) => {
     try {
         const { canvasCourseId, alternativeCourseId } = req.session.lti;
+        
+        // Auto-migrate legacy numeric course IDs to stable context_id hashes
+        if (alternativeCourseId && alternativeCourseId !== canvasCourseId) {
+            await pool.query(
+                'UPDATE exams SET canvas_course_id = $1 WHERE canvas_course_id = $2',
+                [canvasCourseId, alternativeCourseId]
+            ).catch(err => console.error('Migration failed:', err));
+        }
+
         const result = await pool.query('SELECT * FROM exams WHERE canvas_course_id = $1 OR canvas_course_id = $2 ORDER BY created_at DESC', [canvasCourseId, alternativeCourseId || '']);
         res.json(result.rows);
     } catch (err) {
