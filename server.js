@@ -99,6 +99,15 @@ app.post('/lti/launch', (req, res) => {
         const roles = req.body.roles || '';
         const isInstructor = roles.includes('Instructor') || roles.includes('Administrator') || roles.includes('urn:lti:role:ims/lis/Instructor');
         const resourceLinkId = req.body.resource_link_id || '';
+        
+        // Log launch request body for inspection
+        const fs = require('fs');
+        const path = require('path');
+        const logPath = path.join(__dirname, 'scratch', 'launch-log.txt');
+        const logContent = `\n--- LAUNCH AT ${new Date().toISOString()} ---\n` + 
+            `URL: ${req.url}\n` +
+            `Body: ${JSON.stringify(req.body, null, 2)}\n`;
+        fs.appendFileSync(logPath, logContent);
 
         const sessionToken = uuidv4();
         const launchReturnUrl = req.body.launch_presentation_return_url || '';
