@@ -63,11 +63,17 @@ app.get('/lti/config.xml', (req, res) => {
       <lticm:property name="enabled">true</lticm:property>
       <lticm:property name="text">Proctor Gateway Assignment</lticm:property>
       <lticm:property name="message_type">basic-lti-launch-request</lticm:property>
+      <lticm:property name="url">${baseUrl}/lti/launch</lticm:property>
+      <lticm:property name="selection_width">1000</lticm:property>
+      <lticm:property name="selection_height">800</lticm:property>
     </lticm:options>
     <lticm:options name="link_selection">
       <lticm:property name="enabled">true</lticm:property>
       <lticm:property name="text">Proctor Gateway Module Item</lticm:property>
       <lticm:property name="message_type">basic-lti-launch-request</lticm:property>
+      <lticm:property name="url">${baseUrl}/lti/launch</lticm:property>
+      <lticm:property name="selection_width">1000</lticm:property>
+      <lticm:property name="selection_height">800</lticm:property>
     </lticm:options>
   </blti:extensions>
 </cartridge_basiclti_link>`;
