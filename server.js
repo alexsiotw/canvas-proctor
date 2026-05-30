@@ -93,7 +93,8 @@ app.post('/lti/launch', (req, res) => {
         }
 
         const userId = req.body.user_id || 'demo_user';
-        const canvasCourseId = req.body.custom_canvas_course_id || req.body.context_id || 'demo_course';
+        const canvasCourseId = req.body.context_id || req.body.custom_canvas_course_id || 'demo_course';
+        const alternativeCourseId = req.body.custom_canvas_course_id || '';
         const userName = req.body.lis_person_name_full || 'Instructor';
         const roles = req.body.roles || '';
         const isInstructor = roles.includes('Instructor') || roles.includes('Administrator') || roles.includes('urn:lti:role:ims/lis/Instructor');
@@ -106,6 +107,7 @@ app.post('/lti/launch', (req, res) => {
         req.session.lti = {
             userId,
             canvasCourseId,
+            alternativeCourseId,
             userName,
             role: isInstructor ? 'instructor' : 'student',
             sessionToken,
@@ -116,9 +118,9 @@ app.post('/lti/launch', (req, res) => {
 
         // Persist session to DB for SEB handover
         pool.query(`
-            INSERT INTO lti_sessions (session_token, canvas_user_id, canvas_course_id, user_name, user_role)
-            VALUES ($1, $2, $3, $4, $5)
-        `, [sessionToken, userId, canvasCourseId, userName, req.session.lti.role]).catch(err => console.error('Failed to persist LTI session', err));
+            INSERT INTO lti_sessions (session_token, canvas_user_id, canvas_course_id, alternative_canvas_course_id, user_name, user_role)
+            VALUES ($1, $2, $3, $4, $5, $6)
+        `, [sessionToken, userId, canvasCourseId, alternativeCourseId, userName, req.session.lti.role]).catch(err => console.error('Failed to persist LTI session', err));
 
         if (isInstructor) {
             let redirectUrl = `/index.html?resource_link_id=${encodeURIComponent(resourceLinkId)}`;
@@ -158,6 +160,7 @@ async function requireAuth(req, res, next) {
                 req.session.lti = {
                     userId: s.canvas_user_id,
                     canvasCourseId: s.canvas_course_id,
+                    alternativeCourseId: s.alternative_canvas_course_id || '',
                     userName: s.user_name,
                     role: s.user_role,
                     sessionToken: s.session_token
@@ -181,8 +184,8 @@ function requireInstructor(req, res, next) {
 // API: Setup / Get Exams (Teacher)
 app.get('/api/exams', requireInstructor, async (req, res) => {
     try {
-        const { canvasCourseId } = req.session.lti;
-        const result = await pool.query('SELECT * FROM exams WHERE canvas_course_id = $1 ORDER BY created_at DESC', [canvasCourseId]);
+        const { canvasCourseId, alternativeCourseId } = req.session.lti;
+        const result = await pool.query('SELECT * FROM exams WHERE canvas_course_id = $1 OR canvas_course_id = $2 ORDER BY created_at DESC', [canvasCourseId, alternativeCourseId || '']);
         res.json(result.rows);
     } catch (err) {
         res.status(500).json({ error: err.message });
@@ -208,8 +211,8 @@ app.post('/api/exams', requireInstructor, async (req, res) => {
 // API: Delete Exam
 app.delete('/api/exams/:id', requireInstructor, async (req, res) => {
     try {
-        const { canvasCourseId } = req.session.lti;
-        await pool.query('DELETE FROM exams WHERE id = $1 AND canvas_course_id = $2', [req.params.id, canvasCourseId]);
+        const { canvasCourseId, alternativeCourseId } = req.session.lti;
+        await pool.query('DELETE FROM exams WHERE id = $1 AND (canvas_course_id = $2 OR canvas_course_id = $3)', [req.params.id, canvasCourseId, alternativeCourseId || '']);
         res.json({ success: true });
     } catch (err) {
         res.status(500).json({ error: err.message });
@@ -238,13 +241,13 @@ app.patch('/api/exams/:id/status', requireInstructor, async (req, res) => {
     try {
         const { id } = req.params;
         const { is_open } = req.body;
-        const { canvasCourseId } = req.session.lti;
+        const { canvasCourseId, alternativeCourseId } = req.session.lti;
         
         const result = await pool.query(`
             UPDATE exams SET is_open = $1 
-            WHERE id = $2 AND canvas_course_id = $3 
+            WHERE id = $2 AND (canvas_course_id = $3 OR canvas_course_id = $4) 
             RETURNING *
-        `, [is_open, id, canvasCourseId]);
+        `, [is_open, id, canvasCourseId, alternativeCourseId || '']);
         
         if (result.rows.length === 0) return res.status(404).json({ error: 'Exam not found' });
         res.json(result.rows[0]);
@@ -257,7 +260,7 @@ app.patch('/api/exams/:id/status', requireInstructor, async (req, res) => {
 app.patch('/api/exams/:id', requireInstructor, async (req, res) => {
     try {
         const { id } = req.params;
-        const { canvasCourseId } = req.session.lti;
+        const { canvasCourseId, alternativeCourseId } = req.session.lti;
         const { 
             title, canvas_quiz_url, exam_code, max_attempts,
             require_camera, require_mic, require_screen,
@@ -271,13 +274,13 @@ app.patch('/api/exams/:id', requireInstructor, async (req, res) => {
                 require_camera = $5, require_mic = $6, require_screen = $7,
                 disable_right_click = $8, require_fullscreen = $9, require_seb = $10,
                 max_violations = $11, canvas_quiz_password = $12, updated_at = NOW()
-            WHERE id = $13 AND canvas_course_id = $14
+            WHERE id = $13 AND (canvas_course_id = $14 OR canvas_course_id = $15)
             RETURNING *
         `, [
             title, canvas_quiz_url, exam_code, max_attempts,
             require_camera, require_mic, require_screen,
             disable_right_click, require_fullscreen, require_seb,
-            max_violations || 0, canvas_quiz_password || '', id, canvasCourseId
+            max_violations || 0, canvas_quiz_password || '', id, canvasCourseId, alternativeCourseId || ''
         ]);
 
         if (result.rows.length === 0) return res.status(404).json({ error: 'Exam not found' });
@@ -290,10 +293,10 @@ app.patch('/api/exams/:id', requireInstructor, async (req, res) => {
 // API: Get Exam details (For Student entering / pre-flight)
 app.post('/api/exams/verify-code', requireAuth, async (req, res) => {
     try {
-        const { canvasCourseId, userId } = req.session.lti;
+        const { canvasCourseId, alternativeCourseId, userId } = req.session.lti;
         const { exam_code } = req.body;
         
-        const examResult = await pool.query('SELECT * FROM exams WHERE canvas_course_id = $1 AND exam_code = $2', [canvasCourseId, exam_code]);
+        const examResult = await pool.query('SELECT * FROM exams WHERE (canvas_course_id = $1 OR canvas_course_id = $2) AND exam_code = $3', [canvasCourseId, alternativeCourseId || '', exam_code]);
         if (examResult.rows.length === 0) return res.status(404).json({ error: 'Invalid exam code' });
         
         const exam = examResult.rows[0];
