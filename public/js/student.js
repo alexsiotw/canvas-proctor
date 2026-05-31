@@ -533,6 +533,8 @@ async function startMainExamSession() {
 
         document.getElementById('setup-container').style.display = 'none';
         document.getElementById('active-exam-container').style.display = 'flex';
+        document.body.style.overflow = 'hidden';
+        document.documentElement.style.overflow = 'hidden';
         
         const pwdDisplay = document.getElementById('quiz-password-display');
         if (pwdDisplay) {

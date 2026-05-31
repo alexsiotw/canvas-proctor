@@ -8,13 +8,13 @@
   <link rel="stylesheet" href="/css/styles.css">
   <script src="/socket.io/socket.io.js"></script>
   <style>
-    body, html { margin: 0; padding: 0; height: 100%; overflow: hidden; background: #f5f6f7; }
+    body, html { margin: 0; padding: 0; min-height: 100%; overflow: auto; background: #f5f6f7; }
     #setup-container {
         display: none;
         flex-direction: column;
         width: 100%;
         max-width: 900px;
-        margin: 40px auto;
+        margin: 20px auto;
         background: white;
         border-radius: 8px;
         box-shadow: 0 4px 20px rgba(0,0,0,0.15);
@@ -145,6 +145,62 @@
         0% { opacity: 1; }
         50% { opacity: 0.6; }
         100% { opacity: 1; }
+    }
+    @media (max-width: 768px) {
+        #setup-container {
+            margin: 10px auto;
+            border-radius: 4px;
+        }
+        .setup-body {
+            flex-direction: column;
+            min-height: 0;
+        }
+        .setup-sidebar {
+            width: 100%;
+            border-right: none;
+            border-bottom: 1px solid #e2e8f0;
+            display: flex;
+            flex-direction: row;
+            overflow-x: auto;
+            white-space: nowrap;
+        }
+        .sidebar-step {
+            padding: 12px 15px;
+            border-bottom: none;
+            border-right: 1px solid #e2e8f0;
+            flex-shrink: 0;
+            font-size: 11px;
+        }
+        .sidebar-step.active::before {
+            left: 0;
+            right: 0;
+            bottom: 0;
+            top: auto;
+            height: 4px;
+            width: auto;
+        }
+        .setup-content {
+            padding: 20px;
+        }
+        .video-preview-box {
+            max-width: 320px;
+            margin: 10px auto;
+        }
+    }
+    @media (max-height: 680px) {
+        #setup-container {
+            margin: 10px auto;
+        }
+        .setup-body {
+            min-height: 350px;
+        }
+        .video-preview-box {
+            max-width: 280px;
+            margin: 10px 0;
+        }
+        .setup-content {
+            padding: 15px 20px;
+        }
     }
   </style>
 </head>
