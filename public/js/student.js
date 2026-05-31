@@ -101,19 +101,52 @@ function isIOS() {
 }
 
 function updateSidebarNav() {
-    for (let i = 1; i <= 5; i++) {
-        const navEl = document.getElementById(`step-nav-${i}`);
-        if (!navEl) continue;
-        navEl.className = 'sidebar-step';
-        if (i === currentStep) {
-            navEl.classList.add('active');
-        } else if (i < currentStep) {
-            navEl.classList.add('completed');
-            navEl.innerHTML = `STEP ${i}: ${getStepName(i)} ✓`;
+    const stepsConfig = [
+        { id: 1, req: () => examConfig.require_mic },
+        { id: 2, req: () => examConfig.require_camera },
+        { id: 3, req: () => examConfig.require_screen },
+        { id: 4, req: () => examConfig.require_fullscreen },
+        { id: 5, req: () => true }
+    ];
+
+    let visualIndex = 1;
+    stepsConfig.forEach((stepItem) => {
+        const navEl = document.getElementById(`step-nav-${stepItem.id}`);
+        if (!navEl) return;
+        
+        if (!stepItem.req()) {
+            navEl.style.display = 'none';
         } else {
-            navEl.innerHTML = `STEP ${i}: ${getStepName(i)}`;
+            navEl.style.display = 'block';
+            navEl.className = 'sidebar-step';
+            if (stepItem.id === currentStep) {
+                navEl.classList.add('active');
+                navEl.innerHTML = `STEP ${visualIndex}: ${getStepName(stepItem.id)}`;
+            } else if (stepItem.id < currentStep) {
+                navEl.classList.add('completed');
+                navEl.innerHTML = `STEP ${visualIndex}: ${getStepName(stepItem.id)} ✓`;
+            } else {
+                navEl.innerHTML = `STEP ${visualIndex}: ${getStepName(stepItem.id)}`;
+            }
+            visualIndex++;
+        }
+    });
+}
+
+function getNextStep(current) {
+    const stepsConfig = [
+        { id: 1, req: () => examConfig.require_mic },
+        { id: 2, req: () => examConfig.require_camera },
+        { id: 3, req: () => examConfig.require_screen },
+        { id: 4, req: () => examConfig.require_fullscreen },
+        { id: 5, req: () => true }
+    ];
+    for (let i = current; i < stepsConfig.length; i++) {
+        if (stepsConfig[i].req()) {
+            return stepsConfig[i].id;
         }
     }
+    return 5;
 }
 
 function getStepName(step) {
@@ -131,8 +164,8 @@ function initStepWizard() {
         showSEBBlocker();
         return;
     }
-    currentStep = 1;
-    goToStep(1);
+    const firstStep = getNextStep(0);
+    goToStep(firstStep);
 }
 
 function goToStep(step) {
@@ -165,7 +198,7 @@ function goToStep(step) {
                 </div>
                 <div style="display: flex; justify-content: flex-end; gap: 15px; margin-top: 20px;">
                     <button class="btn btn-primary" onclick="startMicCheck()">Check Microphone</button>
-                    <button id="btn-next-step" class="btn btn-primary" style="background:#f97316; color:white; border:none;" onclick="goToStep(2)" disabled>Next Step</button>
+                    <button id="btn-next-step" class="btn btn-primary" style="background:#f97316; color:white; border:none;" onclick="goToStep(getNextStep(1))" disabled>Next Step</button>
                 </div>
             `;
             if (localMicStream) {
@@ -179,8 +212,7 @@ function goToStep(step) {
                     <h2 class="step-title">Webcam Check</h2>
                     <p class="step-description">
                         Adjust the camera so your image appears properly in the window.<br><br>
-                        While speaking in your normal voice (say the alphabet or count to 10), click <strong>"Record Five Second Video."</strong><br><br>
-                        (This video will be discarded after the webcam check).
+                        While speaking in your normal voice (say the alphabet or count to 10), click <strong>"Record Five Second Video"</strong> to verify audio/video recording (optional), or click <strong>"Next Step"</strong> as soon as your preview is visible.
                     </p>
                     <div class="video-preview-box">
                         <video id="webcam-check-preview" autoplay muted playsinline></video>
@@ -190,7 +222,7 @@ function goToStep(step) {
                 </div>
                 <div style="display: flex; justify-content: flex-end; gap: 15px; margin-top: 20px;">
                     <button id="btn-record-webcam" class="btn btn-primary" onclick="startWebcam5sRecord()">Record Five Second Video</button>
-                    <button id="btn-next-step" class="btn btn-primary" style="background:#f97316; color:white; border:none;" onclick="goToStep(3)" disabled>Next Step</button>
+                    <button id="btn-next-step" class="btn btn-primary" style="background:#f97316; color:white; border:none;" onclick="goToStep(getNextStep(2))" ${localCamStream ? '' : 'disabled'}>Next Step</button>
                 </div>
             `;
             startWebcamCheck();
@@ -217,7 +249,7 @@ function goToStep(step) {
                 </div>
                 <div style="display: flex; justify-content: flex-end; gap: 15px; margin-top: 20px;">
                     ${ios ? '' : `<button class="btn btn-primary" onclick="requestScreenShareStep()">Share Entire Screen</button>`}
-                    <button id="btn-next-step" class="btn btn-primary" style="background:#f97316; color:white; border:none;" onclick="goToStep(4)" ${ios || localScreenStream ? '' : 'disabled'}>Next Step</button>
+                    <button id="btn-next-step" class="btn btn-primary" style="background:#f97316; color:white; border:none;" onclick="goToStep(getNextStep(3))" ${ios || localScreenStream ? '' : 'disabled'}>Next Step</button>
                 </div>
             `;
             break;
@@ -236,7 +268,7 @@ function goToStep(step) {
                 </div>
                 <div style="display: flex; justify-content: flex-end; gap: 15px; margin-top: 20px;">
                     <button class="btn btn-primary" onclick="requestFullscreenStep()">Enter Fullscreen</button>
-                    <button id="btn-next-step" class="btn btn-primary" style="background:#f97316; color:white; border:none;" onclick="goToStep(5)" ${document.fullscreenElement ? '' : 'disabled'}>Next Step</button>
+                    <button id="btn-next-step" class="btn btn-primary" style="background:#f97316; color:white; border:none;" onclick="goToStep(getNextStep(4))" ${document.fullscreenElement ? '' : 'disabled'}>Next Step</button>
                 </div>
             `;
             break;
@@ -299,6 +331,10 @@ async function startWebcamCheck() {
         localCamStream = await navigator.mediaDevices.getUserMedia({ video: { width: 640, height: 480 }, audio: false });
         const videoEl = document.getElementById('webcam-check-preview');
         if (videoEl) videoEl.srcObject = localCamStream;
+        
+        // Enable Next Step button immediately once webcam preview is active
+        const nextBtn = document.getElementById('btn-next-step');
+        if (nextBtn) nextBtn.disabled = false;
     } catch (err) {
         showStepError("Camera access denied or not found: " + err.message);
     }
