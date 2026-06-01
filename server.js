@@ -221,8 +221,23 @@ async function requireAuth(req, res, next) {
 
 function requireInstructor(req, res, next) {
     if (!req.session.lti || req.session.lti.role !== 'instructor') return res.status(403).json({ error: 'Instructor access required.' });
+    if (!req.session.passcodeVerified) {
+        return res.status(403).json({ error: 'Passcode verification required.', needs_passcode: true });
+    }
     next();
 }
+
+app.post('/api/verify-passcode', (req, res) => {
+    if (!req.session.lti || req.session.lti.role !== 'instructor') {
+        return res.status(403).json({ error: 'Instructor session required.' });
+    }
+    const { passcode } = req.body;
+    if (passcode === '1032016') {
+        req.session.passcodeVerified = true;
+        return res.json({ success: true });
+    }
+    res.status(400).json({ error: 'Incorrect passcode' });
+});
 
 // API: Setup / Get Exams (Teacher)
 app.get('/api/exams', requireInstructor, async (req, res) => {
@@ -752,12 +767,23 @@ app.delete('/api/exams/:id/videos-only', requireInstructor, async (req, res) => 
 // API: Get Exam Report (Teacher)
 app.get('/api/exams/:exam_id/reports', requireInstructor, async (req, res) => {
     try {
-        const sessions = await pool.query('SELECT id, exam_id, student_canvas_id, student_name, status, started_at, attempt_number, video_archived FROM exam_sessions WHERE exam_id = $1', [req.params.exam_id]);
+        const { exam_id } = req.params;
+        const { canvasCourseId } = req.session.lti;
+        
+        const sessions = await pool.query('SELECT id, exam_id, student_canvas_id, student_name, status, started_at, attempt_number, video_archived FROM exam_sessions WHERE exam_id = $1', [exam_id]);
         const logs = await pool.query(`
             SELECT pl.* FROM proctor_logs pl 
             JOIN exam_sessions es ON pl.exam_session_id = es.id 
             WHERE es.exam_id = $1 ORDER BY pl.event_timestamp DESC
-        `, [req.params.exam_id]);
+        `, [exam_id]);
+        
+        // Get enrolled student count (unique student_canvas_id or canvas_user_id that launched this course)
+        const enrolledResult = await pool.query(`
+            SELECT COUNT(DISTINCT canvas_user_id) as enrolled_count 
+            FROM lti_sessions 
+            WHERE (canvas_course_id = $1 OR alternative_canvas_course_id = $1) AND user_role = 'student'
+        `, [canvasCourseId]);
+        const enrolledCount = parseInt(enrolledResult.rows[0].enrolled_count || 0, 10);
         
         const report = sessions.rows.map(s => {
             return {
@@ -765,7 +791,11 @@ app.get('/api/exams/:exam_id/reports', requireInstructor, async (req, res) => {
                 logs: logs.rows.filter(l => l.exam_session_id === s.id)
             };
         });
-        res.json(report);
+        
+        res.json({
+            sessions: report,
+            enrolled_count: enrolledCount
+        });
     } catch (err) {
         res.status(500).json({ error: err.message });
     }

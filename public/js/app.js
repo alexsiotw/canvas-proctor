@@ -2,7 +2,27 @@ let exams = [];
 let liveStudents = {}; 
 let currentLiveExamId = null;
 let currentFullscreenSessionId = null;
+let currentSessionsList = [];
 let socket = io();
+
+async function apiFetch(url, options = {}) {
+    const res = await fetch(url, options);
+    if (res.status === 403) {
+        const clone = res.clone();
+        try {
+            const data = await clone.json();
+            if (data.needs_passcode) {
+                sessionStorage.removeItem('dashboard_passcode_verified');
+                document.getElementById('passcode-overlay').style.display = 'flex';
+                document.getElementById('app').style.display = 'none';
+                throw new Error('Passcode verification required');
+            }
+        } catch(e) {
+            // Ignore parse error
+        }
+    }
+    return res;
+}
 
 socket.on('snapshot_update', (data) => {
     // data: { exam_id, exam_session_id, student_canvas_id, screenshot_data_url }
@@ -32,12 +52,46 @@ socket.on('proctor_log', (data) => {
 
 document.addEventListener('DOMContentLoaded', () => {
     checkDatabaseCapacity();
-    loadExams(); // Boot directly into Exams Workspace
+    if (sessionStorage.getItem('dashboard_passcode_verified') === 'true') {
+        document.getElementById('passcode-overlay').style.display = 'none';
+        document.getElementById('app').style.display = 'flex';
+        loadExams();
+    } else {
+        document.getElementById('passcode-overlay').style.display = 'flex';
+        document.getElementById('app').style.display = 'none';
+    }
 });
+
+async function submitPasscode() {
+    const passcode = document.getElementById('passcode-input').value;
+    const errorEl = document.getElementById('passcode-error-msg');
+    errorEl.style.display = 'none';
+    
+    try {
+        const res = await fetch('/api/verify-passcode', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ passcode })
+        });
+        const data = await res.json();
+        if (res.ok && data.success) {
+            sessionStorage.setItem('dashboard_passcode_verified', 'true');
+            document.getElementById('passcode-overlay').style.display = 'none';
+            document.getElementById('app').style.display = 'flex';
+            loadExams();
+        } else {
+            errorEl.innerText = data.error || 'Incorrect passcode';
+            errorEl.style.display = 'block';
+        }
+    } catch (err) {
+        errorEl.innerText = 'Connection error';
+        errorEl.style.display = 'block';
+    }
+}
 
 async function checkDatabaseCapacity() {
     try {
-        const res = await fetch('/api/db-status');
+        const res = await apiFetch('/api/db-status');
         const data = await res.json();
         const mbUsed = data.used_bytes / 1024 / 1024;
         if (mbUsed > 350) {
@@ -65,7 +119,7 @@ let currentPlacementMapping = null;
 async function checkActivePlacement() {
     if (!activeResourceLinkId) return;
     try {
-        const res = await fetch(`/api/placements/${encodeURIComponent(activeResourceLinkId)}`);
+        const res = await apiFetch(`/api/placements/${encodeURIComponent(activeResourceLinkId)}`);
         currentPlacementMapping = await res.json();
     } catch (err) {
         console.error('Failed to get active placement mapping', err);
@@ -74,7 +128,7 @@ async function checkActivePlacement() {
 
 async function loadExams() {
     await checkActivePlacement();
-    const res = await fetch('/api/exams');
+    const res = await apiFetch('/api/exams');
     exams = await res.json();
     renderExams();
 }
@@ -208,7 +262,10 @@ function loadExamDashboard(examId) {
             <!-- Reports Block -->
             <div class="card" style="padding: 20px; box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1);">
                 <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom: 15px; border-bottom: 1px solid var(--border-color); padding-bottom: 10px;">
-                    <h2 style="font-size: 18px; font-weight: 600;">Post-Exam Reports & Video Vault</h2>
+                    <div style="display:flex; flex-direction:column; gap:4px;">
+                        <h2 style="font-size: 18px; font-weight: 600; margin: 0;">Post-Exam Reports & Video Vault</h2>
+                        <div id="submissions-ratio-badge" style="font-size: 13px; font-weight: bold; color: #f97316; margin-top: 2px;">Submissions: -- of -- enrolled submitted</div>
+                    </div>
                     <div style="display:flex; gap: 8px;">
                         <button class="btn btn-primary" style="font-size:12px; padding: 4px 8px; background:var(--accent); color:white !important; border:none;" onclick="window.open('/api/exams/${exam.id}/export-videos', '_blank')">📁 Download .ZIP Archive</button>
                         <button class="btn btn-secondary" style="font-size:12px; padding: 4px 8px; background:var(--danger); color:white !important; border:none;" onclick="purgeVideosOnly(${exam.id})">🗑️ Purge Video Engine</button>
@@ -280,17 +337,25 @@ async function fetchReportData(examId) {
     if(!tableContainer) return;
 
     try {
-        const res = await fetch(`/api/exams/${examId}/reports`);
-        const sessions = await res.json();
+        const res = await apiFetch(`/api/exams/${examId}/reports`);
+        const data = await res.json();
         
-        if (sessions.error) {
-            tableContainer.innerHTML = `<div style="padding: 20px; color: var(--danger); text-align:center;">Error loading reports: ${sessions.error}</div>`;
+        if (data.error) {
+            tableContainer.innerHTML = `<div style="padding: 20px; color: var(--danger); text-align:center;">Error loading reports: ${data.error}</div>`;
             return;
         }
 
-        if(!Array.isArray(sessions)) {
-             tableContainer.innerHTML = `<div style="padding: 20px; color: var(--danger); text-align:center;">Unexpected data format from server.</div>`;
-             return;
+        const sessions = data.sessions || [];
+        const enrolledCount = data.enrolled_count || 0;
+        
+        // Save sessions to global state so the detail modal can read it
+        currentSessionsList = sessions;
+        
+        // Update enrollment ratio indicator
+        const submittedCount = sessions.filter(s => s.status === 'completed').length;
+        const ratioBadge = document.getElementById('submissions-ratio-badge');
+        if (ratioBadge) {
+            ratioBadge.innerText = `Submissions: ${submittedCount} of ${enrolledCount || submittedCount} enrolled submitted`;
         }
 
         let tableHtml = `
@@ -301,35 +366,39 @@ async function fetchReportData(examId) {
                         <th>Student Name</th>
                         <th>Status</th>
                         <th>Started At</th>
-                        <th>Security Flags / Event Timeline</th>
-                        <th>Recorded Video Playback</th>
+                        <th>Security Warnings / AI Checks</th>
+                        <th>Reports Portal</th>
                     </tr>
                 </thead>
                 <tbody>
         `;
 
         sessions.forEach(s => {
-            let logsList = `<ul>`;
             const logs = Array.isArray(s.logs) ? s.logs : [];
-            logs.forEach(l => {
-                logsList += `<li><strong style="color:var(--danger)">${l.event_type}</strong>: <span style="font-size:12px;">${l.event_message}</span> <span style="color:#888;font-size:11px;">(${new Date(l.event_timestamp).toLocaleTimeString()})</span></li>`;
-            });
-            if(logs.length === 0) logsList += "<li style='color:var(--success); font-weight:bold;'>No flags recorded. Clean run!</li>";
-            logsList += '</ul>';
+            const focusWarnings = logs.filter(l => ['tab_blur', 'window_blur', 'fullscreen_exit'].includes(l.event_type)).length;
+            const aiWarnings = logs.filter(l => l.event_type.startsWith('AI_')).length;
+            const totalWarnings = focusWarnings + aiWarnings;
+            
+            let warningText = '<span style="color:#059669; font-weight:bold;">Clean Run</span>';
+            if (totalWarnings > 0) {
+                warningText = `<span style="color:#ef4444; font-weight:bold;">⚠️ ${totalWarnings} Flags</span> `;
+                let details = [];
+                if (focusWarnings > 0) details.push(`${focusWarnings} Focus`);
+                if (aiWarnings > 0) details.push(`${aiWarnings} AI`);
+                warningText += `<span style="font-size: 11px; color: #64748b;">(${details.join(', ')})</span>`;
+            }
 
             tableHtml += `
                 <tr>
                     <td style="font-weight: 600;">
                         ${s.student_name || s.student_canvas_id} 
                         <div style="font-size: 11px; color:#666;">(Attempt ${s.attempt_number || 1})</div>
-                        <button class="btn btn-secondary" style="display:block; margin-top:8px; font-size:11px; padding:4px 8px; border: 1px solid var(--border-color); background: white;" onclick="grantExtraAttempt(${s.exam_id}, '${s.student_canvas_id}')">+1 Override Pass</button>
                     </td>
                     <td><span class="status-badge status-${s.status === 'completed' ? 'Present' : 'Late'}">${s.status}</span></td>
                     <td>${new Date(s.started_at).toLocaleString()}</td>
-                    <td style="font-size: 13px;">${logsList}</td>
+                    <td style="font-size: 13px;">${warningText}</td>
                     <td>
-                        ${s.status === 'completed' && !s.video_archived ? `<a href="/watch.html?session=${s.id}" target="_blank" class="btn btn-primary" style="font-size:12px; padding:8px 12px; border-radius: 4px; background:#4338ca; color:white; text-decoration:none; display:inline-block;">Watch Final Video</a>` 
-                        : (s.video_archived ? '<span style="color:var(--danger); font-size:12px; font-weight:bold;">[Archived Off-Site]</span>' : '<span style="color:#888; font-style:italic; font-size:12px;">In Progress...</span>')}
+                        <button onclick="viewStudentReport(${s.id}, ${examId})" class="btn btn-primary" style="font-size:12px; padding:6px 14px; border-radius: 4px; background:#4338ca; color:white; text-decoration:none; display:inline-block; border:none; cursor:pointer;">View Report</button>
                     </td>
                 </tr>
             `;
@@ -345,6 +414,81 @@ async function fetchReportData(examId) {
         console.error("Report fetch failed", err);
         tableContainer.innerHTML = `<div style="padding: 20px; color: var(--danger); text-align:center;">Connection Error. Check console for details.</div>`;
     }
+}
+
+function viewStudentReport(sessionId, examId) {
+    const exam = exams.find(e => e.id == examId);
+    const session = currentSessionsList.find(s => s.id == sessionId);
+    if (!session) return;
+    
+    const logs = Array.isArray(session.logs) ? session.logs : [];
+    let logsHtml = '<ul style="padding-left: 0; list-style-type: none; margin: 0; max-height: 250px; overflow-y: auto; border: 1px solid #e2e8f0; border-radius: 6px; padding: 12px; background: #f8fafc;">';
+    
+    logs.forEach(l => {
+        const isAI = l.event_type.startsWith('AI_');
+        const isDanger = ['tab_blur', 'window_blur', 'fullscreen_exit', 'booted'].includes(l.event_type) || isAI;
+        const typeColor = isAI ? '#f97316' : (isDanger ? '#ef4444' : '#059669');
+        const badgeLabel = isAI ? '🤖 AI DETECTION' : l.event_type.toUpperCase();
+        
+        logsHtml += `
+            <li style="margin-bottom: 10px; border-bottom: 1px solid #f1f5f9; padding-bottom: 8px; display: flex; flex-direction: column; gap: 4px;">
+                <div>
+                    <strong style="color:${typeColor}; font-size:11px; padding: 2px 6px; background: ${isAI ? '#fff7ed' : (isDanger ? '#fef2f2' : '#ecfdf5')}; border-radius: 4px; border: 1px solid currentColor; display:inline-block; font-weight:700;">${badgeLabel}</strong>
+                    <span style="color:#94a3b8; font-size:11px; margin-left: 8px;">${new Date(l.event_timestamp).toLocaleTimeString()}</span>
+                </div>
+                <span style="font-size:13px; color:#1e293b; line-height: 1.4;">${l.event_message}</span>
+            </li>
+        `;
+    });
+    if(logs.length === 0) {
+        logsHtml += "<li style='color:#059669; font-weight:bold; text-align:center; padding: 10px;'>No security flags or AI warnings recorded. Clean run!</li>";
+    }
+    logsHtml += '</ul>';
+
+    const showVideo = session.status === 'completed' && !session.video_archived;
+    const videoHtml = showVideo ? `
+        <div style="margin-bottom: 20px;">
+            <h4 style="margin: 0 0 8px 0; font-size:14px; font-weight:600; color:#1e293b;">Recorded Session Video</h4>
+            <div style="background: black; border-radius: 8px; overflow: hidden; aspect-ratio: 16/9; position: relative;">
+                <video src="/api/session/video-playback/${session.id}" controls style="width: 100%; height: 100%; object-fit: contain;"></video>
+            </div>
+        </div>
+    ` : `
+        <div style="margin-bottom: 20px; background: #f1f5f9; border: 1px solid #cbd5e1; border-radius: 8px; padding: 25px; text-align: center; color: #64748b;">
+            <span style="font-size: 32px; display:block; margin-bottom: 8px;">🎥</span>
+            ${session.video_archived ? '<strong>Video Footage Archived Off-Site</strong><br><span style="font-size:12px;">This recording was hard purged from the active database to reclaim space.</span>' : '<strong>Video Recording In Progress...</strong><br><span style="font-size:12px;">Webcam and screen data is still uploading or the student is active.</span>'}
+        </div>
+    `;
+
+    const modalContentHtml = `
+        <div class="modal-header">
+            <div>
+                <h2 class="modal-title" style="margin:0; font-size:18px;">Proctoring Report: ${session.student_name || session.student_canvas_id}</h2>
+                <p style="margin:4px 0 0 0; font-size:12px; color:#64748b;">Exam: ${exam.title} | Attempt ${session.attempt_number || 1} | Started: ${new Date(session.started_at).toLocaleString()}</p>
+            </div>
+            <button class="modal-close" onclick="closeModal()">×</button>
+        </div>
+        <div class="modal-body" style="padding: 20px 0;">
+            ${videoHtml}
+            <div>
+                <h4 style="margin: 0 0 8px 0; font-size:14px; font-weight:600; color:#1e293b;">Security & Activity Timeline</h4>
+                ${logsHtml}
+            </div>
+        </div>
+        <div style="margin-top: 24px; display:flex; justify-content:space-between; align-items:center;">
+            <div>
+                <button class="btn btn-secondary" style="font-size:12px; padding:6px 12px; border: 1px solid var(--border-color); background: white;" onclick="grantExtraAttempt(${exam.id}, '${session.student_canvas_id}')">+1 Override Pass</button>
+            </div>
+            <button class="btn btn-primary" onclick="closeModal()">Done</button>
+        </div>
+    `;
+    
+    const modalOverlay = document.getElementById('modal-overlay');
+    const modalContainer = document.getElementById('modal-content');
+    modalContainer.style.maxWidth = '800px';
+    modalContainer.style.width = '95%';
+    modalContainer.innerHTML = modalContentHtml;
+    modalOverlay.classList.add('active');
 }
 
 // EXAM GENERATION & DELETION MODALS
@@ -437,7 +581,7 @@ async function saveExam(examId = null) {
         const url = examId ? `/api/exams/${examId}` : '/api/exams';
         const method = examId ? 'PATCH' : 'POST';
         
-        const res = await fetch(url, {
+        const res = await apiFetch(url, {
             method: method, headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(payload)
         });
@@ -468,7 +612,7 @@ async function toggleExamStatus(id) {
     
     const newStatus = !exam.is_open;
     try {
-        const res = await fetch(`/api/exams/${id}/status`, {
+        const res = await apiFetch(`/api/exams/${id}/status`, {
             method: 'PATCH', headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ is_open: newStatus })
         });
@@ -496,7 +640,7 @@ async function toggleExamStatus(id) {
 async function deleteExam(id) {
     if(confirm('WARNING: Are you sure you want to completely delete this exam and all student video recordings? This is permanent.')) {
         try {
-            await fetch('/api/exams/' + id, {method: 'DELETE'});
+            await apiFetch('/api/exams/' + id, {method: 'DELETE'});
             loadExams();
             showToast('Exam completely deleted.', 'success');
         } catch(e) {
@@ -508,7 +652,7 @@ async function deleteExam(id) {
 async function purgeVideosOnly(id) {
     if(confirm('WARNING: Are you absolutely sure you want to hard purge all video footage from the database? This is permanent. Please ensure you have downloaded the ZIP Archive first! The security reports will be safely kept.')) {
         try {
-            await fetch('/api/exams/' + id + '/videos-only', {method: 'DELETE'});
+            await apiFetch('/api/exams/' + id + '/videos-only', {method: 'DELETE'});
             fetchReportData(id); // Refresh securely inside details view!
             showToast('Video footage hard purged. Database space reclaimed.', 'success');
         } catch(e) {
@@ -520,7 +664,7 @@ async function purgeVideosOnly(id) {
 async function grantExtraAttempt(examId, studentCanvasId) {
     if(!confirm("Are you sure you want to grant this specific student an additional attempt?")) return;
     try {
-        await fetch('/api/exams/' + examId + '/overrides', {
+        await apiFetch('/api/exams/' + examId + '/overrides', {
             method: 'POST', headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ student_canvas_id: studentCanvasId })
         });
@@ -547,7 +691,7 @@ function showToast(msg, type='info') {
 async function linkPlacement(examId) {
     if (!activeResourceLinkId) return;
     try {
-        const res = await fetch('/api/placements', {
+        const res = await apiFetch('/api/placements', {
             method: 'POST', headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ resource_link_id: activeResourceLinkId, exam_id: examId })
         });

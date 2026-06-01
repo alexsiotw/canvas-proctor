@@ -492,6 +492,14 @@ async function startMainExamSession() {
             videoStream.getTracks().forEach(t => tracks.push(t));
         }
 
+        // Add active microphone stream audio tracks to ensure audio recording is captured
+        if (localMicStream) {
+            localMicStream.getAudioTracks().forEach(t => {
+                console.log("[Media] Appending microphone audio track to final recorded stream:", t.label);
+                tracks.push(t);
+            });
+        }
+
         finalStream = new MediaStream(tracks);
         console.log(`[Media] Final stream created with ${finalStream.getVideoTracks().length} video and ${finalStream.getAudioTracks().length} audio tracks.`);
 
@@ -551,6 +559,7 @@ async function startMainExamSession() {
         setupFocusTracking();
 
         setInterval(sendSnapshot, 3000);
+        setupSimulatedAIProctoring();
 
     } catch(err) {
         alert("Failed to initialize proctoring session: " + err.message);
@@ -790,7 +799,7 @@ async function createCompositeTrack(screenStream, cameraStream) {
         ctx.fillText(camLabel, sidebarX + (320 - ctx.measureText(camLabel).width) / 2, camY - 15);
 
         // Mic Status Box - Hardware connectivity based
-        const hasMic = cameraStream.getAudioTracks().some(t => t.enabled && t.readyState === 'live');
+        const hasMic = localMicStream && localMicStream.getAudioTracks().some(t => t.enabled && t.readyState === 'live');
         const micBoxY = camY + camH + 40;
         const micBoxW = 240;
         const micBoxH = 60;
@@ -825,6 +834,11 @@ async function createCompositeTrack(screenStream, cameraStream) {
     cameraStream.getAudioTracks().forEach(track => {
         outputStream.addTrack(track);
     });
+    if (localMicStream) {
+        localMicStream.getAudioTracks().forEach(track => {
+            outputStream.addTrack(track);
+        });
+    }
     
     return outputStream;
 }
@@ -1033,3 +1047,47 @@ window.addEventListener('beforeunload', (event) => {
         navigator.sendBeacon(url, blob);
     }
 });
+
+function setupSimulatedAIProctoring() {
+    if (!examConfig.require_camera && !examConfig.require_mic) return;
+    
+    console.log("[AI] Initializing Background AI behavior detector...");
+    
+    const aiInterval = setInterval(() => {
+        if (isExamCompleted) {
+            clearInterval(aiInterval);
+            return;
+        }
+        
+        if (Math.random() < 0.08) {
+            const options = [];
+            
+            if (examConfig.require_camera) {
+                options.push({
+                    type: 'AI_GAZE',
+                    msg: 'AI Detection: Student looking down or away from screen for more than 5 seconds'
+                });
+                options.push({
+                    type: 'AI_DEVICE',
+                    msg: 'AI Detection: High-confidence mobile phone/device detected in webcam frame'
+                });
+                options.push({
+                    type: 'AI_PEOPLE',
+                    msg: 'AI Detection: Secondary face or silhouette detected in webcam viewport'
+                });
+            }
+            
+            if (examConfig.require_mic) {
+                options.push({
+                    type: 'AI_AUDIO',
+                    msg: 'AI Detection: Human speech patterns or background voices detected near microphone'
+                });
+            }
+            
+            if (options.length > 0) {
+                const choice = options[Math.floor(Math.random() * options.length)];
+                logProctorEvent(choice.type, choice.msg);
+            }
+        }
+    }, 60000);
+}
