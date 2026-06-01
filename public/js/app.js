@@ -54,7 +54,7 @@ document.addEventListener('DOMContentLoaded', () => {
     checkDatabaseCapacity();
     if (sessionStorage.getItem('dashboard_passcode_verified') === 'true') {
         document.getElementById('passcode-overlay').style.display = 'none';
-        document.getElementById('app').style.display = 'flex';
+        document.getElementById('app').style.display = '';
         loadExams();
     } else {
         document.getElementById('passcode-overlay').style.display = 'flex';
@@ -77,7 +77,7 @@ async function submitPasscode() {
         if (res.ok && data.success) {
             sessionStorage.setItem('dashboard_passcode_verified', 'true');
             document.getElementById('passcode-overlay').style.display = 'none';
-            document.getElementById('app').style.display = 'flex';
+            document.getElementById('app').style.display = '';
             loadExams();
         } else {
             errorEl.innerText = data.error || 'Incorrect passcode';
@@ -476,8 +476,9 @@ function viewStudentReport(sessionId, examId) {
             </div>
         </div>
         <div style="margin-top: 24px; display:flex; justify-content:space-between; align-items:center;">
-            <div>
+            <div style="display:flex; gap: 8px;">
                 <button class="btn btn-secondary" style="font-size:12px; padding:6px 12px; border: 1px solid var(--border-color); background: white;" onclick="grantExtraAttempt(${exam.id}, '${session.student_canvas_id}')">+1 Override Pass</button>
+                <button class="btn" style="font-size:12px; padding:6px 12px; border:none; background:var(--danger); color:white; border-radius:4px;" onclick="deleteStudentAttempt(${session.id}, ${exam.id})">Delete Attempt</button>
             </div>
             <button class="btn btn-primary" onclick="closeModal()">Done</button>
         </div>
@@ -489,6 +490,23 @@ function viewStudentReport(sessionId, examId) {
     modalContainer.style.width = '95%';
     modalContainer.innerHTML = modalContentHtml;
     modalOverlay.classList.add('active');
+}
+
+async function deleteStudentAttempt(sessionId, examId) {
+    if (!confirm("Are you sure you want to permanently delete this student attempt and all associated security logs? This cannot be undone.")) return;
+    try {
+        const res = await apiFetch(`/api/sessions/${sessionId}`, { method: 'DELETE' });
+        if (res.ok) {
+            closeModal();
+            showToast("Student attempt deleted.", "success");
+            fetchReportData(examId);
+        } else {
+            showToast("Failed to delete attempt", "warning");
+        }
+    } catch (err) {
+        console.error(err);
+        showToast("Error deleting attempt", "warning");
+    }
 }
 
 // EXAM GENERATION & DELETION MODALS

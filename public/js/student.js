@@ -992,50 +992,55 @@ async function endExam() {
         document.exitFullscreen().catch(err => console.log('Exit fullscreen failed:', err));
     }
     
-    document.getElementById('active-exam-container').innerHTML = '<div style="margin: auto; text-align: center; padding: 40px; background: white; border-radius: 8px;"><h2>Finalizing Video...</h2><p style="color:var(--text-secondary);">Safely encrypting and uploading your footage. Please do not close the window yet.</p></div>';
+    // Display the successfully submitted message immediately
+    document.getElementById('active-exam-container').innerHTML = `
+        <div style="margin: auto; text-align: center; padding: 40px; background: white; border-radius: 8px; max-width: 600px; box-shadow: 0 4px 20px rgba(0,0,0,0.15); font-family: sans-serif;">
+            <div style="width: 80px; height: 80px; border-radius: 50%; background: #ecfdf5; display: flex; align-items: center; justify-content: center; margin: 0 auto 20px auto; font-size: 40px; color: #059669;">✓</div>
+            <h2 style="color: #059669; font-weight: 700; margin: 0 0 10px 0;">Exam Successfully Submitted</h2>
+            <p style="color: var(--text-secondary); font-size: 16px; line-height: 1.5; margin: 0 0 10px 0;">Your proctored exam session is complete. You may safely close this tab.</p>
+        </div>
+    `;
 
-    if(mediaRecorder && mediaRecorder.state !== 'inactive') {
-        const stopPromise = new Promise(resolve => {
-            mediaRecorder.onstop = resolve;
+    // Perform final actions in the background
+    try {
+        if(mediaRecorder && mediaRecorder.state !== 'inactive') {
+            mediaRecorder.stop();
+        }
+        
+        // Wait briefly (up to 1.5s) for any remaining chunk uploads
+        const waitStart = Date.now();
+        while (activeUploads > 0 && (Date.now() - waitStart < 1500)) {
+            await new Promise(r => setTimeout(r, 100));
+        }
+        
+        // Stop hardware tracking streams
+        const allStreams = [videoStream, screenStream, finalStream, localMicStream, localCamStream, localScreenStream];
+        allStreams.forEach(stream => {
+            if (stream) stream.getTracks().forEach(t => {
+                try { t.stop(); } catch(e){}
+            });
         });
-        mediaRecorder.stop();
-        await stopPromise;
-    }
-    
-    // Limit the wait for active uploads to a maximum of 5 seconds to prevent getting stuck if a request hangs
-    const waitStart = Date.now();
-    while (activeUploads > 0 && (Date.now() - waitStart < 5000)) {
-        await new Promise(r => setTimeout(r, 500));
-    }
-    
-    // Aggressively disable the browser's hardware tracking logic so the screen/mic recording icons shut off cleanly
-    const allStreams = [videoStream, screenStream, finalStream];
-    allStreams.forEach(stream => {
-        if (stream) stream.getTracks().forEach(t => {
-            try { t.stop(); } catch(e){}
-        });
-    });
-    
-    const localVideo = document.getElementById('local-video');
-    if (localVideo && localVideo.srcObject) {
-        localVideo.srcObject.getTracks().forEach(t => t.stop());
-        localVideo.srcObject = null;
-    }
+        
+        const localVideo = document.getElementById('local-video');
+        if (localVideo && localVideo.srcObject) {
+            localVideo.srcObject.getTracks().forEach(t => t.stop());
+            localVideo.srcObject = null;
+        }
 
-    if (compositeAnimationId) cancelAnimationFrame(compositeAnimationId);
-    compositeAnimationId = null;
-    
-    // Clear the iframe immediately to stop any lingering background noise from the quiz
-    document.getElementById('quiz-iframe').src = '';
-    
-    logProctorEvent('exam_ended', 'Student securely finished the exam.');
-    
-    await fetch('/api/session/end', {
-        method: 'POST', headers: {'Content-Type':'application/json'},
-        body: JSON.stringify({ exam_session_id: sessionInfo.id })
-    });
-    
-    document.getElementById('active-exam-container').innerHTML = '<div style="margin: auto; text-align: center; padding: 40px; background: white; border-radius: 8px;"><h2>Exam Completed</h2><p style="color:var(--text-secondary);">You may safely close this window.</p></div>';
+        if (compositeAnimationId) cancelAnimationFrame(compositeAnimationId);
+        compositeAnimationId = null;
+        
+        document.getElementById('quiz-iframe').src = '';
+        
+        logProctorEvent('exam_ended', 'Student securely finished the exam.');
+        
+        await fetch('/api/session/end', {
+            method: 'POST', headers: {'Content-Type':'application/json'},
+            body: JSON.stringify({ exam_session_id: sessionInfo.id })
+        });
+    } catch(err) {
+        console.error("Background teardown error:", err);
+    }
 }
 
 // Exit Handler: Attempt to save session if student quits SEB or closes browser

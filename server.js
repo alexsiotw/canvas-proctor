@@ -675,11 +675,30 @@ app.get('/api/session/video-playback/:session_id', requireInstructor, async (req
         }
         
         const masterBuffer = Buffer.concat(binaryChunks);
+        const cleanMime = mimeToUse.split(';')[0];
         
-        // Dynamic Content-Type based on what the student app reported
-        res.setHeader('Content-Type', mimeToUse.split(';')[0]); // Use clean mime (e.g. video/webm)
-        res.setHeader('Content-Length', masterBuffer.length);
-        res.send(masterBuffer);
+        // Support HTTP Range requests for full seekability (fast forward/rewind) in HTML5 video elements
+        const range = req.headers.range;
+        if (range) {
+            const parts = range.replace(/bytes=/, "").split("-");
+            const start = parseInt(parts[0], 10);
+            const end = parts[1] ? parseInt(parts[1], 10) : masterBuffer.length - 1;
+            const chunksize = (end - start) + 1;
+            const file = masterBuffer.slice(start, end + 1);
+            
+            res.writeHead(206, {
+                'Content-Range': `bytes ${start}-${end}/${masterBuffer.length}`,
+                'Accept-Ranges': 'bytes',
+                'Content-Length': chunksize,
+                'Content-Type': cleanMime
+            });
+            res.end(file);
+        } else {
+            res.setHeader('Content-Type', cleanMime);
+            res.setHeader('Content-Length', masterBuffer.length);
+            res.setHeader('Accept-Ranges', 'bytes');
+            res.send(masterBuffer);
+        }
     } catch (err) {
         console.error('Playback Error', err);
         res.status(500).json({ error: err.message });
@@ -764,6 +783,17 @@ app.delete('/api/exams/:id/videos-only', requireInstructor, async (req, res) => 
     }
 });
 
+// API: Delete specific attempt/session
+app.delete('/api/sessions/:id', requireInstructor, async (req, res) => {
+    try {
+        const { id } = req.params;
+        await pool.query('DELETE FROM exam_sessions WHERE id = $1', [id]);
+        res.json({ success: true });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
 // API: Get Exam Report (Teacher)
 app.get('/api/exams/:exam_id/reports', requireInstructor, async (req, res) => {
     try {
@@ -777,13 +807,24 @@ app.get('/api/exams/:exam_id/reports', requireInstructor, async (req, res) => {
             WHERE es.exam_id = $1 ORDER BY pl.event_timestamp DESC
         `, [exam_id]);
         
+        // Get unique attempted student count
+        const attemptedResult = await pool.query(`
+            SELECT COUNT(DISTINCT student_canvas_id) as attempted_count 
+            FROM exam_sessions 
+            WHERE exam_id = $1
+        `, [exam_id]);
+        const attemptedCount = parseInt(attemptedResult.rows[0].attempted_count || 0, 10);
+        
         // Get enrolled student count (unique student_canvas_id or canvas_user_id that launched this course)
         const enrolledResult = await pool.query(`
             SELECT COUNT(DISTINCT canvas_user_id) as enrolled_count 
             FROM lti_sessions 
             WHERE (canvas_course_id = $1 OR alternative_canvas_course_id = $1) AND user_role = 'student'
         `, [canvasCourseId]);
-        const enrolledCount = parseInt(enrolledResult.rows[0].enrolled_count || 0, 10);
+        const enrolledCount = Math.max(
+            parseInt(enrolledResult.rows[0].enrolled_count || 0, 10),
+            attemptedCount
+        );
         
         const report = sessions.rows.map(s => {
             return {
