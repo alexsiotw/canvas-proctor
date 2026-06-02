@@ -668,14 +668,16 @@ function launchSEB() {
 
 function setupRecording() {
     // Dynamically select the most compatible codec for the current hardware/tracks
-    let mimeType = 'video/webm';
-    const hasAudio = finalStream.getAudioTracks().length > 0;
+    let mimeType = '';
     
-    // Strictly use the most standard and reliable WebM codec to prevent DEMUXER_ERROR
+    // Check both WebM (Chrome/Firefox/Edge) and MP4 (Safari/iOS) candidates
     const candidates = [
         'video/webm;codecs=vp8,opus',
         'video/webm;codecs=vp8',
-        'video/webm'
+        'video/webm',
+        'video/mp4;codecs=avc1',
+        'video/mp4;codecs=h264',
+        'video/mp4'
     ];
 
     for (const candidate of candidates) {
@@ -685,21 +687,25 @@ function setupRecording() {
         }
     }
 
-    console.log(`[Recorder] Initialized with: ${mimeType}`);
+    console.log(`[Recorder] Initialized with: ${mimeType || 'browser default'}`);
     
     // Handshake: Report the chosen format to the server immediately so playback knows how to decode it
     if (sessionInfo && sessionInfo.id) {
         fetch(`/api/session/${sessionInfo.id}/format`, {
             method: 'PATCH', headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ mime_type: mimeType, token: sessionToken })
-        }).catch(err => console.warn("[Format] Handshake failed, defaulting to webm."));
+            body: JSON.stringify({ mime_type: mimeType || 'video/mp4', token: sessionToken })
+        }).catch(err => console.warn("[Format] Handshake failed."));
     }
 
-    mediaRecorder = new MediaRecorder(finalStream, { 
-        mimeType: mimeType,
+    const options = {
         videoBitsPerSecond: 1500000, 
         audioBitsPerSecond: 128000
-    });
+    };
+    if (mimeType) {
+        options.mimeType = mimeType;
+    }
+
+    mediaRecorder = new MediaRecorder(finalStream, options);
     mediaRecorder.ondataavailable = async (e) => {
         if (e.data && e.data.size > 0 && sessionInfo.id) {
             // CRITICAL: Capture the current index locally to prevent race conditions during upload
