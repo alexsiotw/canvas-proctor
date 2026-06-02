@@ -256,20 +256,27 @@ function goToStep(step) {
             break;
             
         case 4:
+            const fullscreenSupported = typeof document.documentElement.requestFullscreen === 'function';
             contentEl.innerHTML = `
                 <div>
                     <h2 class="step-title">Fullscreen Mode</h2>
-                    <p class="step-description">
-                        This exam must be taken in Fullscreen Mode to prevent multitasking or accessing other tabs/windows.
-                    </p>
-                    <div id="fullscreen-status" style="font-weight: bold; color: #059669; margin: 15px 0;">
-                        ${document.fullscreenElement ? '✓ Fullscreen Mode Enabled' : 'Fullscreen not yet active'}
-                    </div>
+                    ${fullscreenSupported ? `
+                        <p class="step-description">
+                            This exam must be taken in Fullscreen Mode to prevent multitasking or accessing other tabs/windows.
+                        </p>
+                        <div id="fullscreen-status" style="font-weight: bold; color: #059669; margin: 15px 0;">
+                            ${document.fullscreenElement ? '✓ Fullscreen Mode Enabled' : 'Fullscreen not yet active'}
+                        </div>
+                    ` : `
+                        <p class="step-description" style="color: #1e3a8a; font-weight: bold; background: #eff6ff; padding: 15px; border-radius: 6px; border: 1px solid #bfdbfe;">
+                            📱 Mobile Device / Browser Compatibility: Your browser or device does not support standard fullscreen mode. This step has been bypassed, but webcam and microphone monitoring remain active.
+                        </p>
+                    `}
                     <div id="step-error" style="color: var(--danger); font-size: 14px; margin-top: 10px; display: none;"></div>
                 </div>
                 <div style="display: flex; justify-content: flex-end; gap: 15px; margin-top: 20px;">
-                    <button class="btn btn-primary" onclick="requestFullscreenStep()">Enter Fullscreen</button>
-                    <button id="btn-next-step" class="btn btn-primary" style="background:#f97316; color:white; border:none;" onclick="goToStep(getNextStep(4))" ${document.fullscreenElement ? '' : 'disabled'}>Next Step</button>
+                    ${fullscreenSupported ? `<button class="btn btn-primary" onclick="requestFullscreenStep()">Enter Fullscreen</button>` : ''}
+                    <button id="btn-next-step" class="btn btn-primary" style="background:#f97316; color:white; border:none;" onclick="goToStep(getNextStep(4))" ${!fullscreenSupported || document.fullscreenElement ? '' : 'disabled'}>Next Step</button>
                 </div>
             `;
             break;
@@ -541,7 +548,7 @@ async function startMainExamSession() {
             student_name: sessionInfo.student_name
         });
 
-        if (examConfig.require_fullscreen && !document.fullscreenElement) {
+        if (examConfig.require_fullscreen && !document.fullscreenElement && typeof document.documentElement.requestFullscreen === 'function') {
              await document.documentElement.requestFullscreen().catch(e => console.log('Fullscreen failed:', e));
         }
 
@@ -917,7 +924,7 @@ function setupFocusTracking() {
 
     window.addEventListener('resize', () => {
         if (isExamCompleted) return;
-        if (examConfig.require_fullscreen && !document.fullscreenElement) {
+        if (examConfig.require_fullscreen && typeof document.documentElement.requestFullscreen === 'function' && !document.fullscreenElement) {
             handleViolation('fullscreen_exit', 'Student exited fullscreen mode');
         }
     });
