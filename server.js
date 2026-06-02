@@ -769,12 +769,12 @@ app.delete('/api/exams/:id/videos-only', requireInstructor, async (req, res) => 
         const { id } = req.params;
         await pool.query(`
             DELETE FROM video_chunks WHERE exam_session_id IN (
-                SELECT id FROM exam_sessions WHERE exam_id = $1
+                SELECT id FROM exam_sessions WHERE exam_id = $1 AND status IN ('completed', 'booted')
             )
         `, [id]);
         
         await pool.query(`
-            UPDATE exam_sessions SET video_archived = true, drive_folder_id = NULL WHERE exam_id = $1
+            UPDATE exam_sessions SET video_archived = true, drive_folder_id = NULL WHERE exam_id = $1 AND status IN ('completed', 'booted')
         `, [id]);
         
         res.json({ success: true });
