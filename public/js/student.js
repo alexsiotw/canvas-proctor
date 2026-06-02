@@ -538,9 +538,12 @@ async function startMainExamSession() {
 
         const sessionRes = await fetch('/api/session/start', {
             method: 'POST', headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ exam_id: examConfig.id })
+            body: JSON.stringify({ exam_id: examConfig.id, token: sessionToken })
         });
         sessionInfo = await sessionRes.json();
+        if (!sessionRes.ok || sessionInfo.error) {
+            throw new Error(sessionInfo.error || "Session authentication failed");
+        }
 
         socket.emit('join_student', {
             exam_id: examConfig.id,
@@ -688,7 +691,7 @@ function setupRecording() {
     if (sessionInfo && sessionInfo.id) {
         fetch(`/api/session/${sessionInfo.id}/format`, {
             method: 'PATCH', headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ mime_type: mimeType })
+            body: JSON.stringify({ mime_type: mimeType, token: sessionToken })
         }).catch(err => console.warn("[Format] Handshake failed, defaulting to webm."));
     }
 
@@ -713,16 +716,15 @@ function setupRecording() {
                     binary += String.fromCharCode(bytes[i]);
                 }
                 const base64Data = window.btoa(binary);
-
-
-
+                
                 await fetch('/api/session/upload-chunk', { 
                     method: 'POST', 
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
                         exam_session_id: sessionInfo.id,
                         chunk_index: currentIndex,
-                        base64_video: base64Data
+                        base64_video: base64Data,
+                        token: sessionToken
                     })
                 });
             } catch(err) {
@@ -963,7 +965,7 @@ async function bootStudent() {
     
     await fetch('/api/session/end', {
         method: 'POST', headers: {'Content-Type':'application/json'},
-        body: JSON.stringify({ exam_session_id: sessionInfo.id, status: 'booted' })
+        body: JSON.stringify({ exam_session_id: sessionInfo.id, status: 'booted', token: sessionToken })
     });
     
     document.getElementById('active-exam-container').innerHTML = `
@@ -986,7 +988,8 @@ function logProctorEvent(type, message) {
         body: JSON.stringify({
             exam_session_id: sessionInfo.id,
             event_type: type,
-            event_message: message
+            event_message: message,
+            token: sessionToken
         })
     }).catch(console.error);
 
@@ -1059,7 +1062,7 @@ async function endExam() {
         
         await fetch('/api/session/end', {
             method: 'POST', headers: {'Content-Type':'application/json'},
-            body: JSON.stringify({ exam_session_id: sessionInfo.id })
+            body: JSON.stringify({ exam_session_id: sessionInfo.id, token: sessionToken })
         });
     } catch(err) {
         console.error("Background teardown error:", err);
@@ -1069,7 +1072,7 @@ async function endExam() {
 // Exit Handler: Attempt to save session if student quits SEB or closes browser
 window.addEventListener('beforeunload', (event) => {
     if (sessionInfo && sessionInfo.id) {
-        const url = '/api/session/end';
+        const url = `/api/session/end?token=${encodeURIComponent(sessionToken)}`;
         const data = JSON.stringify({ exam_session_id: sessionInfo.id, exit_type: 'unexpected' });
         const blob = new Blob([data], { type: 'application/json' });
         navigator.sendBeacon(url, blob);
