@@ -942,31 +942,47 @@ async function bootStudent() {
     // Clear overlay
     document.getElementById('focus-violation-overlay').style.display = 'none';
 
-    // Teardown tracks
+    // Teardown tracks safely
     const allStreams = [videoStream, screenStream, finalStream, localMicStream, localCamStream, localScreenStream];
     allStreams.forEach(stream => {
-        if (stream) stream.getTracks().forEach(t => {
-            try { t.stop(); } catch(e){}
-        });
+        if (stream) {
+            try {
+                stream.getTracks().forEach(t => {
+                    try { t.stop(); } catch(e){}
+                });
+            } catch(e){}
+        }
     });
     
-    const localVideo = document.getElementById('local-video');
-    if (localVideo && localVideo.srcObject) {
-        localVideo.srcObject.getTracks().forEach(t => t.stop());
-        localVideo.srcObject = null;
-    }
+    try {
+        const localVideo = document.getElementById('local-video');
+        if (localVideo && localVideo.srcObject) {
+            localVideo.srcObject.getTracks().forEach(t => {
+                try { t.stop(); } catch(e){}
+            });
+            localVideo.srcObject = null;
+        }
+    } catch(e){}
     
     if (compositeAnimationId) cancelAnimationFrame(compositeAnimationId);
     compositeAnimationId = null;
     
-    document.getElementById('quiz-iframe').src = '';
+    try {
+        document.getElementById('quiz-iframe').src = '';
+    } catch(e){}
     
-    logProctorEvent('booted', 'Student was automatically booted for exceeding focus limit.');
+    try {
+        logProctorEvent('booted', 'Student was automatically booted for exceeding focus limit.');
+    } catch(e){}
     
-    await fetch('/api/session/end', {
-        method: 'POST', headers: {'Content-Type':'application/json'},
-        body: JSON.stringify({ exam_session_id: sessionInfo.id, status: 'booted', token: sessionToken })
-    });
+    try {
+        await fetch('/api/session/end', {
+            method: 'POST', headers: {'Content-Type':'application/json'},
+            body: JSON.stringify({ exam_session_id: sessionInfo.id, status: 'booted', token: sessionToken })
+        });
+    } catch(err) {
+        console.error("Failed to call boot end API:", err);
+    }
     
     document.getElementById('active-exam-container').innerHTML = `
         <div style="margin: auto; text-align: center; padding: 40px; background: white; border-radius: 8px; max-width: 600px; box-shadow: 0 4px 20px rgba(0,0,0,0.15); font-family: sans-serif;">
@@ -1030,7 +1046,11 @@ async function endExam() {
     // Perform final actions in the background
     try {
         if(mediaRecorder && mediaRecorder.state !== 'inactive') {
-            mediaRecorder.stop();
+            try {
+                mediaRecorder.stop();
+            } catch(e) {
+                console.warn("Failed to stop mediaRecorder:", e);
+            }
         }
         
         // Wait briefly (up to 1.5s) for any remaining chunk uploads
@@ -1039,31 +1059,47 @@ async function endExam() {
             await new Promise(r => setTimeout(r, 100));
         }
         
-        // Stop hardware tracking streams
+        // Stop hardware tracking streams safely
         const allStreams = [videoStream, screenStream, finalStream, localMicStream, localCamStream, localScreenStream];
         allStreams.forEach(stream => {
-            if (stream) stream.getTracks().forEach(t => {
-                try { t.stop(); } catch(e){}
-            });
+            if (stream) {
+                try {
+                    stream.getTracks().forEach(t => {
+                        try { t.stop(); } catch(e){}
+                    });
+                } catch(e){}
+            }
         });
         
-        const localVideo = document.getElementById('local-video');
-        if (localVideo && localVideo.srcObject) {
-            localVideo.srcObject.getTracks().forEach(t => t.stop());
-            localVideo.srcObject = null;
-        }
+        try {
+            const localVideo = document.getElementById('local-video');
+            if (localVideo && localVideo.srcObject) {
+                localVideo.srcObject.getTracks().forEach(t => {
+                    try { t.stop(); } catch(e){}
+                });
+                localVideo.srcObject = null;
+            }
+        } catch(e){}
 
         if (compositeAnimationId) cancelAnimationFrame(compositeAnimationId);
         compositeAnimationId = null;
         
-        document.getElementById('quiz-iframe').src = '';
+        try {
+            document.getElementById('quiz-iframe').src = '';
+        } catch(e){}
         
-        logProctorEvent('exam_ended', 'Student securely finished the exam.');
+        try {
+            logProctorEvent('exam_ended', 'Student securely finished the exam.');
+        } catch(e){}
         
-        await fetch('/api/session/end', {
-            method: 'POST', headers: {'Content-Type':'application/json'},
-            body: JSON.stringify({ exam_session_id: sessionInfo.id, token: sessionToken })
-        });
+        try {
+            await fetch('/api/session/end', {
+                method: 'POST', headers: {'Content-Type':'application/json'},
+                body: JSON.stringify({ exam_session_id: sessionInfo.id, token: sessionToken })
+            });
+        } catch(err) {
+            console.error("Failed to call exam end API:", err);
+        }
     } catch(err) {
         console.error("Background teardown error:", err);
     }
