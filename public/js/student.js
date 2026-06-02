@@ -5,6 +5,7 @@ let mediaRecorder = null;
 let chunkIndex = 0;
 let finalStream = null;
 let activeUploads = 0;
+let isStartingExam = false;
 
 let videoStream = null;
 let screenStream = null;
@@ -282,7 +283,7 @@ function goToStep(step) {
                     </p>
                 </div>
                 <div style="display: flex; justify-content: flex-end; gap: 15px; margin-top: 20px;">
-                    <button class="btn btn-success" style="padding: 15px 40px; font-size: 16px; font-weight: bold;" onclick="startMainExamSession()">Begin Exam Now</button>
+                    <button id="btn-begin-exam" class="btn btn-success" style="padding: 15px 40px; font-size: 16px; font-weight: bold;" onclick="startMainExamSession()">Begin Exam Now</button>
                 </div>
             `;
             break;
@@ -466,6 +467,15 @@ async function requestScreenShareStep() {
 }
 
 async function startMainExamSession() {
+    if (isStartingExam) return;
+    isStartingExam = true;
+    
+    const btn = document.getElementById('btn-begin-exam');
+    if (btn) {
+        btn.disabled = true;
+        btn.innerText = "Initializing Security...";
+    }
+    
     try {
         // Clean up checking URLs/Timers
         if (webcamVideoUrl) {
@@ -562,6 +572,12 @@ async function startMainExamSession() {
         setupSimulatedAIProctoring();
 
     } catch(err) {
+        isStartingExam = false;
+        const btn = document.getElementById('btn-begin-exam');
+        if (btn) {
+            btn.disabled = false;
+            btn.innerText = "Begin Exam Now";
+        }
         alert("Failed to initialize proctoring session: " + err.message);
     }
 }
