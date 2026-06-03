@@ -19,7 +19,8 @@
     "multer": "^1.4.5-lts.1",
     "pg": "^8.11.3",
     "socket.io": "^4.7.2",
-    "uuid": "^9.0.0"
+    "uuid": "^9.0.0",
+    "webm-duration-fix": "^1.0.4"
   },
   "engines": {
     "node": ">=18.0.0"

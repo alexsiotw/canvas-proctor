@@ -14,6 +14,7 @@ const archiver = require('archiver');
 const fs = require('fs');
 const os = require('os');
 const { uploadVideoToDrive, downloadVideoFromDrive } = require('./services/googleDrive');
+const webmDurationFix = require('webm-duration-fix').default;
 
 const upload = multer({ storage: multer.memoryStorage() });
 
@@ -656,6 +657,19 @@ async function assembleAndUploadSessionVideo(exam_session_id) {
         // Wait for write to finish
         await new Promise((resolve) => writeStream.on('finish', resolve));
 
+        // Fix WebM duration to support seeking/fast-forwarding
+        console.log(`Fixing WebM duration for session ${exam_session_id}...`);
+        try {
+            const rawWebmBuffer = fs.readFileSync(tempOutFile);
+            const webmBlob = new Blob([rawWebmBuffer], { type: 'video/webm' });
+            const fixedBlob = await webmDurationFix(webmBlob);
+            const fixedArrayBuffer = await fixedBlob.arrayBuffer();
+            fs.writeFileSync(tempOutFile, Buffer.from(fixedArrayBuffer));
+            console.log(`Successfully fixed WebM duration for session ${exam_session_id}`);
+        } catch (fixErr) {
+            console.error(`Could not fix WebM duration for session ${exam_session_id}:`, fixErr.message);
+        }
+
         // Get student/exam info for nice filename
         const sessionInfo = await pool.query(`
             SELECT es.student_name, es.attempt_number, e.title 
@@ -684,9 +698,17 @@ async function assembleAndUploadSessionVideo(exam_session_id) {
         // Update database with Google Drive file ID
         await pool.query('UPDATE exam_sessions SET drive_file_id = $1 WHERE id = $2', [driveFileId, exam_session_id]);
 
-        // Clean up temporary files
-        if (fs.existsSync(tempOutFile)) fs.unlinkSync(tempOutFile);
-        fs.rmSync(chunkDir, { recursive: true, force: true });
+        // Clean up temporary files securely
+        try {
+            if (fs.existsSync(tempOutFile)) fs.unlinkSync(tempOutFile);
+        } catch (cleanupErr) {
+            console.error(`Failed to clean up temp out file for session ${exam_session_id}:`, cleanupErr.message);
+        }
+        try {
+            fs.rmSync(chunkDir, { recursive: true, force: true });
+        } catch (cleanupErr) {
+            console.error(`Failed to clean up chunk directory for session ${exam_session_id}:`, cleanupErr.message);
+        }
         console.log(`Cleaned up temp files for session ${exam_session_id}`);
 
     } catch (err) {
