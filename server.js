@@ -686,11 +686,7 @@ async function assembleAndUploadSessionVideo(exam_session_id) {
 
         // Clean up temporary files
         if (fs.existsSync(tempOutFile)) fs.unlinkSync(tempOutFile);
-        for (const file of files) {
-            const filePath = path.join(chunkDir, file);
-            if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
-        }
-        fs.rmdirSync(chunkDir);
+        fs.rmSync(chunkDir, { recursive: true, force: true });
         console.log(`Cleaned up temp files for session ${exam_session_id}`);
 
     } catch (err) {
