@@ -191,6 +191,29 @@ app.get('/api/dev/logs', (req, res) => {
     }
 });
 
+app.get('/api/dev/debug-tmp', (req, res) => {
+    const fs = require('fs');
+    const path = require('path');
+    const os = require('os');
+    try {
+        const tmpDir = os.tmpdir();
+        const files = fs.readdirSync(tmpDir);
+        const chunkDirs = files.filter(f => f.startsWith('chunks-'));
+        const debugInfo = {};
+        for (const dir of chunkDirs) {
+            const dirPath = path.join(tmpDir, dir);
+            debugInfo[dir] = fs.readdirSync(dirPath);
+        }
+        res.json({
+            tmpDir,
+            files: files.slice(0, 50),
+            chunks: debugInfo
+        });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
 async function requireAuth(req, res, next) {
     if (req.session.lti) return next();
 
@@ -680,6 +703,7 @@ app.post('/api/session/end', requireAuth, async (req, res) => {
     try {
         const { exam_session_id, status } = req.body;
         const finalStatus = status || 'completed';
+        console.log(`[End Session] Ending session ${exam_session_id} with status: ${finalStatus}`);
         await pool.query('UPDATE exam_sessions SET status=$1 WHERE id=$2', [finalStatus, exam_session_id]);
         
         const examIdQuery = await pool.query('SELECT exam_id FROM exam_sessions WHERE id=$1', [exam_session_id]);
@@ -690,10 +714,12 @@ app.post('/api/session/end', requireAuth, async (req, res) => {
         }
 
         // Trigger assembly and upload in background
+        console.log(`[End Session] Triggering assembleAndUploadSessionVideo for session ${exam_session_id}`);
         assembleAndUploadSessionVideo(exam_session_id);
 
         res.json({ success: true });
     } catch(err) {
+        console.error('[End Session] Error ending session:', err);
         res.status(500).json({ error: err.message });
     }
 });
@@ -703,16 +729,19 @@ app.post('/api/session/upload-chunk', requireAuth, async (req, res) => {
     const { chunk_index, exam_session_id, base64_video } = req.body;
     try {
         if (!base64_video) throw new Error("Video payload was empty");
+        console.log(`[Upload Chunk] Received chunk #${chunk_index} for session ${exam_session_id} (length: ${base64_video.length})`);
         
         // Write chunk data to local temporary directory instead of DB
         const chunkDir = path.join(os.tmpdir(), `chunks-${exam_session_id}`);
         if (!fs.existsSync(chunkDir)) {
             fs.mkdirSync(chunkDir, { recursive: true });
+            console.log(`[Upload Chunk] Created temporary chunk directory: ${chunkDir}`);
         }
         
         const chunkPath = path.join(chunkDir, `chunk-${String(chunk_index).padStart(5, '0')}.dat`);
         const pureB64 = base64_video.replace(/^data:[^,]+,/, '').replace(/\s/g, '');
         fs.writeFileSync(chunkPath, pureB64, 'base64');
+        console.log(`[Upload Chunk] Saved chunk #${chunk_index} to: ${chunkPath}`);
         
         res.json({ success: true });
     } catch (err) {
