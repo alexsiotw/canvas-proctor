@@ -13,6 +13,7 @@ const { pool, initDatabase } = require('./db');
 const archiver = require('archiver');
 const fs = require('fs');
 const os = require('os');
+const { uploadVideoToDrive, downloadVideoFromDrive } = require('./services/googleDrive');
 
 const upload = multer({ storage: multer.memoryStorage() });
 
@@ -601,6 +602,79 @@ app.post('/api/session/log', requireAuth, async (req, res) => {
     }
 });
 
+// Helper to assemble and upload video chunks in the background
+async function assembleAndUploadSessionVideo(exam_session_id) {
+    const chunkDir = path.join(os.tmpdir(), `chunks-${exam_session_id}`);
+    if (!fs.existsSync(chunkDir)) {
+        console.log(`No local chunks found for session ${exam_session_id}`);
+        return;
+    }
+
+    try {
+        console.log(`Assembling video for session ${exam_session_id}...`);
+        
+        // Get all chunk files in order
+        const files = fs.readdirSync(chunkDir).sort();
+        if (files.length === 0) {
+            console.log(`No chunk files in directory for session ${exam_session_id}`);
+            return;
+        }
+
+        const tempOutFile = path.join(os.tmpdir(), `session-${exam_session_id}.webm`);
+        const writeStream = fs.createWriteStream(tempOutFile);
+
+        for (const file of files) {
+            const filePath = path.join(chunkDir, file);
+            const data = fs.readFileSync(filePath);
+            writeStream.write(data);
+        }
+        writeStream.end();
+
+        // Wait for write to finish
+        await new Promise((resolve) => writeStream.on('finish', resolve));
+
+        // Get student/exam info for nice filename
+        const sessionInfo = await pool.query(`
+            SELECT es.student_name, es.attempt_number, e.title 
+            FROM exam_sessions es
+            JOIN exams e ON es.exam_id = e.id
+            WHERE es.id = $1
+        `, [exam_session_id]);
+        
+        let studentName = 'student';
+        let examTitle = 'exam';
+        let attempt = 1;
+        
+        if (sessionInfo.rows.length > 0) {
+            const s = sessionInfo.rows[0];
+            studentName = s.student_name ? s.student_name.replace(/[^a-z0-9]/gi, '_') : 'student';
+            examTitle = s.title ? s.title.replace(/[^a-z0-9]/gi, '_') : 'exam';
+            attempt = s.attempt_number || 1;
+        }
+
+        const driveFileName = `${studentName}_${examTitle}_Session_${exam_session_id}_Attempt_${attempt}.webm`;
+
+        console.log(`Uploading ${driveFileName} to Google Drive...`);
+        const driveFileId = await uploadVideoToDrive(tempOutFile, driveFileName, 'video/webm');
+        console.log(`Uploaded to Google Drive. File ID: ${driveFileId}`);
+
+        // Update database with Google Drive file ID
+        await pool.query('UPDATE exam_sessions SET drive_file_id = $1 WHERE id = $2', [driveFileId, exam_session_id]);
+
+        // Clean up temporary files
+        if (fs.existsSync(tempOutFile)) fs.unlinkSync(tempOutFile);
+        for (const file of files) {
+            const filePath = path.join(chunkDir, file);
+            if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
+        }
+        fs.rmdirSync(chunkDir);
+        console.log(`Cleaned up temp files for session ${exam_session_id}`);
+
+    } catch (err) {
+        console.error(`Failed to assemble and upload video for session ${exam_session_id}:`, err);
+    }
+}
+
 // API: End Exam Session
 app.post('/api/session/end', requireAuth, async (req, res) => {
     try {
@@ -614,6 +688,10 @@ app.post('/api/session/end', requireAuth, async (req, res) => {
                 session_id: exam_session_id, status: finalStatus 
             });
         }
+
+        // Trigger assembly and upload in background
+        assembleAndUploadSessionVideo(exam_session_id);
+
         res.json({ success: true });
     } catch(err) {
         res.status(500).json({ error: err.message });
@@ -626,10 +704,15 @@ app.post('/api/session/upload-chunk', requireAuth, async (req, res) => {
     try {
         if (!base64_video) throw new Error("Video payload was empty");
         
-        await pool.query(`
-            INSERT INTO video_chunks (exam_session_id, chunk_index, video_data)
-            VALUES ($1, $2, $3)
-        `, [exam_session_id, chunk_index, base64_video]);
+        // Write chunk data to local temporary directory instead of DB
+        const chunkDir = path.join(os.tmpdir(), `chunks-${exam_session_id}`);
+        if (!fs.existsSync(chunkDir)) {
+            fs.mkdirSync(chunkDir, { recursive: true });
+        }
+        
+        const chunkPath = path.join(chunkDir, `chunk-${String(chunk_index).padStart(5, '0')}.dat`);
+        const pureB64 = base64_video.replace(/^data:[^,]+,/, '').replace(/\s/g, '');
+        fs.writeFileSync(chunkPath, pureB64, 'base64');
         
         res.json({ success: true });
     } catch (err) {
@@ -654,27 +737,40 @@ app.patch('/api/session/:id/format', requireAuth, async (req, res) => {
 app.get('/api/session/video-playback/:session_id', requireInstructor, async (req, res) => {
     try {
         const { session_id } = req.params;
-        const sessionInfo = (await pool.query('SELECT mime_type FROM exam_sessions WHERE id = $1', [session_id])).rows[0];
+        const sessionInfo = (await pool.query('SELECT mime_type, drive_file_id FROM exam_sessions WHERE id = $1', [session_id])).rows[0];
         const mimeToUse = (sessionInfo && sessionInfo.mime_type) ? sessionInfo.mime_type : 'video/webm';
         
-        const chunkResults = await pool.query(`
-            SELECT video_data FROM video_chunks 
-            WHERE exam_session_id = $1 
-            ORDER BY chunk_index ASC
-        `, [session_id]);
-        
-        if (chunkResults.rows.length === 0) {
-            return res.status(404).json({ error: 'No video chunks found' });
-        }
+        let masterBuffer;
+        if (sessionInfo && sessionInfo.drive_file_id) {
+            // Fetch from Google Drive
+            console.log(`Streaming video from Google Drive file: ${sessionInfo.drive_file_id}`);
+            const driveStream = await downloadVideoFromDrive(sessionInfo.drive_file_id);
+            const chunks = [];
+            for await (const chunk of driveStream) {
+                chunks.push(chunk);
+            }
+            masterBuffer = Buffer.concat(chunks);
+        } else {
+            // Legacy fallback to database
+            const chunkResults = await pool.query(`
+                SELECT video_data FROM video_chunks 
+                WHERE exam_session_id = $1 
+                ORDER BY chunk_index ASC
+            `, [session_id]);
+            
+            if (chunkResults.rows.length === 0) {
+                return res.status(404).json({ error: 'No video chunks found' });
+            }
 
-        const binaryChunks = [];
-        for(let row of chunkResults.rows) {
-            // Strip the Data URL prefix and whitespace
-            const pureB64 = row.video_data.replace(/^data:[^,]+,/, '').replace(/\s/g, '');
-            binaryChunks.push(Buffer.from(pureB64, 'base64'));
+            const binaryChunks = [];
+            for(let row of chunkResults.rows) {
+                // Strip the Data URL prefix and whitespace
+                const pureB64 = row.video_data.replace(/^data:[^,]+,/, '').replace(/\s/g, '');
+                binaryChunks.push(Buffer.from(pureB64, 'base64'));
+            }
+            masterBuffer = Buffer.concat(binaryChunks);
         }
         
-        const masterBuffer = Buffer.concat(binaryChunks);
         const cleanMime = mimeToUse.split(';')[0];
         
         // Support HTTP Range requests for full seekability (fast forward/rewind) in HTML5 video elements
@@ -724,7 +820,7 @@ app.get('/api/exams/:id/export-videos', async (req, res) => {
         if(!exam) return res.status(404).send('Exam Not found');
 
         const sessionResult = await pool.query(`
-            SELECT id, student_canvas_id, student_name, attempt_number 
+            SELECT id, student_canvas_id, student_name, attempt_number, drive_file_id 
             FROM exam_sessions 
             WHERE exam_id = $1 AND status = 'completed' AND video_archived = false
         `, [id]);
@@ -741,16 +837,34 @@ app.get('/api/exams/:id/export-videos', async (req, res) => {
         archive.on('error', (err) => { throw err; });
 
         for (const session of sessionResult.rows) {
-            const chunkResult = await pool.query('SELECT video_data FROM video_chunks WHERE exam_session_id = $1 ORDER BY chunk_index ASC', [session.id]);
-            if (chunkResult.rows.length === 0) continue;
+            let masterBlob;
+            
+            if (session.drive_file_id) {
+                // Fetch from Google Drive
+                try {
+                    const driveStream = await downloadVideoFromDrive(session.drive_file_id);
+                    const chunks = [];
+                    for await (const chunk of driveStream) {
+                        chunks.push(chunk);
+                    }
+                    masterBlob = Buffer.concat(chunks);
+                } catch (driveErr) {
+                    console.error(`Failed to download session ${session.id} video from Drive during ZIP export:`, driveErr.message);
+                    continue;
+                }
+            } else {
+                // Fallback to database
+                const chunkResult = await pool.query('SELECT video_data FROM video_chunks WHERE exam_session_id = $1 ORDER BY chunk_index ASC', [session.id]);
+                if (chunkResult.rows.length === 0) continue;
 
-            const binaryChunks = [];
-            for(let row of chunkResult.rows) {
-                // Strip the Data URL prefix (everything before the first comma) and whitespace
-                const pureB64 = row.video_data.replace(/^data:[^,]+,/, '').replace(/\s/g, '');
-                binaryChunks.push(Buffer.from(pureB64, 'base64'));
+                const binaryChunks = [];
+                for(let row of chunkResult.rows) {
+                    // Strip the Data URL prefix (everything before the first comma) and whitespace
+                    const pureB64 = row.video_data.replace(/^data:[^,]+,/, '').replace(/\s/g, '');
+                    binaryChunks.push(Buffer.from(pureB64, 'base64'));
+                }
+                masterBlob = Buffer.concat(binaryChunks);
             }
-            const masterBlob = Buffer.concat(binaryChunks);
             
             const studentNameStr = session.student_name ? session.student_name.replace(/[^a-z0-9]/gi, '_') : session.student_canvas_id;
             archive.append(masterBlob, { name: `${studentNameStr}_Attempt_${session.attempt_number || 1}.webm` });

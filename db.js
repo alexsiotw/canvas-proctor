@@ -91,6 +91,7 @@ async function initDatabase() {
       ALTER TABLE exams ADD COLUMN IF NOT EXISTS canvas_quiz_password VARCHAR(255);
       ALTER TABLE exam_sessions ADD COLUMN IF NOT EXISTS video_archived BOOLEAN DEFAULT false;
       ALTER TABLE exam_sessions ADD COLUMN IF NOT EXISTS mime_type VARCHAR(255) DEFAULT 'video/webm';
+      ALTER TABLE exam_sessions ADD COLUMN IF NOT EXISTS drive_file_id VARCHAR(255);
       ALTER TABLE lti_sessions ADD COLUMN IF NOT EXISTS alternative_canvas_course_id VARCHAR(255);
       ALTER TABLE lti_sessions ADD COLUMN IF NOT EXISTS debug_info TEXT;
 
