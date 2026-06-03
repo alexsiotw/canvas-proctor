@@ -125,7 +125,44 @@ async function downloadVideoFromDrive(fileId) {
     return response.data;
 }
 
+/**
+ * Uploads log content as a Google Doc to Google Drive.
+ * @param {string} content - Log HTML content.
+ * @param {string} fileName - Destination name in Google Drive.
+ * @returns {Promise<string>} The uploaded Google Drive file ID.
+ */
+async function uploadLogsToDriveDoc(content, fileName) {
+    if (!drive) throw new Error("Google Drive client is not initialized.");
+
+    const folderId = await getFolderId();
+
+    const fileMetadata = {
+        name: fileName,
+        mimeType: 'application/vnd.google-apps.document',
+        parents: [folderId]
+    };
+
+    const stream = require('stream');
+    const bufferStream = new stream.PassThrough();
+    bufferStream.end(Buffer.from(content, 'utf-8'));
+
+    const media = {
+        mimeType: 'text/html',
+        body: bufferStream
+    };
+
+    const response = await drive.files.create({
+        resource: fileMetadata,
+        media: media,
+        fields: 'id',
+        supportsAllDrives: true
+    });
+
+    return response.data.id;
+}
+
 module.exports = {
     uploadVideoToDrive,
-    downloadVideoFromDrive
+    downloadVideoFromDrive,
+    uploadLogsToDriveDoc
 };

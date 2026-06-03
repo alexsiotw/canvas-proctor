@@ -13,7 +13,7 @@ const { pool, initDatabase } = require('./db');
 const archiver = require('archiver');
 const fs = require('fs');
 const os = require('os');
-const { uploadVideoToDrive, downloadVideoFromDrive } = require('./services/googleDrive');
+const { uploadVideoToDrive, downloadVideoFromDrive, uploadLogsToDriveDoc } = require('./services/googleDrive');
 const webmDurationFix = require('webm-duration-fix').default;
 
 const upload = multer({ storage: multer.memoryStorage() });
@@ -672,7 +672,7 @@ async function assembleAndUploadSessionVideo(exam_session_id) {
 
         // Get student/exam info for nice filename
         const sessionInfo = await pool.query(`
-            SELECT es.student_name, es.attempt_number, e.title 
+            SELECT es.student_name, es.attempt_number, es.started_at, e.title 
             FROM exam_sessions es
             JOIN exams e ON es.exam_id = e.id
             WHERE es.id = $1
@@ -681,12 +681,18 @@ async function assembleAndUploadSessionVideo(exam_session_id) {
         let studentName = 'student';
         let examTitle = 'exam';
         let attempt = 1;
+        let startedAt = '';
+        let studentNameRaw = 'student';
+        let examTitleRaw = 'exam';
         
         if (sessionInfo.rows.length > 0) {
             const s = sessionInfo.rows[0];
+            studentNameRaw = s.student_name || 'student';
+            examTitleRaw = s.title || 'exam';
             studentName = s.student_name ? s.student_name.replace(/[^a-z0-9]/gi, '_') : 'student';
             examTitle = s.title ? s.title.replace(/[^a-z0-9]/gi, '_') : 'exam';
             attempt = s.attempt_number || 1;
+            startedAt = s.started_at ? new Date(s.started_at).toISOString() : '';
         }
 
         const driveFileName = `${studentName}_${examTitle}_Session_${exam_session_id}_Attempt_${attempt}.mp4`;
@@ -697,6 +703,78 @@ async function assembleAndUploadSessionVideo(exam_session_id) {
 
         // Update database with Google Drive file ID
         await pool.query('UPDATE exam_sessions SET drive_file_id = $1 WHERE id = $2', [driveFileId, exam_session_id]);
+
+        // Upload Security logs to Google Drive as a Google Doc
+        try {
+            console.log(`Generating proctor logs Google Doc for session ${exam_session_id}...`);
+            const logsQuery = await pool.query(`
+                SELECT event_type, event_message, event_timestamp 
+                FROM proctor_logs 
+                WHERE exam_session_id = $1 
+                ORDER BY event_timestamp ASC
+            `, [exam_session_id]);
+
+            let logRowsHtml = '';
+            for (const row of logsQuery.rows) {
+                const timestamp = row.event_timestamp ? new Date(row.event_timestamp).toISOString() : '';
+                const type = row.event_type || '';
+                const msg = row.event_message || '';
+                const typeClass = (type.toLowerCase() === 'error' || type.toLowerCase() === 'failed') ? 'class="error"' : (type.toLowerCase().includes('violation') || type.toLowerCase().includes('warning') ? 'class="warning"' : '');
+                
+                logRowsHtml += `<tr>
+                    <td>${timestamp}</td>
+                    <td ${typeClass}>${type.toUpperCase()}</td>
+                    <td>${msg}</td>
+                </tr>`;
+            }
+
+            const logsDocHtml = `<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  body { font-family: Arial, sans-serif; line-height: 1.5; color: #333; }
+  h1 { color: #1e3a8a; border-bottom: 2px solid #1e3a8a; padding-bottom: 5px; }
+  .metadata { background: #f3f4f6; padding: 12px; border-radius: 6px; margin-bottom: 20px; }
+  .metadata p { margin: 4px 0; }
+  table { width: 100%; border-collapse: collapse; margin-top: 15px; }
+  th, td { padding: 8px 10px; border: 1px solid #cbd5e1; text-align: left; }
+  th { background: #f1f5f9; font-weight: bold; }
+  .error { color: #dc2626; font-weight: bold; }
+  .warning { color: #d97706; font-weight: bold; }
+</style>
+</head>
+<body>
+  <h1>Security & Activity Timeline</h1>
+  <div class="metadata">
+    <p><strong>Student Name:</strong> ${studentNameRaw}</p>
+    <p><strong>Exam Title:</strong> ${examTitleRaw}</p>
+    <p><strong>Attempt Number:</strong> ${attempt}</p>
+    <p><strong>Session ID:</strong> ${exam_session_id}</p>
+    <p><strong>Started At:</strong> ${startedAt}</p>
+    <p><strong>Report Generated:</strong> ${new Date().toISOString()}</p>
+  </div>
+  <table>
+    <thead>
+      <tr>
+        <th style="width: 25%;">Timestamp</th>
+        <th style="width: 20%;">Event Type</th>
+        <th style="width: 55%;">Message</th>
+      </tr>
+    </thead>
+    <tbody>
+      ${logRowsHtml || '<tr><td colspan="3" style="text-align:center;">No logs found for this session.</td></tr>'}
+    </tbody>
+  </table>
+</body>
+</html>`;
+
+            const driveDocName = `${studentName}_${examTitle}_Session_${exam_session_id}_Attempt_${attempt}_Logs`;
+            const docFileId = await uploadLogsToDriveDoc(logsDocHtml, driveDocName);
+            console.log(`Logs Google Doc uploaded successfully. File ID: ${docFileId}`);
+        } catch (docErr) {
+            console.error(`Failed to upload logs Google Doc for session ${exam_session_id}:`, docErr.message);
+        }
 
         // Clean up temporary files securely
         try {
