@@ -545,6 +545,16 @@ async function startMainExamSession() {
             throw new Error(sessionInfo.error || "Session authentication failed");
         }
 
+        // Report the chosen format to the server now that sessionInfo is defined
+        if (sessionInfo && sessionInfo.id && mediaRecorder) {
+            const mimeType = mediaRecorder.mimeType || 'video/webm';
+            fetch(`/api/session/${sessionInfo.id}/format`, {
+                method: 'PATCH',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ mime_type: mimeType, token: sessionToken })
+            }).catch(err => console.warn("[Format] Handshake failed."));
+        }
+
         socket.emit('join_student', {
             exam_id: examConfig.id,
             exam_session_id: sessionInfo.id,
@@ -689,14 +699,6 @@ function setupRecording() {
 
     console.log(`[Recorder] Initialized with: ${mimeType || 'browser default'}`);
     
-    // Handshake: Report the chosen format to the server immediately so playback knows how to decode it
-    if (sessionInfo && sessionInfo.id) {
-        fetch(`/api/session/${sessionInfo.id}/format`, {
-            method: 'PATCH', headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ mime_type: mimeType || 'video/mp4', token: sessionToken })
-        }).catch(err => console.warn("[Format] Handshake failed."));
-    }
-
     const options = {
         videoBitsPerSecond: 1500000, 
         audioBitsPerSecond: 128000
@@ -712,39 +714,45 @@ function setupRecording() {
             const currentIndex = ++chunkIndex;
             activeUploads++;
             
-            try {
-                // Use ArrayBuffer for cleaner binary handling than DataURLs
-                const arrayBuffer = await e.data.arrayBuffer();
-                let binary = '';
-                const bytes = new Uint8Array(arrayBuffer);
-                const len = bytes.byteLength;
-                for (let i = 0; i < len; i++) {
-                    binary += String.fromCharCode(bytes[i]);
-                }
-                const base64Data = window.btoa(binary);
-                
-                await fetch('/api/session/upload-chunk', { 
-                    method: 'POST', 
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        exam_session_id: sessionInfo.id,
-                        chunk_index: currentIndex,
-                        base64_video: base64Data,
-                        token: sessionToken
-                    })
-                });
-            } catch(err) {
-                console.error(`[Recorder] Failed to upload chunk #${currentIndex}`, err);
-                if (socket) {
-                    socket.emit('proctor_log', {
-                        exam_session_id: sessionInfo.id,
-                        event_type: 'error',
-                        event_message: `Chunk #${currentIndex} upload failed: ${err.message}`
+            const reader = new FileReader();
+            reader.onloadend = async () => {
+                try {
+                    const result = reader.result;
+                    const base64Data = result.split(',')[1]; // Strip the data URL prefix
+                    
+                    const response = await fetch('/api/session/upload-chunk', { 
+                        method: 'POST', 
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            exam_session_id: sessionInfo.id,
+                            chunk_index: currentIndex,
+                            base64_video: base64Data,
+                            token: sessionToken
+                        })
                     });
+                    
+                    if (!response.ok) {
+                        const errorData = await response.json().catch(() => ({}));
+                        throw new Error(errorData.error || `HTTP ${response.status}`);
+                    }
+                } catch(err) {
+                    console.error(`[Recorder] Failed to upload chunk #${currentIndex}`, err);
+                    if (socket) {
+                        socket.emit('proctor_log', {
+                            exam_session_id: sessionInfo.id,
+                            event_type: 'error',
+                            event_message: `Chunk #${currentIndex} upload failed: ${err.message}`
+                        });
+                    }
+                } finally {
+                    activeUploads--;
                 }
-            } finally {
+            };
+            reader.onerror = () => {
+                console.error(`[Recorder] FileReader error on chunk #${currentIndex}`);
                 activeUploads--;
-            }
+            };
+            reader.readAsDataURL(e.data);
         }
     };
     
