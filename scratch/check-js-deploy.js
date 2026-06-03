@@ -9,7 +9,8 @@ https.get('https://canvas-proctor.onrender.com/js/student.js', {
     res.on('data', chunk => { data += chunk; });
     res.on('end', () => {
         console.log("STATUS:", res.statusCode);
-        console.log("HAS SECURE EXAM TAB OPENED TEXT:", data.includes('Secure Exam Tab Opened'));
+        console.log("CONTAINS NEW UPLOAD CHUNK WITH TOKEN:", data.includes("token: sessionToken"));
+        console.log("CONTAINS END EXAM WITH TOKEN:", data.includes("body: JSON.stringify({ exam_session_id: sessionInfo.id, token: sessionToken })"));
     });
 }).on('error', err => {
     console.error("HTTP GET failed:", err.message);

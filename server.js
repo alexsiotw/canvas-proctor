@@ -620,7 +620,7 @@ async function assembleAndUploadSessionVideo(exam_session_id) {
             return;
         }
 
-        const tempOutFile = path.join(os.tmpdir(), `session-${exam_session_id}.webm`);
+        const tempOutFile = path.join(os.tmpdir(), `session-${exam_session_id}.mp4`);
         const writeStream = fs.createWriteStream(tempOutFile);
 
         for (const file of files) {
@@ -652,10 +652,10 @@ async function assembleAndUploadSessionVideo(exam_session_id) {
             attempt = s.attempt_number || 1;
         }
 
-        const driveFileName = `${studentName}_${examTitle}_Session_${exam_session_id}_Attempt_${attempt}.webm`;
+        const driveFileName = `${studentName}_${examTitle}_Session_${exam_session_id}_Attempt_${attempt}.mp4`;
 
         console.log(`Uploading ${driveFileName} to Google Drive...`);
-        const driveFileId = await uploadVideoToDrive(tempOutFile, driveFileName, 'video/webm');
+        const driveFileId = await uploadVideoToDrive(tempOutFile, driveFileName, 'video/mp4');
         console.log(`Uploaded to Google Drive. File ID: ${driveFileId}`);
 
         // Update database with Google Drive file ID
@@ -1029,6 +1029,8 @@ app.get('/api/seb/config/:token/:filename?', async (req, res) => {
     }
 });
 
+const activeDisconnectTimers = new Map();
+
 // Socket IO Real-Time
 io.on('connection', (socket) => {
     socket.on('join_teacher', (exam_id) => {
@@ -1039,6 +1041,13 @@ io.on('connection', (socket) => {
         socket.join('student_' + data.exam_session_id);
         socket.studentData = data;
         io.to('teacher_' + data.exam_id).emit('student_status', { session_id: data.exam_session_id, name: data.student_name, status: 'online' });
+        
+        // Clear auto-save timer if student reconnected
+        if (activeDisconnectTimers.has(data.exam_session_id)) {
+            clearTimeout(activeDisconnectTimers.get(data.exam_session_id));
+            activeDisconnectTimers.delete(data.exam_session_id);
+            console.log(`Student reconnected to session ${data.exam_session_id}, cancelled auto-save`);
+        }
     });
     socket.on('student_snapshot', (data) => {
         // data: { exam_id, exam_session_id, screenshot_data_url }
@@ -1059,11 +1068,29 @@ io.on('connection', (socket) => {
 
     socket.on('disconnect', () => {
         if(socket.studentData) {
-            io.to('teacher_' + socket.studentData.exam_id).emit('student_status', { 
-                session_id: socket.studentData.exam_session_id, 
-                name: socket.studentData.student_name, 
+            const { exam_session_id, exam_id, student_name } = socket.studentData;
+            io.to('teacher_' + exam_id).emit('student_status', { 
+                session_id: exam_session_id, 
+                name: student_name, 
                 status: 'offline' 
             });
+
+            // Start a 30-second grace period timer to finalize the session if they don't reconnect
+            const timer = setTimeout(async () => {
+                activeDisconnectTimers.delete(exam_session_id);
+                try {
+                    const sessionQuery = await pool.query('SELECT status FROM exam_sessions WHERE id = $1', [exam_session_id]);
+                    if (sessionQuery.rows.length > 0 && sessionQuery.rows[0].status === 'started') {
+                        console.log(`Session ${exam_session_id} abandoned by disconnect. Auto-finalizing...`);
+                        await pool.query("UPDATE exam_sessions SET status = 'abandoned' WHERE id = $1", [exam_session_id]);
+                        assembleAndUploadSessionVideo(exam_session_id);
+                    }
+                } catch (e) {
+                    console.error(`Error auto-finalizing session ${exam_session_id}:`, e);
+                }
+            }, 30000); // 30 seconds grace period
+
+            activeDisconnectTimers.set(exam_session_id, timer);
         }
     });
 });
