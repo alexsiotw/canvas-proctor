@@ -707,7 +707,7 @@ function setupRecording() {
 
     mediaRecorder = new MediaRecorder(finalStream, options);
     mediaRecorder.ondataavailable = async (e) => {
-        if (e.data && e.data.size > 0 && sessionInfo.id) {
+        if (e.data && e.data.size > 0 && sessionInfo && sessionInfo.id) {
             // CRITICAL: Capture the current index locally to prevent race conditions during upload
             const currentIndex = ++chunkIndex;
             activeUploads++;
