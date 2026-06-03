@@ -695,6 +695,14 @@ async function assembleAndUploadSessionVideo(exam_session_id) {
 
     } catch (err) {
         console.error(`Failed to assemble and upload video for session ${exam_session_id}:`, err);
+        try {
+            await pool.query(
+                'INSERT INTO proctor_logs (exam_session_id, event_type, event_message) VALUES ($1, $2, $3)',
+                [exam_session_id, 'error', `Video Assembly/Upload failed: ${err.message}`]
+            );
+        } catch (dbErr) {
+            console.error('Failed to log error to database:', dbErr);
+        }
     }
 }
 
