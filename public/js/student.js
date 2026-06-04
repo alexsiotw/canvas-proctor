@@ -585,7 +585,13 @@ async function startMainExamSession() {
             }
         }
         
-        document.getElementById('quiz-iframe').src = examConfig.canvas_quiz_url;
+        let quizUrl = examConfig.canvas_quiz_url;
+        if (quizUrl.includes('?')) {
+            quizUrl += "&secure_proctor=canvas-proctor-shared-secret-key-998877";
+        } else {
+            quizUrl += "?secure_proctor=canvas-proctor-shared-secret-key-998877";
+        }
+        document.getElementById('quiz-iframe').src = quizUrl;
 
         setupFocusTracking();
 
