@@ -156,6 +156,67 @@ app.post('/lti/launch', (req, res) => {
     });
 });
 
+app.get('/api/canvas-launch', async (req, res) => {
+    const { user_id, user_name, course_id, quiz_id, secret } = req.query;
+    if (secret !== 'canvas-proctor-shared-secret-key-998877') {
+        return res.status(403).json({ error: 'Unauthorized Canvas Launch' });
+    }
+    if (!user_id || !course_id || !quiz_id) {
+        return res.status(400).json({ error: 'Missing launch parameters' });
+    }
+
+    try {
+        const quizPattern = `%/quizzes/${quiz_id}`;
+        const quizPatternWithParams = `%/quizzes/${quiz_id}?%`;
+        const examResult = await pool.query(
+            'SELECT * FROM exams WHERE canvas_course_id = $1 AND (canvas_quiz_url LIKE $2 OR canvas_quiz_url LIKE $3) LIMIT 1',
+            [course_id, quizPattern, quizPatternWithParams]
+        );
+
+        if (examResult.rows.length === 0) {
+            const fallbackResult = await pool.query(
+                'SELECT * FROM exams WHERE canvas_quiz_url LIKE $1 OR canvas_quiz_url LIKE $2 LIMIT 1',
+                [quizPattern, quizPatternWithParams]
+            );
+            if (fallbackResult.rows.length > 0) {
+                examResult.rows = fallbackResult.rows;
+            }
+        }
+
+        if (examResult.rows.length === 0) {
+            return res.status(404).send(`
+                <div style="font-family: sans-serif; text-align: center; margin-top: 100px; color: #374151;">
+                    <h2>Secure Proctor Mode Error</h2>
+                    <p>This quiz is not yet configured for Secure Proctor Mode. Please ask your instructor to link this Canvas placement to an exam.</p>
+                </div>
+            `);
+        }
+
+        const exam = examResult.rows[0];
+        const sessionToken = uuidv4();
+
+        req.session.lti = {
+            userId: user_id,
+            canvasCourseId: course_id,
+            alternativeCourseId: '',
+            userName: user_name || 'Student',
+            role: 'student',
+            sessionToken: sessionToken,
+            resourceLinkId: ''
+        };
+
+        await pool.query(`
+            INSERT INTO lti_sessions (session_token, canvas_user_id, canvas_course_id, user_name, user_role, debug_info)
+            VALUES ($1, $2, $3, $4, $5, $6)
+        `, [sessionToken, user_id, course_id, user_name || 'Student', 'student', 'Direct Canvas integration launch']);
+
+        res.redirect(`/student.html?token=${sessionToken}&exam_id=${exam.id}`);
+    } catch (err) {
+        console.error('Canvas integration launch failed:', err);
+        res.status(500).json({ error: err.message });
+    }
+});
+
 app.get('/dev-launch', (req, res) => {
     req.session.lti = { userId: 'dev_instructor', canvasCourseId: 'demo_course', userName: 'Dev Instructor', role: 'instructor' };
     res.redirect('/index.html');

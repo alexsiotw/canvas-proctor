@@ -1164,6 +1164,101 @@ async function endExam() {
     }
 }
 
+async function autoEndExamSession() {
+    if (isExamCompleted) return;
+    isExamCompleted = true;
+    
+    if (document.fullscreenElement) {
+        document.exitFullscreen().catch(err => console.log('Exit fullscreen failed:', err));
+    }
+    
+    document.getElementById('active-exam-container').innerHTML = `
+        <div style="margin: auto; text-align: center; padding: 40px; background: white; border-radius: 8px; max-width: 600px; box-shadow: 0 4px 20px rgba(0,0,0,0.15); font-family: sans-serif;">
+            <div style="width: 80px; height: 80px; border-radius: 50%; background: #ecfdf5; display: flex; align-items: center; justify-content: center; margin: 0 auto 20px auto; font-size: 40px; color: #059669;">✓</div>
+            <h2 style="color: #059669; font-weight: 700; margin: 0 0 10px 0;">Quiz Submitted Successfully</h2>
+            <p style="color: var(--text-secondary); font-size: 16px; line-height: 1.5; margin: 0 0 20px 0;">
+                Finalizing and uploading proctoring recording... Please wait.
+            </p>
+            <div class="volume-meter" style="width: 100%; max-width: 300px; margin: 0 auto; height: 8px; background: #e2e8f0; border-radius: 4px; overflow: hidden;">
+                <div style="width: 100%; height: 100%; background: #10b981; animation: pulse 1.5s infinite ease-in-out;"></div>
+            </div>
+            <style>
+                @keyframes pulse {
+                    0% { transform: translateX(-100%); }
+                    100% { transform: translateX(100%); }
+                }
+            </style>
+        </div>
+    `;
+
+    try {
+        if(mediaRecorder && mediaRecorder.state !== 'inactive') {
+            try {
+                mediaRecorder.stop();
+            } catch(e) {
+                console.warn("Failed to stop mediaRecorder:", e);
+            }
+        }
+        
+        const waitStart = Date.now();
+        while (activeUploads > 0 && (Date.now() - waitStart < 3000)) {
+            await new Promise(r => setTimeout(r, 100));
+        }
+        
+        const allStreams = [videoStream, screenStream, finalStream, localMicStream, localCamStream, localScreenStream];
+        allStreams.forEach(stream => {
+            if (stream) {
+                try {
+                    stream.getTracks().forEach(t => {
+                        try { t.stop(); } catch(e){}
+                    });
+                } catch(e){}
+            }
+        });
+        
+        try {
+            const localVideo = document.getElementById('local-video');
+            if (localVideo && localVideo.srcObject) {
+                localVideo.srcObject.getTracks().forEach(t => {
+                    try { t.stop(); } catch(e){}
+                });
+                localVideo.srcObject = null;
+            }
+        } catch(e){}
+
+        if (compositeAnimationId) cancelAnimationFrame(compositeAnimationId);
+        compositeAnimationId = null;
+        
+        try {
+            document.getElementById('quiz-iframe').src = '';
+        } catch(e){}
+        
+        try {
+            logProctorEvent('exam_ended', 'Student securely finished the exam via Canvas submit.');
+        } catch(e){}
+        
+        try {
+            await fetch('/api/session/end', {
+                method: 'POST', headers: {'Content-Type':'application/json'},
+                body: JSON.stringify({ exam_session_id: sessionInfo.id, token: sessionToken })
+            });
+        } catch(err) {
+            console.error("Failed to call exam end API:", err);
+        }
+    } catch(err) {
+        console.error("Background teardown error:", err);
+    }
+
+    window.location.href = examConfig.canvas_quiz_url;
+}
+
+window.addEventListener('message', async (event) => {
+    if (event.data && event.data.type === 'canvas_quiz_submitted') {
+        console.log("[Integration] Canvas quiz submission detected via message. Auto-ending session...");
+        await autoEndExamSession();
+    }
+});
+
 // Exit Handler: Attempt to save session if student quits SEB or closes browser
 window.addEventListener('beforeunload', (event) => {
     if (sessionInfo && sessionInfo.id) {
