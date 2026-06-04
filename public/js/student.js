@@ -1,5 +1,6 @@
 let examConfig = null;
 let sessionInfo = null;
+let activeVisualFlags = [];
 let socket = io();
 let mediaRecorder = null;
 let chunkIndex = 0;
@@ -700,7 +701,7 @@ function setupRecording() {
     console.log(`[Recorder] Initialized with: ${mimeType || 'browser default'}`);
     
     const options = {
-        videoBitsPerSecond: 1500000, 
+        videoBitsPerSecond: 800000, 
         audioBitsPerSecond: 128000
     };
     if (mimeType) {
@@ -862,6 +863,38 @@ async function createCompositeTrack(screenStream, cameraStream) {
         ctx.font = "bold 13px Arial";
         ctx.fillText(hasMic ? "MICROPHONE: ON" : "MICROPHONE: OFF", micBoxX + 45, micBoxY + 35);
         
+        // Draw Active Security / AI Flags in the top sidebar space (y = 20 to y = 180)
+        const now = Date.now();
+        activeVisualFlags = activeVisualFlags.filter(flag => now < flag.expiresAt);
+        
+        let alertY = 20; 
+        for (const flag of activeVisualFlags) {
+            if (alertY + 45 > camY - 15) break; // Don't draw over the camera label/viewport
+            
+            const isCritical = flag.type.toLowerCase().includes('violation') || flag.type.toLowerCase().includes('exit') || flag.type.toLowerCase().includes('boot');
+            ctx.fillStyle = isCritical ? "rgba(220, 38, 38, 0.9)" : "rgba(217, 119, 6, 0.9)";
+            ctx.beginPath();
+            ctx.roundRect(sidebarX + 10, alertY, 300, 45, 6);
+            ctx.fill();
+            
+            ctx.fillStyle = "white";
+            ctx.font = "bold 11px Arial";
+            ctx.fillText(flag.type.toUpperCase(), sidebarX + 20, alertY + 18);
+            
+            ctx.font = "10px Arial";
+            const maxTextWidth = 280;
+            let displayMsg = flag.message;
+            if (ctx.measureText(displayMsg).width > maxTextWidth) {
+                while (ctx.measureText(displayMsg + '...').width > maxTextWidth && displayMsg.length > 0) {
+                    displayMsg = displayMsg.slice(0, -1);
+                }
+                displayMsg += '...';
+            }
+            ctx.fillText(displayMsg, sidebarX + 20, alertY + 34);
+            
+            alertY += 55;
+        }
+        
         compositeAnimationId = requestAnimationFrame(draw);
     }
     
@@ -1012,6 +1045,12 @@ async function bootStudent() {
 }
 
 function logProctorEvent(type, message) {
+    activeVisualFlags.push({
+        type: type,
+        message: message,
+        expiresAt: Date.now() + 4000
+    });
+
     if(!sessionInfo) return;
     fetch('/api/session/log', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
