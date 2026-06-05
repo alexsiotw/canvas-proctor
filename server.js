@@ -19,6 +19,26 @@ const ffmpeg = require('fluent-ffmpeg');
 const ffmpegPath = require('ffmpeg-static');
 ffmpeg.setFfmpegPath(ffmpegPath);
 
+// Intercept console output to allow remote logs debugging
+const logFile = path.join(os.tmpdir(), 'server.log');
+const logStream = fs.createWriteStream(logFile, { flags: 'a' });
+const originalLog = console.log;
+const originalError = console.error;
+
+console.log = function(...args) {
+    originalLog.apply(console, args);
+    try {
+        logStream.write(`[LOG] ${new Date().toISOString()} - ${args.map(a => typeof a === 'object' ? JSON.stringify(a) : String(a)).join(' ')}\n`);
+    } catch(e) {}
+};
+
+console.error = function(...args) {
+    originalError.apply(console, args);
+    try {
+        logStream.write(`[ERROR] ${new Date().toISOString()} - ${args.map(a => typeof a === 'object' ? JSON.stringify(a) : String(a)).join(' ')}\n`);
+    } catch(e) {}
+};
+
 const upload = multer({ storage: multer.memoryStorage() });
 
 const app = express();
@@ -42,6 +62,16 @@ app.use(session({
         maxAge: 24 * 60 * 60 * 1000
     }
 }));
+
+// Route to check server logs on Render
+app.get('/api/server-logs', (req, res) => {
+    if (fs.existsSync(logFile)) {
+        res.setHeader('Content-Type', 'text/plain');
+        fs.createReadStream(logFile).pipe(res);
+    } else {
+        res.status(404).send('No logs available yet');
+    }
+});
 
 // Provide LTI xml config
 app.get('/lti/config.xml', (req, res) => {
@@ -763,6 +793,14 @@ async function assembleAndUploadSessionVideo(exam_session_id, total_chunks) {
         const isWebm = mimeTypeFromDb.includes('webm');
         const rawExt = isWebm ? 'webm' : 'mp4';
         const rawWebmPath = path.join(os.tmpdir(), `session-${exam_session_id}-raw.${rawExt}`);
+
+        console.log(`[Assemble] Found ${files.length} chunk files in ${chunkDir}`);
+        for (const file of files) {
+            const filePath = path.join(chunkDir, file);
+            const stats = fs.statSync(filePath);
+            console.log(`[Assemble] Chunk file ${file} size: ${stats.size} bytes`);
+        }
+
         const writeStream = fs.createWriteStream(rawWebmPath);
 
         for (const file of files) {
@@ -774,6 +812,9 @@ async function assembleAndUploadSessionVideo(exam_session_id, total_chunks) {
 
         // Wait for write to finish
         await new Promise((resolve) => writeStream.on('finish', resolve));
+
+        const rawStats = fs.statSync(rawWebmPath);
+        console.log(`[Assemble] Raw compiled video path: ${rawWebmPath}, total size: ${rawStats.size} bytes`);
 
         const tempOutFile = path.join(os.tmpdir(), `session-${exam_session_id}.mp4`);
         let finalMimeType = 'video/mp4';
@@ -788,9 +829,15 @@ async function assembleAndUploadSessionVideo(exam_session_id, total_chunks) {
                         .outputOptions('-pix_fmt yuv420p')
                         .outputOptions('-preset superfast')
                         .outputOptions('-c:a aac')
-                        .save(tempOutFile)
+                        .on('start', (commandLine) => {
+                            console.log(`Spawned FFmpeg with command: ${commandLine}`);
+                        })
+                        .on('stderr', (stderrLine) => {
+                            console.log(`[FFmpeg STDERR] ${stderrLine}`);
+                        })
                         .on('end', resolve)
-                        .on('error', reject);
+                        .on('error', reject)
+                        .save(tempOutFile);
                 });
                 console.log(`Successfully transcoded to MP4 for session ${exam_session_id}`);
                 if (fs.existsSync(rawWebmPath)) fs.unlinkSync(rawWebmPath);

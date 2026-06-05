@@ -521,22 +521,13 @@ async function startMainExamSession() {
         finalStream = new MediaStream(tracks);
         console.log(`[Media] Final stream created with ${finalStream.getVideoTracks().length} video and ${finalStream.getAudioTracks().length} audio tracks.`);
 
-        setupRecording();
-
-        console.log("[Media] Warming up tracks for stable recording...");
-        await new Promise(resolve => setTimeout(resolve, 1500));
-
-        if (mediaRecorder) {
-            mediaRecorder.start(5000);
-            console.log("[Recorder] Session recording started with 5s slices.");
-        }
-        
         if(screenStream) {
             document.getElementById('local-video').srcObject = screenStream;
         } else if(videoStream) {
             document.getElementById('local-video').srcObject = videoStream;
         }
 
+        console.log("[Session] Registering session on backend...");
         const sessionRes = await fetch('/api/session/start', {
             method: 'POST', headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ exam_id: examConfig.id, token: sessionToken })
@@ -546,6 +537,8 @@ async function startMainExamSession() {
             throw new Error(sessionInfo.error || "Session authentication failed");
         }
 
+        setupRecording();
+
         // Report the chosen format to the server now that sessionInfo is defined
         if (sessionInfo && sessionInfo.id && mediaRecorder) {
             const mimeType = mediaRecorder.mimeType || 'video/webm';
@@ -554,6 +547,14 @@ async function startMainExamSession() {
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ mime_type: mimeType, token: sessionToken })
             }).catch(err => console.warn("[Format] Handshake failed."));
+        }
+
+        console.log("[Media] Warming up tracks for stable recording...");
+        await new Promise(resolve => setTimeout(resolve, 1500));
+
+        if (mediaRecorder) {
+            mediaRecorder.start(5000);
+            console.log("[Recorder] Session recording started with 5s slices.");
         }
 
         socket.emit('join_student', {
