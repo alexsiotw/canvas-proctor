@@ -942,9 +942,11 @@ async function createCompositeTrack(screenStream, cameraStream) {
     const canvasStream = canvas.captureStream(15); 
     const outputStream = new MediaStream([canvasStream.getVideoTracks()[0]]);
     
-    cameraStream.getAudioTracks().forEach(track => {
-        outputStream.addTrack(track);
-    });
+    if (cameraStream) {
+        cameraStream.getAudioTracks().forEach(track => {
+            outputStream.addTrack(track);
+        });
+    }
     if (localMicStream) {
         localMicStream.getAudioTracks().forEach(track => {
             outputStream.addTrack(track);
