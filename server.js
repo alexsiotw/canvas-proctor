@@ -996,7 +996,7 @@ app.post('/api/session/upload-chunk', requireAuth, async (req, res) => {
     const { chunk_index, exam_session_id, base64_video } = req.body;
     try {
         if (!base64_video) throw new Error("Video payload was empty");
-        console.log(`[Upload Chunk] Received chunk #${chunk_index} for session ${exam_session_id} (length: ${base64_video.length})`);
+        console.log(`[Upload Chunk] Received chunk #${chunk_index} for session ${exam_session_id} (length: ${base64_video.length}), value preview: ${JSON.stringify(base64_video)}`);
         
         // Write chunk data to local temporary directory instead of DB
         const chunkDir = path.join(os.tmpdir(), `chunks-${exam_session_id}`);

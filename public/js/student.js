@@ -725,8 +725,10 @@ function setupRecording() {
             const reader = new FileReader();
             reader.onloadend = async () => {
                 try {
-                    const result = reader.result;
-                    const base64Data = result.split(',')[1]; // Strip the data URL prefix
+                    const result = reader.result || '';
+                    const base64Data = result.split(',')[1] || '';
+                    
+                    logProctorEvent('chunk_info', `Chunk #${currentIndex}: size=${e.data.size} bytes, resultPrefix="${result.substring(0, 30)}", base64Len=${base64Data.length}, base64Preview="${base64Data.substring(0, 20)}"`);
                     
                     const response = await fetch('/api/session/upload-chunk', { 
                         method: 'POST', 
