@@ -169,13 +169,13 @@ app.get('/api/canvas-launch', async (req, res) => {
         const quizPattern = `%/quizzes/${quiz_id}`;
         const quizPatternWithParams = `%/quizzes/${quiz_id}?%`;
         const examResult = await pool.query(
-            'SELECT * FROM exams WHERE canvas_course_id = $1 AND (canvas_quiz_url LIKE $2 OR canvas_quiz_url LIKE $3) LIMIT 1',
+            'SELECT * FROM exams WHERE canvas_course_id = $1 AND (canvas_quiz_url LIKE $2 OR canvas_quiz_url LIKE $3) ORDER BY id DESC LIMIT 1',
             [course_id, quizPattern, quizPatternWithParams]
         );
 
         if (examResult.rows.length === 0) {
             const fallbackResult = await pool.query(
-                'SELECT * FROM exams WHERE canvas_quiz_url LIKE $1 OR canvas_quiz_url LIKE $2 LIMIT 1',
+                'SELECT * FROM exams WHERE canvas_quiz_url LIKE $1 OR canvas_quiz_url LIKE $2 ORDER BY id DESC LIMIT 1',
                 [quizPattern, quizPatternWithParams]
             );
             if (fallbackResult.rows.length > 0) {
