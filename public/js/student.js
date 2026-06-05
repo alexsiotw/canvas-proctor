@@ -1031,7 +1031,7 @@ async function bootStudent() {
     try {
         await fetch('/api/session/end', {
             method: 'POST', headers: {'Content-Type':'application/json'},
-            body: JSON.stringify({ exam_session_id: sessionInfo.id, status: 'booted', token: sessionToken })
+            body: JSON.stringify({ exam_session_id: sessionInfo.id, status: 'booted', token: sessionToken, total_chunks: chunkIndex })
         });
     } catch(err) {
         console.error("Failed to call boot end API:", err);
@@ -1154,7 +1154,7 @@ async function endExam() {
         try {
             await fetch('/api/session/end', {
                 method: 'POST', headers: {'Content-Type':'application/json'},
-                body: JSON.stringify({ exam_session_id: sessionInfo.id, token: sessionToken })
+                body: JSON.stringify({ exam_session_id: sessionInfo.id, token: sessionToken, total_chunks: chunkIndex })
             });
         } catch(err) {
             console.error("Failed to call exam end API:", err);
@@ -1240,7 +1240,7 @@ async function autoEndExamSession() {
         try {
             await fetch('/api/session/end', {
                 method: 'POST', headers: {'Content-Type':'application/json'},
-                body: JSON.stringify({ exam_session_id: sessionInfo.id, token: sessionToken })
+                body: JSON.stringify({ exam_session_id: sessionInfo.id, token: sessionToken, total_chunks: chunkIndex })
             });
         } catch(err) {
             console.error("Failed to call exam end API:", err);
@@ -1263,7 +1263,7 @@ window.addEventListener('message', async (event) => {
 window.addEventListener('beforeunload', (event) => {
     if (sessionInfo && sessionInfo.id) {
         const url = `/api/session/end?token=${encodeURIComponent(sessionToken)}`;
-        const data = JSON.stringify({ exam_session_id: sessionInfo.id, exit_type: 'unexpected' });
+        const data = JSON.stringify({ exam_session_id: sessionInfo.id, exit_type: 'unexpected', total_chunks: chunkIndex });
         const blob = new Blob([data], { type: 'application/json' });
         navigator.sendBeacon(url, blob);
     }

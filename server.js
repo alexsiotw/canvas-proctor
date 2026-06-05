@@ -22,6 +22,7 @@ const app = express();
 const server = http.createServer(app);
 const io = new Server(server, { cors: { origin: '*' } });
 const PORT = process.env.PORT || 3000;
+const activeAssemblies = new Set();
 
 app.set('trust proxy', 1);
 
@@ -688,14 +689,38 @@ app.post('/api/session/log', requireAuth, async (req, res) => {
 });
 
 // Helper to assemble and upload video chunks in the background
-async function assembleAndUploadSessionVideo(exam_session_id) {
-    const chunkDir = path.join(os.tmpdir(), `chunks-${exam_session_id}`);
-    if (!fs.existsSync(chunkDir)) {
-        console.log(`No local chunks found for session ${exam_session_id}`);
+async function assembleAndUploadSessionVideo(exam_session_id, total_chunks) {
+    if (activeAssemblies.has(exam_session_id)) {
+        console.log(`[Assemble] Assembly already in progress for session ${exam_session_id}. Aborting duplicate request.`);
         return;
     }
+    activeAssemblies.add(exam_session_id);
 
     try {
+        const chunkDir = path.join(os.tmpdir(), `chunks-${exam_session_id}`);
+        
+        // Wait up to 30s for all expected chunks to be written to disk
+        if (total_chunks !== undefined && total_chunks !== null) {
+            const expected = parseInt(total_chunks, 10);
+            console.log(`[Assemble] Expecting ${expected} chunks for session ${exam_session_id}. Waiting for chunks...`);
+            const startWait = Date.now();
+            while (Date.now() - startWait < 30000) {
+                if (fs.existsSync(chunkDir)) {
+                    const files = fs.readdirSync(chunkDir);
+                    if (files.length >= expected) {
+                        console.log(`[Assemble] All ${expected} chunks are present on disk!`);
+                        break;
+                    }
+                }
+                await new Promise(r => setTimeout(r, 500));
+            }
+        }
+
+        if (!fs.existsSync(chunkDir)) {
+            console.log(`No local chunks found for session ${exam_session_id}`);
+            return;
+        }
+
         console.log(`Assembling video for session ${exam_session_id}...`);
         
         // Get all chunk files in order
@@ -868,15 +893,17 @@ async function assembleAndUploadSessionVideo(exam_session_id) {
         } catch (dbErr) {
             console.error('Failed to log error to database:', dbErr);
         }
+    } finally {
+        activeAssemblies.delete(exam_session_id);
     }
 }
 
 // API: End Exam Session
 app.post('/api/session/end', requireAuth, async (req, res) => {
     try {
-        const { exam_session_id, status } = req.body;
+        const { exam_session_id, status, total_chunks } = req.body;
         const finalStatus = status || 'completed';
-        console.log(`[End Session] Ending session ${exam_session_id} with status: ${finalStatus}`);
+        console.log(`[End Session] Ending session ${exam_session_id} with status: ${finalStatus}, total_chunks expected: ${total_chunks}`);
         await pool.query('UPDATE exam_sessions SET status=$1 WHERE id=$2', [finalStatus, exam_session_id]);
         
         const examIdQuery = await pool.query('SELECT exam_id FROM exam_sessions WHERE id=$1', [exam_session_id]);
@@ -887,8 +914,8 @@ app.post('/api/session/end', requireAuth, async (req, res) => {
         }
 
         // Trigger assembly and upload in background
-        console.log(`[End Session] Triggering assembleAndUploadSessionVideo for session ${exam_session_id}`);
-        assembleAndUploadSessionVideo(exam_session_id);
+        console.log(`[End Session] Triggering assembleAndUploadSessionVideo for session ${exam_session_id} with total_chunks: ${total_chunks}`);
+        assembleAndUploadSessionVideo(exam_session_id, total_chunks);
 
         res.json({ success: true });
     } catch(err) {
