@@ -726,7 +726,8 @@ function setupRecording() {
             reader.onloadend = async () => {
                 try {
                     const result = reader.result || '';
-                    const base64Data = result.split(',')[1] || '';
+                    const base64Part = result.indexOf(';base64,');
+                    const base64Data = base64Part !== -1 ? result.substring(base64Part + 8) : (result.indexOf(',') !== -1 ? result.substring(result.indexOf(',') + 1) : result);
                     
                     logProctorEvent('chunk_info', `Chunk #${currentIndex}: size=${e.data.size} bytes, resultPrefix="${result.substring(0, 30)}", base64Len=${base64Data.length}, base64Preview="${base64Data.substring(0, 20)}"`);
                     
