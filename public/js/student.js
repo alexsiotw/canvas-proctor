@@ -496,25 +496,34 @@ async function startMainExamSession() {
         
         const tracks = [];
         let compositeStream = null;
+        const addedTrackIds = new Set();
 
-        if (screenStream && videoStream && videoStream.getVideoTracks().length > 0) {
-            console.log("[Media] Both Screen and Camera detected. Initializing side-by-side compositor...");
+        if (screenStream) {
+            console.log("[Media] Initializing composite track layout (with sidebar indicators/flags)...");
             compositeStream = await createCompositeTrack(screenStream, videoStream);
-            compositeStream.getTracks().forEach(t => tracks.push(t));
-        } else if (screenStream) {
-            tracks.push(screenStream.getVideoTracks()[0]);
-            if (videoStream && videoStream.getAudioTracks().length > 0) {
-                videoStream.getAudioTracks().forEach(t => tracks.push(t));
-            }
+            compositeStream.getTracks().forEach(t => {
+                if (!addedTrackIds.has(t.id)) {
+                    tracks.push(t);
+                    addedTrackIds.add(t.id);
+                }
+            });
         } else if (videoStream) {
-            videoStream.getTracks().forEach(t => tracks.push(t));
+            videoStream.getTracks().forEach(t => {
+                if (!addedTrackIds.has(t.id)) {
+                    tracks.push(t);
+                    addedTrackIds.add(t.id);
+                }
+            });
         }
 
         // Add active microphone stream audio tracks to ensure audio recording is captured
         if (localMicStream) {
             localMicStream.getAudioTracks().forEach(t => {
-                console.log("[Media] Appending microphone audio track to final recorded stream:", t.label);
-                tracks.push(t);
+                if (!addedTrackIds.has(t.id)) {
+                    console.log("[Media] Appending microphone audio track to final recorded stream:", t.label);
+                    tracks.push(t);
+                    addedTrackIds.add(t.id);
+                }
             });
         }
 
@@ -729,7 +738,7 @@ function setupRecording() {
                     const base64Part = result.indexOf(';base64,');
                     const base64Data = base64Part !== -1 ? result.substring(base64Part + 8) : (result.indexOf(',') !== -1 ? result.substring(result.indexOf(',') + 1) : result);
                     
-                    logProctorEvent('chunk_info', `Chunk #${currentIndex}: size=${e.data.size} bytes, resultPrefix="${result.substring(0, 30)}", base64Len=${base64Data.length}, base64Preview="${base64Data.substring(0, 20)}"`);
+                    console.log(`[Recorder] Chunk #${currentIndex}: size=${e.data.size} bytes, base64Len=${base64Data.length}`);
                     
                     const response = await fetch('/api/session/upload-chunk', { 
                         method: 'POST', 
@@ -794,32 +803,43 @@ async function createCompositeTrack(screenStream, cameraStream) {
     vScreen.setAttribute('playsinline', ''); 
     await vScreen.play();
 
-    const vCam = document.createElement('video');
-    vCam.srcObject = cameraStream;
-    vCam.muted = true;
-    vCam.setAttribute('playsinline', '');
-    await vCam.play();
+    let vCam = null;
+    if (cameraStream && cameraStream.getVideoTracks().length > 0) {
+        vCam = document.createElement('video');
+        vCam.srcObject = cameraStream;
+        vCam.muted = true;
+        vCam.setAttribute('playsinline', '');
+        await vCam.play().catch(e => console.warn("[Media] Camera video play failed:", e));
+    }
 
     // Volume Detection for visual feedback
     let volumeLevel = 0;
     try {
         const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
         const analyser = audioCtx.createAnalyser();
-        const source = audioCtx.createMediaStreamSource(cameraStream);
-        source.connect(analyser);
-        analyser.fftSize = 256;
-        const dataArray = new Uint8Array(analyser.frequencyBinCount);
-
-        function updateVolume() {
-            if (!compositeAnimationId && compositeAnimationId !== 0) return;
-            if (audioCtx.state === 'suspended') audioCtx.resume();
-            analyser.getByteFrequencyData(dataArray);
-            let max = 0;
-            for (let i = 0; i < dataArray.length; i++) if(dataArray[i] > max) max = dataArray[i];
-            volumeLevel = max;
-            requestAnimationFrame(updateVolume);
+        
+        let sourceStream = cameraStream;
+        if (!sourceStream || sourceStream.getAudioTracks().length === 0) {
+            sourceStream = localMicStream;
         }
-        updateVolume();
+        
+        if (sourceStream && sourceStream.getAudioTracks().length > 0) {
+            const source = audioCtx.createMediaStreamSource(sourceStream);
+            source.connect(analyser);
+            analyser.fftSize = 256;
+            const dataArray = new Uint8Array(analyser.frequencyBinCount);
+
+            function updateVolume() {
+                if (!compositeAnimationId && compositeAnimationId !== 0) return;
+                if (audioCtx.state === 'suspended') audioCtx.resume();
+                analyser.getByteFrequencyData(dataArray);
+                let max = 0;
+                for (let i = 0; i < dataArray.length; i++) if(dataArray[i] > max) max = dataArray[i];
+                volumeLevel = max;
+                requestAnimationFrame(updateVolume);
+            }
+            updateVolume();
+        }
     } catch (e) {
         console.warn("[Media] Audio context failed, mic indicator will be static.", e);
     }
@@ -838,7 +858,16 @@ async function createCompositeTrack(screenStream, cameraStream) {
         const camY = (720 - camH) / 2 - 40; // Shift up slightly to make room for mic box
         
         // Draw Camera
-        ctx.drawImage(vCam, sidebarX, camY, camW, camH);
+        if (vCam) {
+            ctx.drawImage(vCam, sidebarX, camY, camW, camH);
+        } else {
+            ctx.fillStyle = "#1e293b";
+            ctx.fillRect(sidebarX, camY, camW, camH);
+            ctx.fillStyle = "#94a3b8";
+            ctx.font = "bold 13px Arial";
+            const placeholderText = "NO WEBCAM REQUIRED";
+            ctx.fillText(placeholderText, sidebarX + (320 - ctx.measureText(placeholderText).width) / 2, camY + camH / 2);
+        }
         ctx.strokeStyle = "rgba(255,255,255,0.5)";
         ctx.lineWidth = 2;
         ctx.strokeRect(sidebarX, camY, camW, camH);
