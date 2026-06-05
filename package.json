@@ -20,7 +20,9 @@
     "pg": "^8.11.3",
     "socket.io": "^4.7.2",
     "uuid": "^9.0.0",
-    "webm-duration-fix": "^1.0.4"
+    "webm-duration-fix": "^1.0.4",
+    "ffmpeg-static": "^5.2.0",
+    "fluent-ffmpeg": "^2.1.2"
   },
   "engines": {
     "node": ">=18.0.0"

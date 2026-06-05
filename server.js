@@ -15,6 +15,9 @@ const fs = require('fs');
 const os = require('os');
 const { uploadVideoToDrive, downloadVideoFromDrive, uploadLogsToDriveDoc } = require('./services/googleDrive');
 const webmDurationFix = require('webm-duration-fix').default;
+const ffmpeg = require('fluent-ffmpeg');
+const ffmpegPath = require('ffmpeg-static');
+ffmpeg.setFfmpegPath(ffmpegPath);
 
 const upload = multer({ storage: multer.memoryStorage() });
 
@@ -758,11 +761,9 @@ async function assembleAndUploadSessionVideo(exam_session_id, total_chunks) {
         }
 
         const isWebm = mimeTypeFromDb.includes('webm');
-        const ext = isWebm ? 'webm' : 'mp4';
-        const mimeToUse = isWebm ? 'video/webm' : 'video/mp4';
-
-        const tempOutFile = path.join(os.tmpdir(), `session-${exam_session_id}.${ext}`);
-        const writeStream = fs.createWriteStream(tempOutFile);
+        const rawExt = isWebm ? 'webm' : 'mp4';
+        const rawWebmPath = path.join(os.tmpdir(), `session-${exam_session_id}-raw.${rawExt}`);
+        const writeStream = fs.createWriteStream(rawWebmPath);
 
         for (const file of files) {
             const filePath = path.join(chunkDir, file);
@@ -774,29 +775,48 @@ async function assembleAndUploadSessionVideo(exam_session_id, total_chunks) {
         // Wait for write to finish
         await new Promise((resolve) => writeStream.on('finish', resolve));
 
+        const tempOutFile = path.join(os.tmpdir(), `session-${exam_session_id}.mp4`);
+        let finalMimeType = 'video/mp4';
+
         if (isWebm) {
-            // Fix WebM duration to support seeking/fast-forwarding
-            console.log(`Fixing WebM duration for session ${exam_session_id}...`);
+            // Transcode WebM to MP4 using ffmpeg-static
+            console.log(`Transcoding WebM to MP4 for session ${exam_session_id}...`);
             try {
-                const rawWebmBuffer = fs.readFileSync(tempOutFile);
-                const webmBlob = new Blob([rawWebmBuffer], { type: 'video/webm' });
-                const fixedBlob = await webmDurationFix(webmBlob);
-                const fixedArrayBuffer = await fixedBlob.arrayBuffer();
-                fs.writeFileSync(tempOutFile, Buffer.from(fixedArrayBuffer));
-                console.log(`Successfully fixed WebM duration for session ${exam_session_id}`);
-            } catch (fixErr) {
-                console.error(`Could not fix WebM duration for session ${exam_session_id}:`, fixErr.message);
+                await new Promise((resolve, reject) => {
+                    ffmpeg(rawWebmPath)
+                        .outputOptions('-c:v libx264')
+                        .outputOptions('-pix_fmt yuv420p')
+                        .outputOptions('-preset superfast')
+                        .outputOptions('-c:a aac')
+                        .save(tempOutFile)
+                        .on('end', resolve)
+                        .on('error', reject);
+                });
+                console.log(`Successfully transcoded to MP4 for session ${exam_session_id}`);
+                if (fs.existsSync(rawWebmPath)) fs.unlinkSync(rawWebmPath);
+            } catch (transcodeErr) {
+                console.error(`Transcoding failed for session ${exam_session_id}, falling back to WebM:`, transcodeErr.message);
+                // Fallback: Copy raw WebM to output path but keep .webm extension in Drive filename
+                const fallbackOutFile = path.join(os.tmpdir(), `session-${exam_session_id}.webm`);
+                fs.copyFileSync(rawWebmPath, fallbackOutFile);
+                if (fs.existsSync(rawWebmPath)) fs.unlinkSync(rawWebmPath);
+                finalMimeType = 'video/webm';
             }
+        } else {
+            // If already MP4, just rename/copy
+            fs.renameSync(rawWebmPath, tempOutFile);
         }
 
-        const driveFileName = `${studentName}_${examTitle}_Session_${exam_session_id}_Attempt_${attempt}.${ext}`;
+        const finalExt = finalMimeType === 'video/mp4' ? 'mp4' : 'webm';
+        const finalTempFile = finalExt === 'mp4' ? tempOutFile : path.join(os.tmpdir(), `session-${exam_session_id}.webm`);
+        const driveFileName = `${studentName}_${examTitle}_Session_${exam_session_id}_Attempt_${attempt}.${finalExt}`;
 
         console.log(`Uploading ${driveFileName} to Google Drive...`);
-        const driveFileId = await uploadVideoToDrive(tempOutFile, driveFileName, mimeToUse);
+        const driveFileId = await uploadVideoToDrive(finalTempFile, driveFileName, finalMimeType);
         console.log(`Uploaded to Google Drive. File ID: ${driveFileId}`);
 
-        // Update database with Google Drive file ID
-        await pool.query('UPDATE exam_sessions SET drive_file_id = $1 WHERE id = $2', [driveFileId, exam_session_id]);
+        // Update database with Google Drive file ID and format
+        await pool.query('UPDATE exam_sessions SET drive_file_id = $1, mime_type = $2 WHERE id = $3', [driveFileId, finalMimeType, exam_session_id]);
 
         // Upload Security logs to Google Drive as a Google Doc
         try {
