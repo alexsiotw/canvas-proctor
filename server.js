@@ -705,7 +705,38 @@ async function assembleAndUploadSessionVideo(exam_session_id) {
             return;
         }
 
-        const tempOutFile = path.join(os.tmpdir(), `session-${exam_session_id}.mp4`);
+        // Get student/exam info for nice filename and mime type
+        const sessionInfo = await pool.query(`
+            SELECT es.student_name, es.attempt_number, es.started_at, es.mime_type, e.title 
+            FROM exam_sessions es
+            JOIN exams e ON es.exam_id = e.id
+            WHERE es.id = $1
+        `, [exam_session_id]);
+        
+        let studentName = 'student';
+        let examTitle = 'exam';
+        let attempt = 1;
+        let startedAt = '';
+        let studentNameRaw = 'student';
+        let examTitleRaw = 'exam';
+        let mimeTypeFromDb = 'video/webm';
+        
+        if (sessionInfo.rows.length > 0) {
+            const s = sessionInfo.rows[0];
+            studentNameRaw = s.student_name || 'student';
+            examTitleRaw = s.title || 'exam';
+            studentName = s.student_name ? s.student_name.replace(/[^a-z0-9]/gi, '_') : 'student';
+            examTitle = s.title ? s.title.replace(/[^a-z0-9]/gi, '_') : 'exam';
+            attempt = s.attempt_number || 1;
+            startedAt = s.started_at ? new Date(s.started_at).toISOString() : '';
+            mimeTypeFromDb = s.mime_type || 'video/webm';
+        }
+
+        const isWebm = mimeTypeFromDb.includes('webm');
+        const ext = isWebm ? 'webm' : 'mp4';
+        const mimeToUse = isWebm ? 'video/webm' : 'video/mp4';
+
+        const tempOutFile = path.join(os.tmpdir(), `session-${exam_session_id}.${ext}`);
         const writeStream = fs.createWriteStream(tempOutFile);
 
         for (const file of files) {
@@ -718,48 +749,25 @@ async function assembleAndUploadSessionVideo(exam_session_id) {
         // Wait for write to finish
         await new Promise((resolve) => writeStream.on('finish', resolve));
 
-        // Fix WebM duration to support seeking/fast-forwarding
-        console.log(`Fixing WebM duration for session ${exam_session_id}...`);
-        try {
-            const rawWebmBuffer = fs.readFileSync(tempOutFile);
-            const webmBlob = new Blob([rawWebmBuffer], { type: 'video/webm' });
-            const fixedBlob = await webmDurationFix(webmBlob);
-            const fixedArrayBuffer = await fixedBlob.arrayBuffer();
-            fs.writeFileSync(tempOutFile, Buffer.from(fixedArrayBuffer));
-            console.log(`Successfully fixed WebM duration for session ${exam_session_id}`);
-        } catch (fixErr) {
-            console.error(`Could not fix WebM duration for session ${exam_session_id}:`, fixErr.message);
+        if (isWebm) {
+            // Fix WebM duration to support seeking/fast-forwarding
+            console.log(`Fixing WebM duration for session ${exam_session_id}...`);
+            try {
+                const rawWebmBuffer = fs.readFileSync(tempOutFile);
+                const webmBlob = new Blob([rawWebmBuffer], { type: 'video/webm' });
+                const fixedBlob = await webmDurationFix(webmBlob);
+                const fixedArrayBuffer = await fixedBlob.arrayBuffer();
+                fs.writeFileSync(tempOutFile, Buffer.from(fixedArrayBuffer));
+                console.log(`Successfully fixed WebM duration for session ${exam_session_id}`);
+            } catch (fixErr) {
+                console.error(`Could not fix WebM duration for session ${exam_session_id}:`, fixErr.message);
+            }
         }
 
-        // Get student/exam info for nice filename
-        const sessionInfo = await pool.query(`
-            SELECT es.student_name, es.attempt_number, es.started_at, e.title 
-            FROM exam_sessions es
-            JOIN exams e ON es.exam_id = e.id
-            WHERE es.id = $1
-        `, [exam_session_id]);
-        
-        let studentName = 'student';
-        let examTitle = 'exam';
-        let attempt = 1;
-        let startedAt = '';
-        let studentNameRaw = 'student';
-        let examTitleRaw = 'exam';
-        
-        if (sessionInfo.rows.length > 0) {
-            const s = sessionInfo.rows[0];
-            studentNameRaw = s.student_name || 'student';
-            examTitleRaw = s.title || 'exam';
-            studentName = s.student_name ? s.student_name.replace(/[^a-z0-9]/gi, '_') : 'student';
-            examTitle = s.title ? s.title.replace(/[^a-z0-9]/gi, '_') : 'exam';
-            attempt = s.attempt_number || 1;
-            startedAt = s.started_at ? new Date(s.started_at).toISOString() : '';
-        }
-
-        const driveFileName = `${studentName}_${examTitle}_Session_${exam_session_id}_Attempt_${attempt}.mp4`;
+        const driveFileName = `${studentName}_${examTitle}_Session_${exam_session_id}_Attempt_${attempt}.${ext}`;
 
         console.log(`Uploading ${driveFileName} to Google Drive...`);
-        const driveFileId = await uploadVideoToDrive(tempOutFile, driveFileName, 'video/mp4');
+        const driveFileId = await uploadVideoToDrive(tempOutFile, driveFileName, mimeToUse);
         console.log(`Uploaded to Google Drive. File ID: ${driveFileId}`);
 
         // Update database with Google Drive file ID
