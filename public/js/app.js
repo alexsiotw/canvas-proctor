@@ -267,8 +267,7 @@ function loadExamDashboard(examId) {
                         <div id="submissions-ratio-badge" style="font-size: 13px; font-weight: bold; color: #f97316; margin-top: 2px;">Submissions: -- of -- enrolled submitted</div>
                     </div>
                     <div style="display:flex; gap: 8px;">
-                        <button class="btn btn-primary" style="font-size:12px; padding: 4px 8px; background:var(--accent); color:white !important; border:none;" onclick="window.open('/api/exams/${exam.id}/export-videos', '_blank')">📁 Download .ZIP Archive</button>
-                        <button class="btn btn-secondary" style="font-size:12px; padding: 4px 8px; background:var(--danger); color:white !important; border:none;" onclick="purgeVideosOnly(${exam.id})">🗑️ Purge Video Engine</button>
+                        <button class="btn btn-primary" style="font-size:12px; padding: 4px 8px; background:var(--accent); color:white !important; border:none;" onclick="window.open('/api/exams/drive-folder', '_blank')">📁 Open Google Drive Vault</button>
                         <button class="btn btn-secondary" style="font-size:12px; padding: 4px 8px;" onclick="fetchReportData(${exam.id})">Refresh Reports</button>
                     </div>
                 </div>
@@ -446,11 +445,19 @@ function viewStudentReport(sessionId, examId) {
     logsHtml += '</ul>';
 
     const showVideo = session.status === 'completed' && !session.video_archived;
+    let videoElementHtml = '';
+    if (showVideo) {
+        if (session.drive_file_id) {
+            videoElementHtml = `<iframe src="https://drive.google.com/file/d/${session.drive_file_id}/preview" style="width: 100%; height: 100%; border: none;" allow="autoplay"></iframe>`;
+        } else {
+            videoElementHtml = `<video src="/api/session/video-playback/${session.id}" controls style="width: 100%; height: 100%; object-fit: contain;"></video>`;
+        }
+    }
     const videoHtml = showVideo ? `
         <div style="margin-bottom: 20px;">
             <h4 style="margin: 0 0 8px 0; font-size:14px; font-weight:600; color:#1e293b;">Recorded Session Video</h4>
             <div style="background: black; border-radius: 8px; overflow: hidden; aspect-ratio: 16/9; position: relative;">
-                <video src="/api/session/video-playback/${session.id}" controls style="width: 100%; height: 100%; object-fit: contain;"></video>
+                ${videoElementHtml}
             </div>
         </div>
     ` : `
@@ -661,18 +668,6 @@ async function deleteExam(id) {
             await apiFetch('/api/exams/' + id, {method: 'DELETE'});
             loadExams();
             showToast('Exam completely deleted.', 'success');
-        } catch(e) {
-            console.error(e);
-        }
-    }
-}
-
-async function purgeVideosOnly(id) {
-    if(confirm('WARNING: Are you absolutely sure you want to hard purge all video footage from the database? This is permanent. Please ensure you have downloaded the ZIP Archive first! The security reports will be safely kept.')) {
-        try {
-            await apiFetch('/api/exams/' + id + '/videos-only', {method: 'DELETE'});
-            fetchReportData(id); // Refresh securely inside details view!
-            showToast('Video footage hard purged. Database space reclaimed.', 'success');
         } catch(e) {
             console.error(e);
         }

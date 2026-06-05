@@ -223,6 +223,18 @@
       <div class="setup-header">
           <span>🔒 Proctor Gateway Secure Browser Check</span>
       </div>
+      <!-- iOS third-party cookie check warning -->
+      <div id="ios-cookie-warning" style="display: none; background: #fffbeb; border-bottom: 1px solid #fef3c7; padding: 15px 20px; color: #b45309; font-size: 13px; line-height: 1.5; font-family: sans-serif;">
+          <strong style="font-size: 14px; display: flex; align-items: center; gap: 6px; margin-bottom: 6px; color: #92400e;">
+              📱 iPhone / iPad (iOS) Action Required
+          </strong>
+          To prevent Canvas from logging you out or asking you to sign in during the exam, you must allow cross-site cookies on your device:
+          <ul style="margin: 6px 0 0 0; padding-left: 20px;">
+              <li><strong>Safari:</strong> Go to Settings &rarr; Safari &rarr; Scroll to Privacy & Security &rarr; Turn <strong>OFF</strong> "Prevent Cross-Site Tracking".</li>
+              <li><strong>Chrome:</strong> Go to Settings &rarr; Chrome &rarr; Turn <strong>ON</strong> "Allow Cross-Website Tracking".</li>
+          </ul>
+          Please make this change in your device settings, then reload this page before beginning the wizard checks.
+      </div>
       <div class="setup-body">
           <div class="setup-sidebar" id="setup-sidebar">
               <div class="sidebar-step active" id="step-nav-1">STEP 1: MICROPHONE CHECK</div>
@@ -247,6 +259,12 @@
               <span id="quiz-password-display" style="display: none; background: #2563eb; color: white; padding: 5px 15px; border-radius: 4px; font-weight: bold; font-size: 14px; font-family: monospace;"></span>
           </div>
           <button class="btn btn-secondary" style="background: var(--danger); color: white; border: none; padding: 8px 20px; font-weight: bold; font-size: 15px;" onclick="endExam()">End Exam & Submit</button>
+      </div>
+      
+      <!-- iOS Iframe Cookie Warning Bar -->
+      <div id="ios-iframe-warning" style="display: none; background: #fffbeb; border-bottom: 1px solid #fef3c7; padding: 10px 20px; color: #b45309; font-size: 13px; font-family: sans-serif; text-align: center; justify-content: center; align-items: center; gap: 15px; flex-wrap: wrap; z-index: 1000; box-sizing: border-box;">
+          <span>⚠️ <strong>Canvas asking you to log in?</strong> If you see a Canvas login screen or Google error, go to <strong>Settings &rarr; Safari</strong> and turn <strong>OFF</strong> "Prevent Cross-Site Tracking", then reload.</span>
+          <button class="btn" style="background: #d97706; color: white; border: none; padding: 6px 12px; font-size: 12px; border-radius: 4px; font-weight: bold; cursor: pointer; text-decoration: none; display: inline-flex; align-items: center;" onclick="openQuizInNewTabFallback()">Open Quiz in New Tab</button>
       </div>
       
       <!-- Embedded Quiz Iframe -->

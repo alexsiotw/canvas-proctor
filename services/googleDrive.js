@@ -164,5 +164,6 @@ async function uploadLogsToDriveDoc(content, fileName) {
 module.exports = {
     uploadVideoToDrive,
     downloadVideoFromDrive,
-    uploadLogsToDriveDoc
+    uploadLogsToDriveDoc,
+    getFolderId
 };

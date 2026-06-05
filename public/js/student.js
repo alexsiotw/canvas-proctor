@@ -162,6 +162,10 @@ function getStepName(step) {
 }
 
 function initStepWizard() {
+    if (isIOS()) {
+        const warningEl = document.getElementById('ios-cookie-warning');
+        if (warningEl) warningEl.style.display = 'block';
+    }
     if (examConfig.require_seb && !isSEB()) {
         showSEBBlocker();
         return;
@@ -582,6 +586,10 @@ async function startMainExamSession() {
 
         document.getElementById('setup-container').style.display = 'none';
         document.getElementById('active-exam-container').style.display = 'flex';
+        if (isIOS()) {
+            const warningEl = document.getElementById('ios-iframe-warning');
+            if (warningEl) warningEl.style.display = 'flex';
+        }
         document.body.style.overflow = 'hidden';
         document.documentElement.style.overflow = 'hidden';
         
@@ -1346,4 +1354,15 @@ function setupSimulatedAIProctoring() {
             }
         }
     }, 60000);
+}
+
+function openQuizInNewTabFallback() {
+    if (!examConfig || !examConfig.canvas_quiz_url) {
+        alert("Exam configuration not loaded.");
+        return;
+    }
+    if (confirm("WARNING: Opening the quiz in a new tab is a fallback. Safari may pause your webcam recording when you switch tabs, which will be logged as a warning for your instructor. Do this only if you cannot log in inside the frame below. Proceed?")) {
+        window.open(examConfig.canvas_quiz_url, '_blank');
+        logProctorEvent('ios_fallback_tab', 'Student opened Canvas quiz in a fallback new tab');
+    }
 }

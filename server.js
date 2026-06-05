@@ -13,7 +13,7 @@ const { pool, initDatabase } = require('./db');
 const archiver = require('archiver');
 const fs = require('fs');
 const os = require('os');
-const { uploadVideoToDrive, downloadVideoFromDrive, uploadLogsToDriveDoc } = require('./services/googleDrive');
+const { uploadVideoToDrive, downloadVideoFromDrive, uploadLogsToDriveDoc, getFolderId } = require('./services/googleDrive');
 const webmDurationFix = require('webm-duration-fix').default;
 const ffmpeg = require('fluent-ffmpeg');
 const ffmpegPath = require('ffmpeg-static');
@@ -1108,88 +1108,14 @@ app.get('/api/db-status', requireInstructor, async (req, res) => {
     }
 });
 
-// API: Export Videos completely to ZIP safely via Stream
-app.get('/api/exams/:id/export-videos', async (req, res) => {
-    const { id } = req.params;
+// API: Redirect to Google Drive Vault folder
+app.get('/api/exams/drive-folder', requireInstructor, async (req, res) => {
     try {
-        const exam = (await pool.query('SELECT title, exam_code FROM exams WHERE id = $1', [id])).rows[0];
-        if(!exam) return res.status(404).send('Exam Not found');
-
-        const sessionResult = await pool.query(`
-            SELECT id, student_canvas_id, student_name, attempt_number, drive_file_id 
-            FROM exam_sessions 
-            WHERE exam_id = $1 AND status = 'completed' AND video_archived = false
-        `, [id]);
-
-        if (sessionResult.rows.length === 0) {
-            return res.status(404).send('No valid video chunks found. Either the exam is empty, or chunks were already deleted!');
-        }
-
-        res.setHeader('Content-Type', 'application/zip');
-        res.setHeader('Content-Disposition', `attachment; filename="${exam.title.replace(/[^a-z0-9]/gi, '_')}_Proctor_Vault.zip"`);
-
-        const archive = archiver('zip', { zlib: { level: 9 } });
-        archive.pipe(res);
-        archive.on('error', (err) => { throw err; });
-
-        for (const session of sessionResult.rows) {
-            let masterBlob;
-            
-            if (session.drive_file_id) {
-                // Fetch from Google Drive
-                try {
-                    const driveStream = await downloadVideoFromDrive(session.drive_file_id);
-                    const chunks = [];
-                    for await (const chunk of driveStream) {
-                        chunks.push(chunk);
-                    }
-                    masterBlob = Buffer.concat(chunks);
-                } catch (driveErr) {
-                    console.error(`Failed to download session ${session.id} video from Drive during ZIP export:`, driveErr.message);
-                    continue;
-                }
-            } else {
-                // Fallback to database
-                const chunkResult = await pool.query('SELECT video_data FROM video_chunks WHERE exam_session_id = $1 ORDER BY chunk_index ASC', [session.id]);
-                if (chunkResult.rows.length === 0) continue;
-
-                const binaryChunks = [];
-                for(let row of chunkResult.rows) {
-                    // Strip the Data URL prefix (everything before the first comma) and whitespace
-                    const pureB64 = row.video_data.replace(/^data:[^,]+,/, '').replace(/\s/g, '');
-                    binaryChunks.push(Buffer.from(pureB64, 'base64'));
-                }
-                masterBlob = Buffer.concat(binaryChunks);
-            }
-            
-            const studentNameStr = session.student_name ? session.student_name.replace(/[^a-z0-9]/gi, '_') : session.student_canvas_id;
-            archive.append(masterBlob, { name: `${studentNameStr}_Attempt_${session.attempt_number || 1}.webm` });
-        }
-
-        archive.finalize();
-    } catch(err) {
-        console.error(err);
-        if (!res.headersSent) res.status(500).send('Error generating archive');
-    }
-});
-
-// API: Purge Videos
-app.delete('/api/exams/:id/videos-only', requireInstructor, async (req, res) => {
-    try {
-        const { id } = req.params;
-        await pool.query(`
-            DELETE FROM video_chunks WHERE exam_session_id IN (
-                SELECT id FROM exam_sessions WHERE exam_id = $1 AND status IN ('completed', 'booted')
-            )
-        `, [id]);
-        
-        await pool.query(`
-            UPDATE exam_sessions SET video_archived = true, drive_folder_id = NULL WHERE exam_id = $1 AND status IN ('completed', 'booted')
-        `, [id]);
-        
-        res.json({ success: true });
+        const folderId = await getFolderId();
+        res.redirect(`https://drive.google.com/drive/folders/${folderId}`);
     } catch (err) {
-        res.status(500).json({ error: err.message });
+        console.error('Failed to get Drive folder ID:', err.message);
+        res.status(500).send(`Failed to access Google Drive folder: ${err.message}`);
     }
 });
 
@@ -1210,7 +1136,7 @@ app.get('/api/exams/:exam_id/reports', requireInstructor, async (req, res) => {
         const { exam_id } = req.params;
         const { canvasCourseId } = req.session.lti;
         
-        const sessions = await pool.query('SELECT id, exam_id, student_canvas_id, student_name, status, started_at, attempt_number, video_archived FROM exam_sessions WHERE exam_id = $1', [exam_id]);
+        const sessions = await pool.query('SELECT id, exam_id, student_canvas_id, student_name, status, started_at, attempt_number, video_archived, drive_file_id FROM exam_sessions WHERE exam_id = $1', [exam_id]);
         const logs = await pool.query(`
             SELECT pl.* FROM proctor_logs pl 
             JOIN exam_sessions es ON pl.exam_session_id = es.id 
