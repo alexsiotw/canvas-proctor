@@ -152,91 +152,143 @@ async function loadExams() {
     renderExams();
 }
 
+function getCourseQuizzes() {
+    const courseId = activeResourceLinkId || urlParams.get('course_id') || 'demo_course';
+    return [
+        {
+            id: 101,
+            title: "Example of a New Quiz",
+            type: "New Quiz",
+            start_date: "Aug 9, 9:00 AM",
+            end_date: "Aug 13, 8:59 AM",
+            quiz_url: `https://canvas.instructure.com/courses/${courseId}/quizzes/101`
+        },
+        {
+            id: 102,
+            title: "Example of a Classic Quiz",
+            type: "Classic Quiz",
+            start_date: "Aug 20, 12:00 AM",
+            end_date: "Aug 21, 11:59 PM",
+            quiz_url: `https://canvas.instructure.com/courses/${courseId}/quizzes/102`
+        },
+        {
+            id: 103,
+            title: "Midterm Physics Examination",
+            type: "Classic Quiz",
+            start_date: "Sep 15, 10:00 AM",
+            end_date: "Sep 15, 12:00 PM",
+            quiz_url: `https://canvas.instructure.com/courses/${courseId}/quizzes/103`
+        },
+        {
+            id: 104,
+            title: "Final Term Assessment",
+            type: "New Quiz",
+            start_date: "Dec 10, 9:00 AM",
+            end_date: "Dec 12, 5:00 PM",
+            quiz_url: `https://canvas.instructure.com/courses/${courseId}/quizzes/104`
+        }
+    ];
+}
+
+function enableQuizProctoring(title, quizUrl) {
+    showCreateExamModal();
+    document.getElementById('exam-title').value = title;
+    document.getElementById('exam-url').value = quizUrl;
+}
+
 function renderExams() {
-    let bannerHtml = '';
-    if (contentItemReturnUrl) {
-        bannerHtml = `
-            <div style="background: rgba(59, 130, 246, 0.05); border: 1px solid rgba(59, 130, 246, 0.15); padding: 20px; border-radius: var(--radius); margin-bottom: 25px; display: flex; justify-content: space-between; align-items: center;">
-                <div>
-                    <strong style="color: var(--accent); font-size: 15px;">📝 Canvas Content Selection Active</strong>
-                    <div style="font-size:13px; color: var(--text-secondary); margin-top:4px;">
-                        Select an exam below and click "Select and Embed" to add it to your Canvas Module.
-                    </div>
-                </div>
-            </div>
-        `;
-    } else if (activeResourceLinkId) {
-        const linkedExam = currentPlacementMapping ? exams.find(e => e.id == currentPlacementMapping.exam_id) : null;
-        bannerHtml = `
-            <div style="background: rgba(59, 130, 246, 0.05); border: 1px solid rgba(59, 130, 246, 0.15); padding: 20px; border-radius: var(--radius); margin-bottom: 25px; display: flex; justify-content: space-between; align-items: center;">
-                <div>
-                    <strong style="color: var(--accent); font-size: 15px;">🔗 Canvas Placement Integration Active</strong>
-                    <div style="font-size:13px; color: var(--text-secondary); margin-top:4px;">
-                        ${linkedExam ? `This assignment/module link is bound to: <strong>${linkedExam.title}</strong>` 
-                        : 'This assignment/module link is NOT linked to an exam yet. Select or create an exam below, then click "Link to this Canvas Placement" to activate it.'}
-                    </div>
-                </div>
-            </div>
-        `;
-    }
-
     const content = document.getElementById('content');
-    let html = `
-        <div class="page-header">
-            <div>
-                <h1 class="page-title">Configured Exams</h1>
-                <p class="page-subtitle">Select an exam below to enter its workspace, monitor live students, and view final reports.</p>
-            </div>
-            <button class="btn btn-primary" onclick="showCreateExamModal()">+ New Proctored Exam</button>
-        </div>
-        ${bannerHtml}
-        <div class="session-grid">
-    `;
-
-    if (exams.length === 0) {
-        html += `
-            <div class="empty-state" style="grid-column: 1/-1;">
-                <div class="empty-icon">🛡️</div>
-                <div class="empty-text">No Exams configured yet</div>
-                <div class="empty-hint">Click the button above to link your first Canvas quiz.</div>
-            </div>
-        `;
-    } else {
-        exams.forEach(ex => {
-            html += `
-                <div class="card session-card" style="position:relative; cursor:pointer;" onclick="loadExamDashboard(${ex.id})">
-                    <div style="position:absolute; top: 20px; right: 20px; display: flex; gap: 8px;">
-                        <button class="btn btn-secondary" style="padding: 4px 10px; font-size: 11px;" onclick="event.stopPropagation(); showCreateExamModal(${ex.id})">Edit</button>
-                        <button class="btn btn-danger" style="padding: 4px 10px; font-size: 11px;" onclick="event.stopPropagation(); deleteExam(${ex.id})">Delete</button>
-                    </div>
-                    <div style="display:flex; align-items:center; gap:8px; margin-bottom: 6px;">
-                        <div class="session-date">${new Date(ex.created_at).toLocaleDateString()}</div>
-                        <span class="badge ${ex.is_open ? 'badge-success' : 'badge-danger'}" style="font-size:9px; padding: 2px 8px;">
-                            ${ex.is_open ? 'Open' : 'Closed'}
-                        </span>
-                    </div>
-                    <div class="session-title" style="font-size:16px; font-weight:700; margin-bottom:10px; color:var(--text-primary);">${ex.title}</div>
-                    <div style="margin-bottom: 12px; font-weight: 700; font-size: 12px; background: rgba(59, 130, 246, 0.1); color: var(--accent); padding: 6px 12px; border-radius: 6px; display: inline-block; font-family:monospace;">Exam Code: ${ex.exam_code}</div>
-                    <div style="font-size: 12px; color: var(--text-secondary); line-height:1.6;">
-                        <div>Max Attempts: ${ex.max_attempts || 1} | Boot Limit: ${ex.max_violations > 0 ? ex.max_violations + ' leaves' : 'Disabled'}</div>
-                        <div style="margin-top:4px;">📷 Camera: ${ex.require_camera ? 'Yes' : 'No'} | 🎤 Mic: ${ex.require_mic ? 'Yes' : 'No'} | 💻 Screen: ${ex.require_screen ? 'Yes' : 'No'} | 🛡️ SEB: ${ex.require_seb ? 'Yes' : 'No'}</div>
-                    </div>
-                    ${contentItemReturnUrl ? `
-                        <button class="btn btn-primary" style="margin-top: 15px; width: 100%; font-size:12px; padding: 10px;" onclick="event.stopPropagation(); embedExamSelection(${ex.id})">
-                            Select and Embed Exam
-                        </button>
-                    ` : (activeResourceLinkId ? `
-                        <button class="btn ${currentPlacementMapping && currentPlacementMapping.exam_id == ex.id ? 'btn-success' : 'btn-primary'}" style="margin-top: 15px; width: 100%; font-size:12px; padding: 10px;" onclick="event.stopPropagation(); linkPlacement(${ex.id})">
-                            ${currentPlacementMapping && currentPlacementMapping.exam_id == ex.id ? '✓ Linked to placement' : 'Link to this Canvas Placement'}
-                        </button>
-                    ` : '')}
+    const quizzes = getCourseQuizzes();
+    
+    let tbodyHtml = '';
+    quizzes.forEach(q => {
+        // Find if quiz is enabled in exams list
+        const linkedExam = exams.find(ex => ex.canvas_quiz_url === q.quiz_url || ex.canvas_quiz_url.includes(`/quizzes/${q.id}`));
+        
+        let actionsHtml = '';
+        let titleHtml = '';
+        
+        if (linkedExam) {
+            // Enabled state (Dashboard, Settings, Disable buttons)
+            titleHtml = `<a href="javascript:void(0)" onclick="loadExamDashboard(${linkedExam.id})" style="color: var(--accent); font-weight: 700; text-decoration:none; transition:var(--transition); font-size: 14px; font-family:'Outfit',sans-serif;">${q.title}</a>`;
+            actionsHtml = `
+                <div style="display:flex; gap:6px; justify-content:flex-end;">
+                    <button class="btn btn-slate btn-sm" onclick="loadExamDashboard(${linkedExam.id})" style="font-weight:700;">Dashboard</button>
+                    <button class="btn btn-slate btn-sm" onclick="showCreateExamModal(${linkedExam.id})" style="font-weight:700;">Settings</button>
+                    <button class="btn btn-danger btn-sm" onclick="deleteExam(${linkedExam.id})" style="font-weight:700;">Disable</button>
                 </div>
             `;
-        });
-    }
+        } else {
+            // Disabled state (Enable button)
+            titleHtml = `<span style="color: var(--text-primary); font-weight: 500; font-size: 14px; font-family:'Outfit',sans-serif;">${q.title}</span>`;
+            actionsHtml = `
+                <div style="display:flex; justify-content:flex-end; align-items:center; gap: 10px;">
+                    <span style="color: #ea580c; font-size:16px;">➔</span>
+                    <button class="btn btn-primary btn-sm" onclick="enableQuizProctoring('${q.title.replace(/'/g, "\\'")}', '${q.quiz_url}')" style="font-weight:700; padding: 6px 18px;">Enable</button>
+                </div>
+            `;
+        }
+        
+        tbodyHtml += `
+            <tr style="border-bottom: 1px solid var(--border); transition:var(--transition);">
+                <td style="padding: 16px; vertical-align:middle;">${titleHtml}</td>
+                <td style="padding: 16px; color: var(--text-secondary); vertical-align:middle; font-size:13px;">${q.type}</td>
+                <td style="padding: 16px; color: var(--text-secondary); vertical-align:middle; font-size:13px; line-height: 1.5;">
+                    Start: ${q.start_date}<br>
+                    End: ${q.end_date}
+                </td>
+                <td style="padding: 16px; vertical-align:middle;">${actionsHtml}</td>
+            </tr>
+        `;
+    });
 
-    html += '</div>';
-    content.innerHTML = html;
+    content.innerHTML = `
+        <div class="page-header" style="margin-bottom: 30px;">
+            <div>
+                <h1 class="page-title" style="font-family:'Outfit', sans-serif; font-size:24px; font-weight:700;">Canvas Quizzes</h1>
+                <p class="page-subtitle" style="font-family:'Plus Jakarta Sans', sans-serif;">Enable, configure, and monitor secure proctoring options for all quizzes in this course.</p>
+            </div>
+        </div>
+
+        <div class="card" style="padding: 24px; background:var(--bg-secondary); border:1px solid var(--border); border-radius:var(--radius-lg); box-shadow:var(--shadow);">
+            <!-- Schoolyear-style pagination header bar -->
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom: 20px; border-bottom: 1px solid var(--border); padding-bottom: 15px;">
+                <div style="font-size:14px; font-weight:700; color:var(--text-secondary); font-family:'Outfit',sans-serif;">
+                    Course Quizzes List
+                </div>
+                <div style="display:flex; align-items:center; gap:12px; font-size:13px; color:var(--text-secondary);">
+                    <button class="btn btn-secondary btn-sm" disabled style="padding: 5px 12px; opacity:0.6;">Previous</button>
+                    <span>Page 1 of 1</span>
+                    <button class="btn btn-secondary btn-sm" disabled style="padding: 5px 12px; opacity:0.6;">Next</button>
+                    <div style="display:flex; align-items:center; margin-left: 8px;">
+                        <span>Items per page:</span>
+                        <select class="filter-select" style="padding: 4px 8px; font-size:12px; margin-left: 5px; background:var(--bg-secondary); border:1px solid var(--border); border-radius:var(--radius-sm); color:var(--text-primary);">
+                            <option>10</option>
+                            <option>25</option>
+                            <option>50</option>
+                        </select>
+                    </div>
+                </div>
+            </div>
+
+            <!-- The Quizzes Table -->
+            <div class="table-wrapper" style="border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden;">
+                <table style="width: 100%; border-collapse: collapse;">
+                    <thead>
+                        <tr style="border-bottom: 2px solid var(--border); background: rgba(0, 0, 0, 0.01);">
+                            <th style="font-family:'Outfit',sans-serif; font-weight:700; color:var(--text-primary); text-transform:none; letter-spacing:0; font-size:14px; padding: 16px; text-align:left;">Quiz Name</th>
+                            <th style="font-family:'Outfit',sans-serif; font-weight:700; color:var(--text-primary); text-transform:none; letter-spacing:0; font-size:14px; padding: 16px; text-align:left;">Type</th>
+                            <th style="font-family:'Outfit',sans-serif; font-weight:700; color:var(--text-primary); text-transform:none; letter-spacing:0; font-size:14px; padding: 16px; text-align:left;">Dates</th>
+                            <th style="font-family:'Outfit',sans-serif; font-weight:700; color:var(--text-primary); text-transform:none; letter-spacing:0; font-size:14px; padding: 16px; text-align:right;">Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        ${tbodyHtml}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    `;
 }
 
 // THE NEW EXAM DASHBOARD (Master-Detail View)
@@ -785,7 +837,7 @@ function showCreateExamModal(examId = null) {
     const defaultCode = exam ? exam.exam_code : Math.random().toString(36).substring(2, 8).toUpperCase();
     const html = `
         <div class="modal-header">
-            <h2 class="modal-title">${exam ? 'Edit Exam Settings' : 'Link LMS Quiz'}</h2>
+            <h2 class="modal-title" style="font-family:'Outfit', sans-serif; font-size:20px; font-weight:700;">${exam ? 'Edit Exam Settings' : 'Enable Proctoring'}</h2>
             <button class="modal-close" onclick="closeModal()">×</button>
         </div>
         <div class="form-group">
@@ -810,41 +862,94 @@ function showCreateExamModal(examId = null) {
         <div class="form-group">
             <label class="form-label">LMS Quiz URL</label>
             <input type="text" id="exam-url" class="form-input" placeholder="https://canvas.instructure.com/courses/1/quizzes/1" value="${exam ? exam.canvas_quiz_url : ''}">
-            <div class="form-hint">Paste the URL of the LMS Quiz. Do NOT share this URL directly with students.</div>
         </div>
         <div class="form-group">
             <label class="form-label">Canvas Quiz Password / Access Code (Optional)</label>
             <input type="text" id="quiz-password" class="form-input" placeholder="e.g. SECURE-WWI-QUIZ" value="${exam && exam.canvas_quiz_password ? exam.canvas_quiz_password : ''}">
-            <div class="form-hint">If your Canvas quiz requires a password/access code to start, enter it here. It will be securely shown to verified students when the exam begins.</div>
+            <div class="form-hint">If your Canvas quiz requires a password/access code to start, enter it here.</div>
         </div>
-        <div style="margin-top: 20px;">
-            <label class="form-check" style="margin-bottom: 8px;">
-                <input type="checkbox" id="chk-camera" ${!exam || exam.require_camera ? 'checked' : ''}> Require Web Camera
-            </label>
-            <label class="form-check" style="margin-bottom: 8px;">
-                <input type="checkbox" id="chk-mic" ${!exam || exam.require_mic ? 'checked' : ''}> Require Microphone
-            </label>
-            <label class="form-check" style="margin-bottom: 8px;">
-                <input type="checkbox" id="chk-screen" ${!exam || exam.require_screen ? 'checked' : ''}> Require Screen Sharing (Entire Screen)
-            </label>
-            <label class="form-check" style="margin-bottom: 8px;">
-                <input type="checkbox" id="chk-rc" ${!exam || exam.disable_right_click ? 'checked' : ''}> Disable Right Click / Tab Switches
-            </label>
-            <label class="form-check" style="margin-bottom: 8px;">
-                <input type="checkbox" id="chk-fs" ${!exam || exam.require_fullscreen ? 'checked' : ''}> Enforce Fullscreen Mode
-            </label>
-            <label class="form-check">
-                <input type="checkbox" id="chk-seb" ${exam && exam.require_seb ? 'checked' : ''}> Require Safe Exam Browser
-            </label>
+        
+        <!-- Recording Options -->
+        <h4 style="margin: 24px 0 6px 0; font-family:'Outfit',sans-serif; font-size:14px; font-weight:700; color:var(--text-primary);">Recording Options</h4>
+        <p style="font-size:11px; color:var(--text-muted); margin-bottom: 12px;">Select all that apply</p>
+        
+        <div class="proctorio-grid">
+            <div class="proctorio-card ${!exam || exam.require_camera ? 'selected' : ''}" id="card-camera" onclick="toggleProctorioOption('chk-camera', 'card-camera')">
+                <div class="proctorio-check">✓</div>
+                <div class="proctorio-icon">📷</div>
+                <div class="proctorio-title">Record Video</div>
+                <div style="font-size: 9px; color: var(--text-muted); margin-top: 4px;">Record student webcam</div>
+                <input type="checkbox" id="chk-camera" ${!exam || exam.require_camera ? 'checked' : ''} style="display:none;" />
+            </div>
+            
+            <div class="proctorio-card ${!exam || exam.require_mic ? 'selected' : ''}" id="card-mic" onclick="toggleProctorioOption('chk-mic', 'card-mic')">
+                <div class="proctorio-check">✓</div>
+                <div class="proctorio-icon">🎤</div>
+                <div class="proctorio-title">Record Audio</div>
+                <div style="font-size: 9px; color: var(--text-muted); margin-top: 4px;">Record student microphone</div>
+                <input type="checkbox" id="chk-mic" ${!exam || exam.require_mic ? 'checked' : ''} style="display:none;" />
+            </div>
+            
+            <div class="proctorio-card ${!exam || exam.require_screen ? 'selected' : ''}" id="card-screen" onclick="toggleProctorioOption('chk-screen', 'card-screen')">
+                <div class="proctorio-check">✓</div>
+                <div class="proctorio-icon">💻</div>
+                <div class="proctorio-title">Record Screen</div>
+                <div style="font-size: 9px; color: var(--text-muted); margin-top: 4px;">Record full desktop screen</div>
+                <input type="checkbox" id="chk-screen" ${!exam || exam.require_screen ? 'checked' : ''} style="display:none;" />
+            </div>
         </div>
-        <div style="margin-top: 24px; text-align: right;">
+
+        <!-- Lockdown Options -->
+        <h4 style="margin: 24px 0 6px 0; font-family:'Outfit',sans-serif; font-size:14px; font-weight:700; color:var(--text-primary);">Lock Down Options</h4>
+        <p style="font-size:11px; color:var(--text-muted); margin-bottom: 12px;">Select all that apply</p>
+        
+        <div class="proctorio-grid">
+            <div class="proctorio-card ${!exam || exam.require_fullscreen ? 'selected' : ''}" id="card-fs" onclick="toggleProctorioOption('chk-fs', 'card-fs')">
+                <div class="proctorio-check">✓</div>
+                <div class="proctorio-icon">🖥️</div>
+                <div class="proctorio-title">Force Full Screen</div>
+                <div style="font-size: 9px; color: var(--text-muted); margin-top: 4px;">Prevent window resizing</div>
+                <input type="checkbox" id="chk-fs" ${!exam || exam.require_fullscreen ? 'checked' : ''} style="display:none;" />
+            </div>
+            
+            <div class="proctorio-card ${!exam || exam.disable_right_click ? 'selected' : ''}" id="card-rc" onclick="toggleProctorioOption('chk-rc', 'card-rc')">
+                <div class="proctorio-check">✓</div>
+                <div class="proctorio-icon">🔒</div>
+                <div class="proctorio-title">Block Navigation</div>
+                <div style="font-size: 9px; color: var(--text-muted); margin-top: 4px;">Block tab switches / copy-paste</div>
+                <input type="checkbox" id="chk-rc" ${!exam || exam.disable_right_click ? 'checked' : ''} style="display:none;" />
+            </div>
+            
+            <div class="proctorio-card ${exam && exam.require_seb ? 'selected' : ''}" id="card-seb" onclick="toggleProctorioOption('chk-seb', 'card-seb')">
+                <div class="proctorio-check">✓</div>
+                <div class="proctorio-icon">🛡️</div>
+                <div class="proctorio-title">Safe Exam Browser</div>
+                <div style="font-size: 9px; color: var(--text-muted); margin-top: 4px;">Require SEB LTI app launch</div>
+                <input type="checkbox" id="chk-seb" ${exam && exam.require_seb ? 'checked' : ''} style="display:none;" />
+            </div>
+        </div>
+
+        <div style="margin-top: 32px; text-align: right; border-top: 1px solid var(--border); padding-top: 15px;">
             <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
-            <button class="btn btn-primary" onclick="saveExam(${examId})">${exam ? 'Save Changes' : 'Create'}</button>
+            <button class="btn btn-primary" onclick="saveExam(${examId})">${exam ? 'Save Changes' : 'Enable Proctoring'}</button>
         </div>
     `;
     
     document.getElementById('modal-content').innerHTML = html;
     document.getElementById('modal-overlay').classList.add('active');
+}
+
+function toggleProctorioOption(checkboxId, cardId) {
+    const chk = document.getElementById(checkboxId);
+    const card = document.getElementById(cardId);
+    if (chk && card) {
+        chk.checked = !chk.checked;
+        if (chk.checked) {
+            card.classList.add('selected');
+        } else {
+            card.classList.remove('selected');
+        }
+    }
 }
 
 async function saveExam(examId = null) {

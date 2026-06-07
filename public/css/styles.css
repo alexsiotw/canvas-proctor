@@ -1,4 +1,4 @@
-@import url('https://fonts.googleapis.com/css2?family=Lato:wght@300;400;700;900&family=Inter:wght@300;400;500;600;700;800&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&display=swap');
 
 :root {
   --bg-primary: #f5f6f8; /* Canvas default dashboard content background */
@@ -40,7 +40,7 @@
 
 html,
 body {
-  font-family: 'Lato', 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+  font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, sans-serif;
   background: var(--bg-primary);
   color: var(--text-primary);
   min-height: 100vh;
@@ -1342,4 +1342,80 @@ body::before {
   background: var(--info-bg);
   color: var(--info);
   border: 1px solid rgba(59, 130, 246, 0.2);
+}
+
+/* ===== SLATE BUTTONS (SCHOOLYEAR) ===== */
+.btn-slate {
+  background: #2d3b45 !important;
+  color: white !important;
+  border: 1px solid #2d3b45 !important;
+}
+
+.btn-slate:hover {
+  background: #1e272e !important;
+  border-color: #1e272e !important;
+}
+
+/* ===== PROCTORIO CONFIG GRID ===== */
+.proctorio-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 16px;
+  margin-top: 8px;
+  margin-bottom: 24px;
+}
+
+.proctorio-card {
+  position: relative;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: 16px 10px;
+  text-align: center;
+  cursor: pointer;
+  transition: var(--transition);
+  user-select: none;
+}
+
+.proctorio-card:hover {
+  border-color: var(--accent);
+  background: rgba(0, 142, 226, 0.02);
+  transform: translateY(-2px);
+}
+
+.proctorio-card.selected {
+  border: 2px solid var(--accent);
+  background: rgba(0, 142, 226, 0.05);
+}
+
+.proctorio-check {
+  display: none;
+  position: absolute;
+  top: -8px;
+  right: -8px;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: var(--accent);
+  color: white;
+  font-size: 11px;
+  font-weight: 700;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+}
+
+.proctorio-card.selected .proctorio-check {
+  display: flex;
+}
+
+.proctorio-icon {
+  font-size: 28px;
+  margin-bottom: 6px;
+}
+
+.proctorio-title {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text-primary);
 }
