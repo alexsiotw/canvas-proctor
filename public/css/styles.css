@@ -1,35 +1,35 @@
-@import url('https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Lato:wght@300;400;700;900&family=Inter:wght@300;400;500;600;700;800&display=swap');
 
 :root {
-  --bg-primary: #090d16;
-  --bg-secondary: #111827;
-  --bg-card: rgba(17, 24, 39, 0.7);
-  --bg-glass: rgba(30, 41, 59, 0.4);
-  --border: rgba(255, 255, 255, 0.08);
-  --border-hover: rgba(255, 255, 255, 0.15);
-  --text-primary: #f8fafc;
-  --text-secondary: #94a3b8;
-  --text-muted: #64748b;
-  --accent: #3b82f6;
-  --accent-hover: #60a5fa;
-  --accent-glow: rgba(59, 130, 246, 0.25);
-  --success: #10b981;
-  --success-bg: rgba(16, 185, 129, 0.1);
-  --danger: #ef4444;
-  --danger-bg: rgba(239, 68, 68, 0.1);
-  --warning: #f59e0b;
-  --warning-bg: rgba(245, 158, 11, 0.1);
-  --info: #3b82f6;
-  --info-bg: rgba(59, 130, 246, 0.1);
-  --excused: #8b5cf6;
-  --excused-bg: rgba(139, 92, 246, 0.1);
-  --radius: 12px;
-  --radius-sm: 8px;
-  --radius-lg: 16px;
-  --shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.37);
-  --shadow-lg: 0 12px 48px rgba(0, 0, 0, 0.5);
-  --transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
-  --accent-gradient: linear-gradient(135deg, #3b82f6 0%, #8b5cf6 100%);
+  --bg-primary: #f5f6f8; /* Canvas default dashboard content background */
+  --bg-secondary: #ffffff;
+  --bg-card: #ffffff;
+  --bg-glass: #ffffff;
+  --border: #c7cdd1; /* Canvas default border color */
+  --border-hover: #a5afb5;
+  --text-primary: #2d3b45; /* Canvas dark charcoal text */
+  --text-secondary: #4a5c68;
+  --text-muted: #73818c;
+  --accent: #008ee2; /* Canvas blue */
+  --accent-hover: #007bc4;
+  --accent-glow: rgba(0, 142, 226, 0.15);
+  --success: #008a00; /* Canvas green */
+  --success-bg: rgba(0, 138, 0, 0.08);
+  --danger: #ee0612; /* Canvas red */
+  --danger-bg: rgba(238, 6, 18, 0.08);
+  --warning: #fc5e13; /* Canvas orange warning */
+  --warning-bg: rgba(252, 94, 19, 0.08);
+  --info: #003b5c;
+  --info-bg: rgba(0, 59, 92, 0.08);
+  --excused: #7c4dff;
+  --excused-bg: rgba(124, 77, 255, 0.08);
+  --radius: 6px;
+  --radius-sm: 4px;
+  --radius-lg: 8px;
+  --shadow: 0 1px 3px rgba(0, 0, 0, 0.1), 0 1px 2px rgba(0, 0, 0, 0.05);
+  --shadow-lg: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
+  --transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+  --accent-gradient: linear-gradient(135deg, #008ee2 0%, #005f9e 100%);
 }
 
 * {
@@ -40,7 +40,7 @@
 
 html,
 body {
-  font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, sans-serif;
+  font-family: 'Lato', 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
   background: var(--bg-primary);
   color: var(--text-primary);
   min-height: 100vh;
@@ -48,17 +48,7 @@ body {
 }
 
 body::before {
-  content: '';
-  position: fixed;
-  top: 0;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  background:
-    radial-gradient(ellipse at 20% 0%, rgba(0, 142, 226, 0.04) 0%, transparent 50%),
-    radial-gradient(ellipse at 80% 100%, rgba(0, 142, 226, 0.03) 0%, transparent 50%);
-  pointer-events: none;
-  z-index: 0;
+  display: none;
 }
 
 /* ===== LAYOUT ===== */
@@ -72,9 +62,7 @@ body::before {
   align-items: center;
   justify-content: space-between;
   padding: 16px 32px;
-  background: rgba(17, 24, 39, 0.7);
-  backdrop-filter: blur(20px);
-  -webkit-backdrop-filter: blur(20px);
+  background: var(--bg-secondary);
   border-bottom: 1px solid var(--border);
   position: sticky;
   top: 0;
@@ -1188,51 +1176,37 @@ tbody tr:last-child td {
 /* ===== ADVANCED FACELIFT ADDITIONS ===== */
 
 body::before {
-  content: '';
-  position: fixed;
-  top: 0;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  background: 
-    radial-gradient(circle at 15% 15%, rgba(59, 130, 246, 0.08) 0%, transparent 45%),
-    radial-gradient(circle at 85% 85%, rgba(139, 92, 246, 0.06) 0%, transparent 45%);
-  pointer-events: none;
-  z-index: 0;
+  display: none;
 }
 
 .card {
   background: var(--bg-card);
   border: 1px solid var(--border);
-  border-radius: var(--radius-lg);
-  backdrop-filter: blur(16px);
-  -webkit-backdrop-filter: blur(16px);
+  border-radius: var(--radius);
   box-shadow: var(--shadow);
   transition: var(--transition);
 }
 
 .card:hover {
   border-color: var(--border-hover);
-  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.4);
-  transform: translateY(-2px);
+  box-shadow: var(--shadow-lg);
 }
 
 .btn-primary {
-  background: var(--accent-gradient);
-  border: none;
-  box-shadow: 0 4px 15px var(--accent-glow);
+  background: var(--accent);
+  color: white;
+  border: 1px solid var(--accent);
 }
 
 .btn-primary:hover {
-  filter: brightness(1.1);
-  transform: translateY(-2px);
-  box-shadow: 0 8px 25px var(--accent-glow);
+  background: var(--accent-hover);
+  border-color: var(--accent-hover);
 }
 
 /* Live student grid styles */
 .live-ring-online {
   border: 2px solid var(--success) !important;
-  box-shadow: 0 0 15px rgba(16, 185, 129, 0.3) !important;
+  box-shadow: 0 2px 8px rgba(0, 138, 0, 0.1) !important;
 }
 
 .live-ring-offline {
@@ -1241,7 +1215,7 @@ body::before {
 
 .live-ring-flagged {
   border: 2px solid var(--danger) !important;
-  box-shadow: 0 0 15px rgba(239, 68, 68, 0.4) !important;
+  box-shadow: 0 2px 8px rgba(238, 6, 18, 0.15) !important;
 }
 
 /* Modal split view */
@@ -1280,23 +1254,36 @@ body::before {
 }
 
 .filter-input {
-  background: rgba(15, 23, 42, 0.6);
+  background: var(--bg-secondary);
   border: 1px solid var(--border);
   color: var(--text-primary);
   border-radius: var(--radius-sm);
   padding: 8px 12px;
   font-size: 13px;
   flex: 1;
+  transition: var(--transition);
+}
+
+.filter-input:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-glow);
 }
 
 .filter-select {
-  background: rgba(15, 23, 42, 0.6);
+  background: var(--bg-secondary);
   border: 1px solid var(--border);
   color: var(--text-primary);
   border-radius: var(--radius-sm);
   padding: 8px 12px;
   font-size: 13px;
   cursor: pointer;
+  transition: var(--transition);
+}
+
+.filter-select:focus {
+  outline: none;
+  border-color: var(--accent);
 }
 
 /* Toast animations */

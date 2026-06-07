@@ -691,7 +691,7 @@ function viewStudentReport(sessionId, examId) {
     const modalContentHtml = `
         <div class="modal-header">
             <div>
-                <h2 class="modal-title" style="font-family:'Outfit',sans-serif; font-size:20px;">Attempt Details: ${session.student_name || session.student_canvas_id}</h2>
+                <h2 class="modal-title" style="font-family:'Lato','Inter',sans-serif; font-size:20px;">Attempt Details: ${session.student_name || session.student_canvas_id}</h2>
                 <p style="margin:4px 0 0 0; font-size:12px; color:var(--text-secondary); font-family:monospace;">Exam: ${exam.title} | Attempt ${session.attempt_number || 1} | Started: ${new Date(session.started_at).toLocaleString()}</p>
             </div>
             <button class="modal-close" onclick="closeModal()">×</button>
@@ -718,7 +718,7 @@ function viewStudentReport(sessionId, examId) {
                         </select>
                     </div>
                     
-                    <ul id="modal-timeline-list" style="padding-left: 0; list-style-type: none; margin: 0; max-height: 290px; overflow-y: auto; border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 16px; background: rgba(0,0,0,0.2);">
+                    <ul id="modal-timeline-list" style="padding-left: 0; list-style-type: none; margin: 0; max-height: 290px; overflow-y: auto; border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 16px; background: var(--bg-primary);">
                         <!-- Rendered dynamically -->
                     </ul>
                 </div>
