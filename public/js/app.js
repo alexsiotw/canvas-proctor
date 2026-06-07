@@ -48,6 +48,25 @@ socket.on('student_status', (data) => {
 
 socket.on('proctor_log', (data) => {
     showToast(`Alert: ${data.event_message}`, 'warning');
+    
+    if (currentLiveExamId && liveStudents[data.exam_session_id]) {
+        const s = liveStudents[data.exam_session_id];
+        if (!s.flagCount) s.flagCount = 0;
+        
+        const isFlag = ['tab_blur', 'window_blur', 'fullscreen_exit', 'error', 'fail'].includes(data.event_type) || data.event_type.startsWith('AI_');
+        if (isFlag) {
+            s.flagCount++;
+            s.hasFlags = true;
+            
+            // Update Flagged Warnings counter in header
+            const flagsValEl = document.getElementById('stat-flagged-violations');
+            if (flagsValEl) {
+                const curr = parseInt(flagsValEl.innerText) || 0;
+                flagsValEl.innerText = curr + 1;
+            }
+        }
+        updateLiveGrid();
+    }
 });
 
 document.addEventListener('DOMContentLoaded', () => {
@@ -137,10 +156,10 @@ function renderExams() {
     let bannerHtml = '';
     if (contentItemReturnUrl) {
         bannerHtml = `
-            <div style="background: #eff6ff; border: 1px solid #bfdbfe; padding: 15px; border-radius: 8px; margin-bottom: 20px; display: flex; justify-content: space-between; align-items: center; font-family: sans-serif;">
+            <div style="background: rgba(59, 130, 246, 0.05); border: 1px solid rgba(59, 130, 246, 0.15); padding: 20px; border-radius: var(--radius); margin-bottom: 25px; display: flex; justify-content: space-between; align-items: center;">
                 <div>
-                    <strong style="color:#1e3a8a; font-size: 14px;">📝 Canvas Content Selection Active</strong>
-                    <div style="font-size:12px; color:#475569; margin-top:2px;">
+                    <strong style="color: var(--accent); font-size: 15px;">📝 Canvas Content Selection Active</strong>
+                    <div style="font-size:13px; color: var(--text-secondary); margin-top:4px;">
                         Select an exam below and click "Select and Embed" to add it to your Canvas Module.
                     </div>
                 </div>
@@ -149,10 +168,10 @@ function renderExams() {
     } else if (activeResourceLinkId) {
         const linkedExam = currentPlacementMapping ? exams.find(e => e.id == currentPlacementMapping.exam_id) : null;
         bannerHtml = `
-            <div style="background: #eff6ff; border: 1px solid #bfdbfe; padding: 15px; border-radius: 8px; margin-bottom: 20px; display: flex; justify-content: space-between; align-items: center; font-family: sans-serif;">
+            <div style="background: rgba(59, 130, 246, 0.05); border: 1px solid rgba(59, 130, 246, 0.15); padding: 20px; border-radius: var(--radius); margin-bottom: 25px; display: flex; justify-content: space-between; align-items: center;">
                 <div>
-                    <strong style="color:#1e3a8a; font-size: 14px;">🔗 Canvas Placement Integration Active</strong>
-                    <div style="font-size:12px; color:#475569; margin-top:2px;">
+                    <strong style="color: var(--accent); font-size: 15px;">🔗 Canvas Placement Integration Active</strong>
+                    <div style="font-size:13px; color: var(--text-secondary); margin-top:4px;">
                         ${linkedExam ? `This assignment/module link is bound to: <strong>${linkedExam.title}</strong>` 
                         : 'This assignment/module link is NOT linked to an exam yet. Select or create an exam below, then click "Link to this Canvas Placement" to activate it.'}
                     </div>
@@ -177,38 +196,38 @@ function renderExams() {
     if (exams.length === 0) {
         html += `
             <div class="empty-state" style="grid-column: 1/-1;">
-                <div class="empty-icon">📝</div>
+                <div class="empty-icon">🛡️</div>
                 <div class="empty-text">No Exams configured yet</div>
-                <div class="empty-hint">Click the button above to link an LMS Quiz.</div>
+                <div class="empty-hint">Click the button above to link your first Canvas quiz.</div>
             </div>
         `;
     } else {
         exams.forEach(ex => {
             html += `
                 <div class="card session-card" style="position:relative; cursor:pointer;" onclick="loadExamDashboard(${ex.id})">
-                    <div style="position:absolute; top: 15px; right: 15px; display: flex; gap: 5px;">
-                        <button class="btn" style="background: var(--primary); color: white; padding: 4px 8px; font-size: 12px; border:none; border-radius: 4px;" onclick="event.stopPropagation(); showCreateExamModal(${ex.id})">Edit</button>
-                        <button class="btn" style="background: var(--danger); color: white; padding: 4px 8px; font-size: 12px; border:none; border-radius: 4px;" onclick="event.stopPropagation(); deleteExam(${ex.id})">Delete</button>
+                    <div style="position:absolute; top: 20px; right: 20px; display: flex; gap: 8px;">
+                        <button class="btn btn-secondary" style="padding: 4px 10px; font-size: 11px;" onclick="event.stopPropagation(); showCreateExamModal(${ex.id})">Edit</button>
+                        <button class="btn btn-danger" style="padding: 4px 10px; font-size: 11px;" onclick="event.stopPropagation(); deleteExam(${ex.id})">Delete</button>
                     </div>
-                    <div style="display:flex; align-items:center; gap:8px; margin-bottom: 4px;">
+                    <div style="display:flex; align-items:center; gap:8px; margin-bottom: 6px;">
                         <div class="session-date">${new Date(ex.created_at).toLocaleDateString()}</div>
-                        <span style="font-size:10px; padding: 2px 6px; border-radius: 10px; font-weight:bold; text-transform:uppercase; ${ex.is_open ? 'background:var(--success-bg); color:var(--success);' : 'background:var(--danger-bg); color:var(--danger);'}">
-                            ${ex.is_open ? '● Open' : '● Closed'}
+                        <span class="badge ${ex.is_open ? 'badge-success' : 'badge-danger'}" style="font-size:9px; padding: 2px 8px;">
+                            ${ex.is_open ? 'Open' : 'Closed'}
                         </span>
                     </div>
-                    <div class="session-title">${ex.title}</div>
-                    <div style="margin-top: 10px; font-weight: bold; font-size: 14px; background: #eef2ff; color: #4338ca; padding: 5px 10px; border-radius: 4px; display: inline-block;">Code: ${ex.exam_code}</div>
-                    <div style="font-size: 12px; color: var(--text-secondary); margin-top: 8px;">
+                    <div class="session-title" style="font-size:16px; font-weight:700; margin-bottom:10px; color:var(--text-primary);">${ex.title}</div>
+                    <div style="margin-bottom: 12px; font-weight: 700; font-size: 12px; background: rgba(59, 130, 246, 0.1); color: var(--accent); padding: 6px 12px; border-radius: 6px; display: inline-block; font-family:monospace;">Exam Code: ${ex.exam_code}</div>
+                    <div style="font-size: 12px; color: var(--text-secondary); line-height:1.6;">
                         <div>Max Attempts: ${ex.max_attempts || 1} | Boot Limit: ${ex.max_violations > 0 ? ex.max_violations + ' leaves' : 'Disabled'}</div>
-                        <div>📷 Camera: ${ex.require_camera ? 'Yes' : 'No'} | 🎤 Mic: ${ex.require_mic ? 'Yes' : 'No'} | 💻 Screen: ${ex.require_screen ? 'Yes' : 'No'} | 🛡️ SEB: ${ex.require_seb ? 'Yes' : 'No'}</div>
+                        <div style="margin-top:4px;">📷 Camera: ${ex.require_camera ? 'Yes' : 'No'} | 🎤 Mic: ${ex.require_mic ? 'Yes' : 'No'} | 💻 Screen: ${ex.require_screen ? 'Yes' : 'No'} | 🛡️ SEB: ${ex.require_seb ? 'Yes' : 'No'}</div>
                     </div>
                     ${contentItemReturnUrl ? `
-                        <button class="btn" style="margin-top: 12px; width: 100%; justify-content: center; font-size:12px; padding: 8px; border:none; background:#2563eb; color:white;" onclick="event.stopPropagation(); embedExamSelection(${ex.id})">
+                        <button class="btn btn-primary" style="margin-top: 15px; width: 100%; font-size:12px; padding: 10px;" onclick="event.stopPropagation(); embedExamSelection(${ex.id})">
                             Select and Embed Exam
                         </button>
                     ` : (activeResourceLinkId ? `
-                        <button class="btn" style="margin-top: 12px; width: 100%; justify-content: center; font-size:12px; padding: 8px; border:none; ${currentPlacementMapping && currentPlacementMapping.exam_id == ex.id ? 'background:#059669; color:white;' : 'background:#2563eb; color:white;'}" onclick="event.stopPropagation(); linkPlacement(${ex.id})">
-                            ${currentPlacementMapping && currentPlacementMapping.exam_id == ex.id ? '✓ Linked to this placement' : 'Link to this Canvas Placement'}
+                        <button class="btn ${currentPlacementMapping && currentPlacementMapping.exam_id == ex.id ? 'btn-success' : 'btn-primary'}" style="margin-top: 15px; width: 100%; font-size:12px; padding: 10px;" onclick="event.stopPropagation(); linkPlacement(${ex.id})">
+                            ${currentPlacementMapping && currentPlacementMapping.exam_id == ex.id ? '✓ Linked to placement' : 'Link to this Canvas Placement'}
                         </button>
                     ` : '')}
                 </div>
@@ -233,45 +252,81 @@ function loadExamDashboard(examId) {
     content.innerHTML = `
         <div class="page-header" style="display:flex; justify-content:space-between; align-items:center;">
             <div>
-                <button class="btn btn-secondary" style="margin-bottom: 10px;" onclick="closeExamDashboard()">← Back to Exams</button>
+                <button class="btn btn-secondary" style="margin-bottom: 15px;" onclick="closeExamDashboard()">← Back to Exams</button>
                 <div style="display:flex; align-items:center; gap: 15px;">
                     <h1 class="page-title">${exam.title} Workspace</h1>
                     <button class="btn" id="status-toggle-btn" 
-                        style="padding: 6px 14px; font-size: 13px; border-radius: 20px; font-weight: bold; border: none; cursor: pointer; transition: var(--transition);
+                        style="padding: 6px 16px; font-size: 12px; border-radius: 20px; font-weight: 700; border: none; cursor: pointer; transition: var(--transition);
                         ${exam.is_open ? 'background:var(--success); color:white;' : 'background:var(--danger); color:white;'}"
                         onclick="toggleExamStatus(${exam.id})">
                         ${exam.is_open ? '🔓 Exam is OPEN' : '🔒 Exam is CLOSED'}
                     </button>
-                    <button class="btn btn-secondary" style="padding: 6px 14px; font-size: 13px; border-radius: 20px; font-weight: bold;" onclick="showCreateExamModal(${exam.id})">⚙️ Edit Settings</button>
+                    <button class="btn btn-secondary" style="padding: 6px 16px; font-size: 12px; border-radius: 20px; font-weight: 700;" onclick="showCreateExamModal(${exam.id})">⚙️ Edit Settings</button>
                 </div>
-                <p class="page-subtitle">Now Managing Exam Code: <strong style="color:var(--primary)">${exam.exam_code}</strong></p>
+                <p class="page-subtitle">Managing exam LTI placements with Access Code: <strong style="color:var(--accent); font-family:monospace;">${exam.exam_code}</strong></p>
+            </div>
+        </div>
+
+        <!-- Metrics Dashboard Row -->
+        <div class="metrics-row" style="margin-top:20px;">
+            <div class="card stat-card info">
+                <div class="stat-value" id="stat-total-attempts">--</div>
+                <div class="stat-label">Total Attempts</div>
+            </div>
+            <div class="card stat-card success">
+                <div class="stat-value" id="stat-active-sessions">0</div>
+                <div class="stat-label">Active Students</div>
+            </div>
+            <div class="card stat-card danger">
+                <div class="stat-value" id="stat-flagged-violations">0</div>
+                <div class="stat-label">Flagged Warnings</div>
+            </div>
+            <div class="card stat-card warning">
+                <div class="stat-value" id="stat-integrity-rate">100%</div>
+                <div class="stat-label">Integrity Rate</div>
             </div>
         </div>
         
-        <!-- Grid layout cleanly splitting Live Monitor & Reports side-by-side or stacked -->
-        <div style="display: flex; flex-direction: column; gap: 30px; margin-top: 20px;">
+        <div style="display: flex; flex-direction: column; gap: 30px; margin-top: 10px;">
             <!-- Live Monitoring Block -->
-            <div class="card" style="padding: 20px; box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1);">
-                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom: 15px; border-bottom: 1px solid var(--border-color); padding-bottom: 10px;">
-                    <h2 style="font-size: 18px; font-weight: 600;">Live Monitoring Feed</h2>
-                    <span style="font-size:12px; color:var(--text-secondary);">Click on a student's webcam to expand securely. Updates dynamically.</span>
+            <div class="card" style="padding: 24px;">
+                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom: 20px; border-bottom: 1px solid var(--border); padding-bottom: 12px;">
+                    <h2 style="font-size: 18px; font-weight: 700; margin: 0;">Live Monitoring Feed</h2>
+                    <div style="display:flex; align-items:center; gap:12px;">
+                        <button class="btn btn-warning-action btn-sm" onclick="sendBroadcastAnnouncement(${exam.id})">
+                            📢 Broadcast Alert
+                        </button>
+                        <span style="font-size:12px; color:var(--text-secondary);">Click webcam to expand.</span>
+                    </div>
                 </div>
                 <div id="live-grid" class="session-grid"></div>
             </div>
             
             <!-- Reports Block -->
-            <div class="card" style="padding: 20px; box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1);">
-                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom: 15px; border-bottom: 1px solid var(--border-color); padding-bottom: 10px;">
+            <div class="card" style="padding: 24px;">
+                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom: 20px; border-bottom: 1px solid var(--border); padding-bottom: 12px;">
                     <div style="display:flex; flex-direction:column; gap:4px;">
-                        <h2 style="font-size: 18px; font-weight: 600; margin: 0;">Post-Exam Reports & Video Vault</h2>
-                        <div id="submissions-ratio-badge" style="font-size: 13px; font-weight: bold; color: #f97316; margin-top: 2px;">Submissions: -- of -- enrolled submitted</div>
+                        <h2 style="font-size: 18px; font-weight: 700; margin: 0;">Post-Exam Reports & Video Vault</h2>
+                        <div id="submissions-ratio-badge" style="font-size: 13px; font-weight: 700; color: var(--warning); margin-top: 2px;">Submissions: loading...</div>
                     </div>
-                    <div style="display:flex; gap: 8px;">
-                        <button class="btn btn-primary" style="font-size:12px; padding: 4px 8px; background:var(--accent); color:white !important; border:none;" onclick="window.open('/api/exams/drive-folder', '_blank')">📁 Open Google Drive Vault</button>
-                        <button class="btn btn-secondary" style="font-size:12px; padding: 4px 8px;" onclick="fetchReportData(${exam.id})">Refresh Reports</button>
+                    <div style="display:flex; gap: 10px;">
+                        <button class="btn btn-primary" style="font-size:12px; padding: 8px 16px;" onclick="window.open('/api/exams/drive-folder', '_blank')">📁 Open Drive Vault</button>
+                        <button class="btn btn-secondary" style="font-size:12px; padding: 8px 16px;" onclick="fetchReportData(${exam.id})">Refresh Reports</button>
                     </div>
                 </div>
-                <div id="report-content"><div class="spinner" style="margin: 20px auto;"></div></div>
+                
+                <!-- Reports Search & Filters -->
+                <div class="filter-search-container" style="margin-bottom: 20px; display: flex; gap: 12px;">
+                    <input type="text" id="report-search-input" class="filter-input" placeholder="Search student by name..." />
+                    <select id="report-risk-select" class="filter-select">
+                        <option value="all">All Integrity Statuses</option>
+                        <option value="low">🟢 Low Risk (Clean)</option>
+                        <option value="moderate">🟡 Moderate Risk</option>
+                        <option value="high">🔴 High Risk</option>
+                    </select>
+                </div>
+                
+                <div id="report-content"><div class="spinner"></div></div>
             </div>
         </div>
     `;
@@ -297,25 +352,53 @@ function updateLiveGrid() {
         
         let content = '';
         if(s.screenshot) {
-            content = `<img src="${s.screenshot}" style="width:100%; height:120px; object-fit:cover; border-radius: 4px; cursor: pointer;" onclick="openFullscreenImg('${s.screenshot}', ${sessionId})" />`;
+            content = `<img src="${s.screenshot}" style="width:100%; height:140px; object-fit:cover; border-radius: var(--radius-sm); cursor: pointer;" onclick="openFullscreenImg('${s.screenshot}', ${sessionId})" />`;
         } else {
-            content = `<div style="width:100%; height:120px; background:#ddd; border-radius: 4px; display:flex; align-items:center; justify-content:center; color:#888;">No Signal</div>`;
+            content = `<div style="width:100%; height:140px; background:rgba(0,0,0,0.3); border-radius: var(--radius-sm); display:flex; align-items:center; justify-content:center; color:var(--text-muted); border:1px dashed var(--border);">No Signal</div>`;
         }
 
+        const warningBtn = s.status === 'online' ? `
+            <button class="btn btn-warning-action btn-xs" style="margin-top:10px; width:100%; justify-content:center;" onclick="sendStudentWarning(${sessionId}, '${s.name || 'Student'}')">
+                💬 Send Alert
+            </button>
+        ` : '';
+
+        const hasFlags = s.hasFlags || false;
+        const ringClass = s.status === 'online' ? (hasFlags ? 'live-ring-flagged' : 'live-ring-online') : 'live-ring-offline';
+
         grid.innerHTML += `
-            <div class="card" style="padding: 12px; background: #f8fafc;">
-                <div style="display:flex; justify-content:space-between; margin-bottom:8px;">
-                    <strong style="font-size: 14px;">${s.name || 'Testing...'}</strong>
-                    <span style="width: 10px; height: 10px; background: ${statusColor}; border-radius: 50%; display:inline-block;"></span>
+            <div class="card ${ringClass}" style="padding: 16px; background: rgba(30, 41, 59, 0.2);">
+                <div style="display:flex; justify-content:space-between; margin-bottom:10px; align-items:center;">
+                    <strong style="font-size: 14px; font-weight:600;">${s.name || 'Testing...'}</strong>
+                    <span style="width: 8px; height: 8px; background: ${statusColor}; border-radius: 50%; display:inline-block; box-shadow: 0 0 6px ${statusColor};"></span>
                 </div>
                 ${content}
+                ${warningBtn}
             </div>
         `;
     });
 
     if(Object.keys(liveStudents).length === 0) {
-        grid.innerHTML = '<div style="color: var(--text-muted); font-size: 14px; grid-column:1/-1; padding:20px 0;">Live queue is currently empty. Waiting for students to authenticate...</div>';
+        grid.innerHTML = '<div style="color: var(--text-muted); font-size: 14px; grid-column:1/-1; padding:20px 0; text-align:center;">Live queue is currently empty. Waiting for students to authenticate...</div>';
     }
+
+    // Refresh active count in metrics
+    const activeVal = Object.keys(liveStudents).filter(id => liveStudents[id].status === 'online').length;
+    const activeMetric = document.getElementById('stat-active-sessions');
+    if (activeMetric) activeMetric.innerText = activeVal;
+}
+
+function sendStudentWarning(sessionId, studentName) {
+    const warningText = prompt(`Send real-time warning alert to ${studentName}:`, "Please keep your eyes on the screen and remain in fullscreen mode.");
+    if (warningText === null) return;
+    const msg = warningText.trim();
+    if (!msg) return;
+
+    socket.emit('instructor_warning', {
+        exam_session_id: sessionId,
+        message: msg
+    });
+    showToast(`Warning sent to ${studentName}`, 'success');
 }
 
 function openFullscreenImg(src, sessionId) {
@@ -327,6 +410,93 @@ function openFullscreenImg(src, sessionId) {
 function closeImage() {
     currentFullscreenSessionId = null;
     document.getElementById('image-overlay').classList.remove('active');
+}
+
+// BROADCAST ANNOUNCEMENT
+function sendBroadcastAnnouncement(examId) {
+    const msgText = prompt("Enter an announcement or warning to broadcast to ALL online students currently taking this exam:", "Please remain focused. Ensure your webcam is clear and you do not leave the browser tab.");
+    if (msgText === null) return;
+    const msg = msgText.trim();
+    if (!msg) return;
+
+    socket.emit('instructor_broadcast', {
+        exam_id: examId,
+        message: msg
+    });
+    showToast("Broadcast message sent to all active students.", "success");
+}
+
+function getRiskInfo(session) {
+    const logs = Array.isArray(session.logs) ? session.logs : [];
+    const focusWarnings = logs.filter(l => ['tab_blur', 'window_blur', 'fullscreen_exit'].includes(l.event_type)).length;
+    const aiWarnings = logs.filter(l => l.event_type.startsWith('AI_')).length;
+    const totalWarnings = focusWarnings + aiWarnings;
+
+    let category = 'low';
+    let html = '<span class="badge badge-success">🟢 Low Risk</span>';
+
+    if (totalWarnings > 2 || aiWarnings > 0) {
+        category = 'high';
+        html = `<span class="badge badge-danger" style="box-shadow: 0 0 8px rgba(239, 68, 68, 0.2);">🔴 High Risk (${totalWarnings} flags)</span>`;
+    } else if (totalWarnings > 0) {
+        category = 'moderate';
+        html = `<span class="badge badge-warning">🟡 Mod Risk (${totalWarnings} flags)</span>`;
+    }
+
+    return { category, html, totalWarnings, focusWarnings, aiWarnings };
+}
+
+function filterReports(examId) {
+    const searchInput = document.getElementById('report-search-input');
+    const riskSelect = document.getElementById('report-risk-select');
+    const tableBody = document.getElementById('report-table-body');
+    if (!tableBody) return;
+
+    const query = searchInput ? searchInput.value.toLowerCase().trim() : '';
+    const riskFilter = riskSelect ? riskSelect.value : 'all';
+
+    let filtered = currentSessionsList;
+
+    // Filter by name
+    if (query) {
+        filtered = filtered.filter(s => {
+            const name = (s.student_name || s.student_canvas_id || '').toLowerCase();
+            return name.includes(query);
+        });
+    }
+
+    // Filter by risk
+    if (riskFilter !== 'all') {
+        filtered = filtered.filter(s => {
+            const riskInfo = getRiskInfo(s);
+            return riskInfo.category === riskFilter;
+        });
+    }
+
+    let tbodyHtml = '';
+    filtered.forEach(s => {
+        const riskInfo = getRiskInfo(s);
+        tbodyHtml += `
+            <tr>
+                <td style="font-weight: 700;">
+                    ${s.student_name || s.student_canvas_id} 
+                    <span style="font-size: 11px; color:var(--text-secondary); font-weight:400;">(Attempt ${s.attempt_number || 1})</span>
+                </td>
+                <td><span class="badge ${s.status === 'completed' ? 'badge-success' : 'badge-warning'}">${s.status}</span></td>
+                <td>${new Date(s.started_at).toLocaleString()}</td>
+                <td>${riskInfo.html}</td>
+                <td>
+                    <button onclick="viewStudentReport(${s.id}, ${examId})" class="btn btn-secondary btn-sm">View Report</button>
+                </td>
+            </tr>
+        `;
+    });
+
+    if (filtered.length === 0) {
+        tbodyHtml = '<tr><td colspan="5" style="text-align:center; padding: 30px; color:var(--text-muted);">No student reports match your filters.</td></tr>';
+    }
+
+    tableBody.innerHTML = tbodyHtml;
 }
 
 // REPORTS LOGIC
@@ -347,102 +517,137 @@ async function fetchReportData(examId) {
         const sessions = data.sessions || [];
         const enrolledCount = data.enrolled_count || 0;
         
-        // Save sessions to global state so the detail modal can read it
         currentSessionsList = sessions;
         
-        // Update enrollment ratio indicator
+        // Compute and update stats metrics cards
+        const totalAttemptsVal = sessions.length;
+        let totalViolationsVal = 0;
+        let flaggedAttemptsCount = 0;
+        
+        sessions.forEach(s => {
+            const logs = s.logs || [];
+            const studentFlags = logs.filter(l => ['tab_blur', 'window_blur', 'fullscreen_exit', 'error', 'fail'].includes(l.event_type)).length;
+            totalViolationsVal += studentFlags;
+            if (studentFlags > 0) flaggedAttemptsCount++;
+        });
+
+        const integrityRateVal = totalAttemptsVal > 0 ? Math.round(((totalAttemptsVal - flaggedAttemptsCount) / totalAttemptsVal) * 100) : 100;
+
+        document.getElementById('stat-total-attempts').innerText = totalAttemptsVal;
+        document.getElementById('stat-flagged-violations').innerText = totalViolationsVal;
+        document.getElementById('stat-integrity-rate').innerText = `${integrityRateVal}%`;
+
         const submittedCount = sessions.filter(s => s.status === 'completed').length;
         const ratioBadge = document.getElementById('submissions-ratio-badge');
         if (ratioBadge) {
-            ratioBadge.innerText = `Submissions: ${submittedCount} of ${enrolledCount || submittedCount} enrolled submitted`;
+            ratioBadge.innerText = `Submissions: ${submittedCount} of ${enrolledCount || submittedCount} enrolled completed`;
         }
 
-        let tableHtml = `
+        tableContainer.innerHTML = `
             <div class="table-wrapper">
-            <table style="width:100%">
+            <table>
                 <thead>
                     <tr>
                         <th>Student Name</th>
                         <th>Status</th>
                         <th>Started At</th>
-                        <th>Security Warnings / AI Checks</th>
-                        <th>Reports Portal</th>
+                        <th>Integrity Flags</th>
+                        <th>Proctoring Report</th>
                     </tr>
                 </thead>
-                <tbody>
+                <tbody id="report-table-body">
+                    <!-- Loaded dynamically -->
+                </tbody>
+            </table>
+            </div>
         `;
 
-        sessions.forEach(s => {
-            const logs = Array.isArray(s.logs) ? s.logs : [];
-            const focusWarnings = logs.filter(l => ['tab_blur', 'window_blur', 'fullscreen_exit'].includes(l.event_type)).length;
-            const aiWarnings = logs.filter(l => l.event_type.startsWith('AI_')).length;
-            const totalWarnings = focusWarnings + aiWarnings;
-            
-            let warningText = '<span style="color:#059669; font-weight:bold;">Clean Run</span>';
-            if (totalWarnings > 0) {
-                warningText = `<span style="color:#ef4444; font-weight:bold;">⚠️ ${totalWarnings} Flags</span> `;
-                let details = [];
-                if (focusWarnings > 0) details.push(`${focusWarnings} Focus`);
-                if (aiWarnings > 0) details.push(`${aiWarnings} AI`);
-                warningText += `<span style="font-size: 11px; color: #64748b;">(${details.join(', ')})</span>`;
-            }
-
-            tableHtml += `
-                <tr>
-                    <td style="font-weight: 600;">
-                        ${s.student_name || s.student_canvas_id} 
-                        <div style="font-size: 11px; color:#666;">(Attempt ${s.attempt_number || 1})</div>
-                    </td>
-                    <td><span class="status-badge status-${s.status === 'completed' ? 'Present' : 'Late'}">${s.status}</span></td>
-                    <td>${new Date(s.started_at).toLocaleString()}</td>
-                    <td style="font-size: 13px;">${warningText}</td>
-                    <td>
-                        <button onclick="viewStudentReport(${s.id}, ${examId})" class="btn btn-primary" style="font-size:12px; padding:6px 14px; border-radius: 4px; background:#4338ca; color:white; text-decoration:none; display:inline-block; border:none; cursor:pointer;">View Report</button>
-                    </td>
-                </tr>
-            `;
-        });
-
-        if (sessions.length === 0) {
-            tableHtml += '<tr><td colspan="5" style="text-align:center; padding: 20px; color:#888;">No recorded attempts in the vault yet.</td></tr>';
+        // Bind filter event listeners if they exist
+        const searchInput = document.getElementById('report-search-input');
+        const riskSelect = document.getElementById('report-risk-select');
+        
+        if (searchInput && !searchInput.dataset.bound) {
+            searchInput.dataset.bound = "true";
+            searchInput.addEventListener('input', () => filterReports(examId));
+        }
+        if (riskSelect && !riskSelect.dataset.bound) {
+            riskSelect.dataset.bound = "true";
+            riskSelect.addEventListener('change', () => filterReports(examId));
         }
 
-        tableHtml += '</tbody></table></div>';
-        tableContainer.innerHTML = tableHtml;
+        // Trigger initial table rendering
+        filterReports(examId);
+
     } catch (err) {
         console.error("Report fetch failed", err);
-        tableContainer.innerHTML = `<div style="padding: 20px; color: var(--danger); text-align:center;">Connection Error. Check console for details.</div>`;
+        tableContainer.innerHTML = `<div style="padding: 20px; color: var(--danger); text-align:center;">Failed to load reports. Check server logs.</div>`;
     }
 }
+
+let activeLogFilterSeverity = 'all';
+let activeLogFilterSearch = '';
 
 function viewStudentReport(sessionId, examId) {
     const exam = exams.find(e => e.id == examId);
     const session = currentSessionsList.find(s => s.id == sessionId);
     if (!session) return;
     
-    const logs = Array.isArray(session.logs) ? session.logs : [];
-    let logsHtml = '<ul style="padding-left: 0; list-style-type: none; margin: 0; max-height: 250px; overflow-y: auto; border: 1px solid #e2e8f0; border-radius: 6px; padding: 12px; background: #f8fafc;">';
-    
-    logs.forEach(l => {
-        const isAI = l.event_type.startsWith('AI_');
-        const isDanger = ['tab_blur', 'window_blur', 'fullscreen_exit', 'booted'].includes(l.event_type) || isAI;
-        const typeColor = isAI ? '#f97316' : (isDanger ? '#ef4444' : '#059669');
-        const badgeLabel = isAI ? '🤖 AI DETECTION' : l.event_type.toUpperCase();
-        
-        logsHtml += `
-            <li style="margin-bottom: 10px; border-bottom: 1px solid #f1f5f9; padding-bottom: 8px; display: flex; flex-direction: column; gap: 4px;">
-                <div>
-                    <strong style="color:${typeColor}; font-size:11px; padding: 2px 6px; background: ${isAI ? '#fff7ed' : (isDanger ? '#fef2f2' : '#ecfdf5')}; border-radius: 4px; border: 1px solid currentColor; display:inline-block; font-weight:700;">${badgeLabel}</strong>
-                    <span style="color:#94a3b8; font-size:11px; margin-left: 8px;">${new Date(l.event_timestamp).toLocaleTimeString()}</span>
-                </div>
-                <span style="font-size:13px; color:#1e293b; line-height: 1.4;">${l.event_message}</span>
-            </li>
-        `;
-    });
-    if(logs.length === 0) {
-        logsHtml += "<li style='color:#059669; font-weight:bold; text-align:center; padding: 10px;'>No security flags or AI warnings recorded. Clean run!</li>";
-    }
-    logsHtml += '</ul>';
+    // Setup filter states
+    activeLogFilterSeverity = 'all';
+    activeLogFilterSearch = '';
+
+    const renderLogsTimeline = () => {
+        const logs = Array.isArray(session.logs) ? session.logs : [];
+        const container = document.getElementById('modal-timeline-list');
+        if (!container) return;
+
+        let filteredLogs = logs;
+
+        // Filter by search query
+        if (activeLogFilterSearch) {
+            const query = activeLogFilterSearch.toLowerCase();
+            filteredLogs = filteredLogs.filter(l => 
+                l.event_message.toLowerCase().includes(query) || 
+                l.event_type.toLowerCase().includes(query)
+            );
+        }
+
+        // Filter by severity
+        if (activeLogFilterSeverity === 'flag') {
+            filteredLogs = filteredLogs.filter(l => 
+                ['tab_blur', 'window_blur', 'fullscreen_exit', 'error', 'fail'].includes(l.event_type) || 
+                l.event_type.startsWith('AI_')
+            );
+        } else if (activeLogFilterSeverity === 'info') {
+            filteredLogs = filteredLogs.filter(l => 
+                !['tab_blur', 'window_blur', 'fullscreen_exit', 'error', 'fail'].includes(l.event_type) && 
+                !l.event_type.startsWith('AI_')
+            );
+        }
+
+        let logsHtml = '';
+        filteredLogs.forEach(l => {
+            const isAI = l.event_type.startsWith('AI_');
+            const isDanger = ['tab_blur', 'window_blur', 'fullscreen_exit', 'booted', 'error', 'fail'].includes(l.event_type) || isAI;
+            const badgeColor = isAI ? 'badge-warning' : (isDanger ? 'badge-danger' : 'badge-success');
+            const badgeLabel = isAI ? '🤖 AI DETECTION' : l.event_type.toUpperCase();
+            
+            logsHtml += `
+                <li style="margin-bottom: 12px; border-bottom: 1px solid var(--border); padding-bottom: 10px; display: flex; flex-direction: column; gap: 4px;">
+                    <div>
+                        <span class="badge ${badgeColor}" style="font-size:9px; padding: 2px 6px;">${badgeLabel}</span>
+                        <span style="color:var(--text-muted); font-size:11px; margin-left: 8px;">${new Date(l.event_timestamp).toLocaleTimeString()}</span>
+                    </div>
+                    <span style="font-size:13px; color:var(--text-primary); line-height: 1.4; margin-top: 4px;">${l.event_message}</span>
+                </li>
+            `;
+        });
+
+        if (filteredLogs.length === 0) {
+            logsHtml = "<li style='color:var(--text-muted); text-align:center; padding: 20px; font-size:13px;'>No matching log events found.</li>";
+        }
+        container.innerHTML = logsHtml;
+    };
 
     const showVideo = session.status === 'completed' && !session.video_archived;
     let videoElementHtml = '';
@@ -454,49 +659,107 @@ function viewStudentReport(sessionId, examId) {
         }
     }
     const videoHtml = showVideo ? `
-        <div style="margin-bottom: 20px;">
-            <h4 style="margin: 0 0 8px 0; font-size:14px; font-weight:600; color:#1e293b;">Recorded Session Video</h4>
-            <div style="background: black; border-radius: 8px; overflow: hidden; aspect-ratio: 16/9; position: relative;">
+        <div style="margin-bottom: 15px;">
+            <h4 style="margin: 0 0 10px 0; font-size:14px; font-weight:700; color:var(--text-primary);">Webcam Proctoring Footage (Google Drive Player)</h4>
+            <div style="background: black; border-radius: var(--radius); overflow: hidden; aspect-ratio: 16/9; border: 1px solid var(--border);">
                 ${videoElementHtml}
             </div>
         </div>
     ` : `
-        <div style="margin-bottom: 20px; background: #f1f5f9; border: 1px solid #cbd5e1; border-radius: 8px; padding: 25px; text-align: center; color: #64748b;">
+        <div style="margin-bottom: 15px; background: rgba(255, 255, 255, 0.02); border: 1px dashed var(--border); border-radius: var(--radius); padding: 30px; text-align: center; color: var(--text-secondary);">
             <span style="font-size: 32px; display:block; margin-bottom: 8px;">🎥</span>
-            ${session.video_archived ? '<strong>Video Footage Archived Off-Site</strong><br><span style="font-size:12px;">This recording was hard purged from the active database to reclaim space.</span>' : '<strong>Video Recording In Progress...</strong><br><span style="font-size:12px;">Webcam and screen data is still uploading or the student is active.</span>'}
+            ${session.video_archived ? '<strong>Video Footage Archived Off-Site</strong><br><span style="font-size:12px; color:var(--text-muted);">This recording was hard purged to reclaim storage space.</span>' : '<strong>Video Recording Finalizing...</strong><br><span style="font-size:12px; color:var(--text-muted);">The footage is still being assembled and uploaded in the background.</span>'}
         </div>
     `;
+
+    const hasSnapshots = session.drive_snapshots_id;
+    let snapshotsPanelHtml = '';
+    if (hasSnapshots) {
+        snapshotsPanelHtml = `
+            <div style="background: rgba(59, 130, 246, 0.04); border: 1px solid rgba(59, 130, 246, 0.15); border-radius: var(--radius); padding: 16px; display: flex; justify-content: space-between; align-items: center; margin-top: 15px;">
+                <div>
+                    <h5 style="margin:0; font-size:13px; font-weight:700; color:var(--text-primary);">DOM Quiz Screenshots</h5>
+                    <p style="margin: 4px 0 0 0; font-size:11px; color:var(--text-secondary);">ZIP folder containing student quiz screenshots.</p>
+                </div>
+                <a class="btn btn-success btn-sm" href="https://drive.google.com/uc?export=download&id=${session.drive_snapshots_id}" target="_blank">
+                    📥 Download ZIP
+                </a>
+            </div>
+        `;
+    }
 
     const modalContentHtml = `
         <div class="modal-header">
             <div>
-                <h2 class="modal-title" style="margin:0; font-size:18px;">Proctoring Report: ${session.student_name || session.student_canvas_id}</h2>
-                <p style="margin:4px 0 0 0; font-size:12px; color:#64748b;">Exam: ${exam.title} | Attempt ${session.attempt_number || 1} | Started: ${new Date(session.started_at).toLocaleString()}</p>
+                <h2 class="modal-title" style="font-family:'Outfit',sans-serif; font-size:20px;">Attempt Details: ${session.student_name || session.student_canvas_id}</h2>
+                <p style="margin:4px 0 0 0; font-size:12px; color:var(--text-secondary); font-family:monospace;">Exam: ${exam.title} | Attempt ${session.attempt_number || 1} | Started: ${new Date(session.started_at).toLocaleString()}</p>
             </div>
             <button class="modal-close" onclick="closeModal()">×</button>
         </div>
-        <div class="modal-body" style="padding: 20px 0;">
-            ${videoHtml}
-            <div>
-                <h4 style="margin: 0 0 8px 0; font-size:14px; font-weight:600; color:#1e293b;">Security & Activity Timeline</h4>
-                ${logsHtml}
+        <div class="modal-body">
+            <div class="modal-split-layout">
+                <!-- Left Pane: Media & Downloads -->
+                <div>
+                    ${videoHtml}
+                    ${snapshotsPanelHtml}
+                </div>
+                
+                <!-- Right Pane: Timeline & Filters -->
+                <div style="display:flex; flex-direction:column; height: 100%;">
+                    <h4 style="margin: 0 0 10px 0; font-size:14px; font-weight:700; color:var(--text-primary);">Security Integrity Log</h4>
+                    
+                    <!-- Search & Filter Controls -->
+                    <div class="filter-search-container">
+                        <input type="text" id="log-search-input" class="filter-input" placeholder="Search event message..." />
+                        <select id="log-severity-select" class="filter-select">
+                            <option value="all">All Events</option>
+                            <option value="flag">Warnings / Flags</option>
+                            <option value="info">Info Logs</option>
+                        </select>
+                    </div>
+                    
+                    <ul id="modal-timeline-list" style="padding-left: 0; list-style-type: none; margin: 0; max-height: 290px; overflow-y: auto; border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 16px; background: rgba(0,0,0,0.2);">
+                        <!-- Rendered dynamically -->
+                    </ul>
+                </div>
             </div>
         </div>
-        <div style="margin-top: 24px; display:flex; justify-content:space-between; align-items:center;">
+        <div style="margin-top: 24px; display:flex; justify-content:space-between; align-items:center; border-top:1px solid var(--border); padding-top: 15px;">
             <div style="display:flex; gap: 8px;">
-                <button class="btn btn-secondary" style="font-size:12px; padding:6px 12px; border: 1px solid var(--border-color); background: white;" onclick="grantExtraAttempt(${exam.id}, '${session.student_canvas_id}')">+1 Override Pass</button>
-                <button class="btn" style="font-size:12px; padding:6px 12px; border:none; background:var(--danger); color:white; border-radius:4px;" onclick="deleteStudentAttempt(${session.id}, ${exam.id})">Delete Attempt</button>
+                <button class="btn btn-secondary btn-sm" onclick="grantExtraAttempt(${exam.id}, '${session.student_canvas_id}')">+1 Override Pass</button>
+                <button class="btn btn-danger btn-sm" onclick="deleteStudentAttempt(${session.id}, ${exam.id})">Delete Session</button>
             </div>
-            <button class="btn btn-primary" onclick="closeModal()">Done</button>
+            <button class="btn btn-primary btn-sm" onclick="closeModal()">Done</button>
         </div>
     `;
     
     const modalOverlay = document.getElementById('modal-overlay');
     const modalContainer = document.getElementById('modal-content');
-    modalContainer.style.maxWidth = '800px';
+    modalContainer.style.maxWidth = '900px';
     modalContainer.style.width = '95%';
     modalContainer.innerHTML = modalContentHtml;
     modalOverlay.classList.add('active');
+
+    // Initial log timeline draw
+    renderLogsTimeline();
+
+    // Bind log filter inputs
+    const searchInput = document.getElementById('log-search-input');
+    const severitySelect = document.getElementById('log-severity-select');
+
+    if (searchInput) {
+        searchInput.addEventListener('input', (e) => {
+            activeLogFilterSearch = e.target.value;
+            renderLogsTimeline();
+        });
+    }
+
+    if (severitySelect) {
+        severitySelect.addEventListener('change', (e) => {
+            activeLogFilterSeverity = e.target.value;
+            renderLogsTimeline();
+        });
+    }
 }
 
 async function deleteStudentAttempt(sessionId, examId) {
@@ -505,7 +768,7 @@ async function deleteStudentAttempt(sessionId, examId) {
         const res = await apiFetch(`/api/sessions/${sessionId}`, { method: 'DELETE' });
         if (res.ok) {
             closeModal();
-            showToast("Student attempt deleted.", "success");
+            showToast("Student attempt deleted successfully.", "success");
             fetchReportData(examId);
         } else {
             showToast("Failed to delete attempt", "warning");

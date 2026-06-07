@@ -1261,6 +1261,7 @@ io.on('connection', (socket) => {
 
     socket.on('join_student', (data) => { // { exam_id, exam_session_id, student_name }
         socket.join('student_' + data.exam_session_id);
+        socket.join('exam_' + data.exam_id);
         socket.studentData = data;
         io.to('teacher_' + data.exam_id).emit('student_status', { session_id: data.exam_session_id, name: data.student_name, status: 'online' });
         
@@ -1286,6 +1287,16 @@ io.on('connection', (socket) => {
         } catch (err) {
             console.error('Failed to save proctor log:', err);
         }
+    });
+
+    socket.on('instructor_warning', (data) => {
+        // data: { exam_session_id, message }
+        io.to('student_' + data.exam_session_id).emit('instructor_warning', { message: data.message });
+    });
+
+    socket.on('instructor_broadcast', (data) => {
+        // data: { exam_id, message }
+        io.to('exam_' + data.exam_id).emit('instructor_warning', { message: data.message });
     });
 
     socket.on('disconnect', () => {

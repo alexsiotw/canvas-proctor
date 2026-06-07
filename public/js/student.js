@@ -2,6 +2,16 @@ let examConfig = null;
 let sessionInfo = null;
 let activeVisualFlags = [];
 let socket = io();
+socket.on('instructor_warning', (data) => {
+    const overlay = document.getElementById('focus-violation-overlay');
+    if (overlay) {
+        overlay.querySelector('h1').innerText = "💬 Message from Instructor";
+        overlay.querySelector('h1').style.color = "var(--warning)";
+        overlay.querySelector('p').innerText = data.message;
+        overlay.querySelector('button').innerText = "I Acknowledge";
+        overlay.style.display = 'flex';
+    }
+});
 let mediaRecorder = null;
 let chunkIndex = 0;
 let finalStream = null;
