@@ -924,9 +924,7 @@ function showCreateExamModal(examId = null) {
 
         <!-- Lockdown Options -->
         <h4 style="margin: 24px 0 6px 0; font-family:'Outfit',sans-serif; font-size:14px; font-weight:700; color:var(--text-primary);">Lock Down Options</h4>
-        <p style="font-size:11px; color:var(--text-muted); margin-bottom: 12px;">Select all that apply</p>
-        
-        <div class="proctorio-grid">
+        <p style="font-size:11px; color:var(-        <div class="proctorio-grid">
             <div class="proctorio-card ${!exam || exam.require_fullscreen ? 'selected' : ''}" id="card-fs" onclick="toggleProctorioOption('chk-fs', 'card-fs')">
                 <div class="proctorio-check">✓</div>
                 <div class="proctorio-icon">🖥️</div>
@@ -939,7 +937,7 @@ function showCreateExamModal(examId = null) {
                 <div class="proctorio-check">✓</div>
                 <div class="proctorio-icon">🔒</div>
                 <div class="proctorio-title">Block Navigation</div>
-                <div style="font-size: 9px; color: var(--text-muted); margin-top: 4px;">Block tab switches / copy-paste</div>
+                <div style="font-size: 9px; color: var(--text-muted); margin-top: 4px;">Block right click / context menu</div>
                 <input type="checkbox" id="chk-rc" ${!exam || exam.disable_right_click ? 'checked' : ''} style="display:none;" />
             </div>
             
@@ -949,6 +947,22 @@ function showCreateExamModal(examId = null) {
                 <div class="proctorio-title">Safe Exam Browser</div>
                 <div style="font-size: 9px; color: var(--text-muted); margin-top: 4px;">Require SEB LTI app launch</div>
                 <input type="checkbox" id="chk-seb" ${exam && exam.require_seb ? 'checked' : ''} style="display:none;" />
+            </div>
+
+            <div class="proctorio-card ${exam && exam.disable_clipboard ? 'selected' : ''}" id="card-clipboard" onclick="toggleProctorioOption('chk-clipboard', 'card-clipboard')">
+                <div class="proctorio-check">✓</div>
+                <div class="proctorio-icon">📋</div>
+                <div class="proctorio-title">Disable Clipboard</div>
+                <div style="font-size: 9px; color: var(--text-muted); margin-top: 4px;">Block copy, cut, and paste</div>
+                <input type="checkbox" id="chk-clipboard" ${exam && exam.disable_clipboard ? 'checked' : ''} style="display:none;" />
+            </div>
+
+            <div class="proctorio-card ${exam && exam.disable_printing ? 'selected' : ''}" id="card-printing" onclick="toggleProctorioOption('chk-printing', 'card-printing')">
+                <div class="proctorio-check">✓</div>
+                <div class="proctorio-icon">🖨️</div>
+                <div class="proctorio-title">Disable Printing</div>
+                <div style="font-size: 9px; color: var(--text-muted); margin-top: 4px;">Block and hide printing</div>
+                <input type="checkbox" id="chk-printing" ${exam && exam.disable_printing ? 'checked' : ''} style="display:none;" />
             </div>
         </div>
 
@@ -961,7 +975,7 @@ function showCreateExamModal(examId = null) {
     document.getElementById('modal-content').innerHTML = html;
     document.getElementById('modal-overlay').classList.add('active');
 }
-
+ 
 function toggleProctorioOption(checkboxId, cardId) {
     const chk = document.getElementById(checkboxId);
     const card = document.getElementById(cardId);
@@ -974,7 +988,7 @@ function toggleProctorioOption(checkboxId, cardId) {
         }
     }
 }
-
+ 
 async function saveExam(examId = null) {
     const payload = {
         title: document.getElementById('exam-title').value,
@@ -988,7 +1002,9 @@ async function saveExam(examId = null) {
         require_screen: document.getElementById('chk-screen').checked,
         disable_right_click: document.getElementById('chk-rc').checked,
         require_fullscreen: document.getElementById('chk-fs').checked,
-        require_seb: document.getElementById('chk-seb').checked
+        require_seb: document.getElementById('chk-seb').checked,
+        disable_clipboard: document.getElementById('chk-clipboard').checked,
+        disable_printing: document.getElementById('chk-printing').checked
     };
 
     if(!payload.title || !payload.canvas_quiz_url) return alert('Fill all fields');

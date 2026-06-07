@@ -613,13 +613,57 @@ async function startMainExamSession() {
             }
         }
         
+        if (examConfig.disable_clipboard) {
+            document.addEventListener('copy', e => {
+                e.preventDefault();
+                showToast('Copying text is disabled during this secure proctored exam.');
+            });
+            document.addEventListener('cut', e => {
+                e.preventDefault();
+                showToast('Cutting text is disabled during this secure proctored exam.');
+            });
+            document.addEventListener('paste', e => {
+                e.preventDefault();
+                showToast('Pasting text is disabled during this secure proctored exam.');
+            });
+        }
+
+        if (examConfig.disable_printing) {
+            const style = document.createElement('style');
+            style.textContent = `@media print { body, iframe, #quiz-iframe { display: none !important; } }`;
+            document.head.appendChild(style);
+            
+            window.addEventListener('beforeprint', e => {
+                e.preventDefault();
+                showToast('Printing is disabled during this secure proctored exam.');
+            });
+            
+            document.addEventListener('keydown', e => {
+                if ((e.ctrlKey || e.metaKey) && e.key === 'p') {
+                    e.preventDefault();
+                    showToast('Printing is disabled during this secure proctored exam.');
+                }
+            });
+        }
+
         let quizUrl = examConfig.canvas_quiz_url;
         if (quizUrl.includes('?')) {
             quizUrl += "&secure_proctor=canvas-proctor-shared-secret-key-998877";
         } else {
             quizUrl += "?secure_proctor=canvas-proctor-shared-secret-key-998877";
         }
-        document.getElementById('quiz-iframe').src = quizUrl;
+        
+        const iframe = document.getElementById('quiz-iframe');
+        iframe.onload = () => {
+            console.log("[Proctor] Quiz iframe loaded, sending security config postMessage...");
+            iframe.contentWindow.postMessage({
+                type: 'proctor_config',
+                disable_right_click: examConfig.disable_right_click,
+                disable_clipboard: examConfig.disable_clipboard,
+                disable_printing: examConfig.disable_printing
+            }, '*');
+        };
+        iframe.src = quizUrl;
 
         setupFocusTracking();
 

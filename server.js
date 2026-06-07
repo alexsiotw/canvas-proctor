@@ -528,12 +528,12 @@ app.get('/api/exams', requireInstructor, async (req, res) => {
 app.post('/api/exams', requireInstructor, async (req, res) => {
     try {
         const { canvasCourseId } = req.session.lti;
-        const { title, canvas_quiz_url, require_mic, require_camera, require_screen, disable_right_click, require_fullscreen, require_seb, max_attempts, exam_code, max_violations, canvas_quiz_password } = req.body;
+        const { title, canvas_quiz_url, require_mic, require_camera, require_screen, disable_right_click, require_fullscreen, require_seb, max_attempts, exam_code, max_violations, canvas_quiz_password, disable_clipboard, disable_printing } = req.body;
         
         const result = await pool.query(`
-            INSERT INTO exams (canvas_course_id, title, canvas_quiz_url, require_mic, require_camera, require_screen, disable_right_click, require_fullscreen, require_seb, max_attempts, exam_code, max_violations, canvas_quiz_password, is_open)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, false) RETURNING *
-        `, [canvasCourseId, title, canvas_quiz_url, require_mic, require_camera, require_screen, disable_right_click, require_fullscreen, require_seb || false, max_attempts || 1, exam_code, max_violations || 0, canvas_quiz_password || '']);
+            INSERT INTO exams (canvas_course_id, title, canvas_quiz_url, require_mic, require_camera, require_screen, disable_right_click, require_fullscreen, require_seb, max_attempts, exam_code, max_violations, canvas_quiz_password, disable_clipboard, disable_printing, is_open)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, false) RETURNING *
+        `, [canvasCourseId, title, canvas_quiz_url, require_mic, require_camera, require_screen, disable_right_click, require_fullscreen, require_seb || false, max_attempts || 1, exam_code, max_violations || 0, canvas_quiz_password || '', disable_clipboard || false, disable_printing || false]);
         
         // Enable proctor mode requirements on the Canvas quiz itself
         setCanvasQuizProctorMode(req.session.lti, canvas_quiz_url, true);
@@ -615,7 +615,7 @@ app.patch('/api/exams/:id', requireInstructor, async (req, res) => {
             title, canvas_quiz_url, exam_code, max_attempts,
             require_camera, require_mic, require_screen,
             disable_right_click, require_fullscreen, require_seb,
-            max_violations, canvas_quiz_password
+            max_violations, canvas_quiz_password, disable_clipboard, disable_printing
         } = req.body;
 
         // Retrieve old quiz URL to handle changes
@@ -629,14 +629,17 @@ app.patch('/api/exams/:id', requireInstructor, async (req, res) => {
                 title = $1, canvas_quiz_url = $2, exam_code = $3, max_attempts = $4,
                 require_camera = $5, require_mic = $6, require_screen = $7,
                 disable_right_click = $8, require_fullscreen = $9, require_seb = $10,
-                max_violations = $11, canvas_quiz_password = $12, updated_at = NOW()
-            WHERE id = $13 AND (canvas_course_id = $14 OR canvas_course_id = $15)
+                max_violations = $11, canvas_quiz_password = $12, 
+                disable_clipboard = $13, disable_printing = $14, updated_at = NOW()
+            WHERE id = $15 AND (canvas_course_id = $16 OR canvas_course_id = $17)
             RETURNING *
         `, [
             title, canvas_quiz_url, exam_code, max_attempts,
             require_camera, require_mic, require_screen,
             disable_right_click, require_fullscreen, require_seb,
-            max_violations || 0, canvas_quiz_password || '', id, canvasCourseId, alternativeCourseId || ''
+            max_violations || 0, canvas_quiz_password || '', 
+            disable_clipboard || false, disable_printing || false,
+            id, canvasCourseId, alternativeCourseId || ''
         ]);
 
         if (result.rows.length === 0) return res.status(404).json({ error: 'Exam not found' });
