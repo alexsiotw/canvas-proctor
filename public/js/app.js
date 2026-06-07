@@ -145,10 +145,33 @@ async function checkActivePlacement() {
     }
 }
 
+let canvasQuizzes = [];
+
 async function loadExams() {
     await checkActivePlacement();
-    const res = await apiFetch('/api/exams');
-    exams = await res.json();
+    
+    // Fetch exams
+    try {
+        const res = await apiFetch('/api/exams');
+        exams = await res.json();
+    } catch (err) {
+        console.error("Failed to load exams", err);
+    }
+    
+    // Fetch Canvas quizzes
+    try {
+        const res = await apiFetch('/api/canvas-quizzes');
+        if (res.ok) {
+            canvasQuizzes = await res.json();
+        } else {
+            console.warn("Canvas quizzes fetch failed, falling back to mock quizzes");
+            canvasQuizzes = [];
+        }
+    } catch (err) {
+        console.error("Failed to fetch Canvas quizzes, falling back to mock quizzes", err);
+        canvasQuizzes = [];
+    }
+    
     renderExams();
 }
 
@@ -198,7 +221,7 @@ function enableQuizProctoring(title, quizUrl) {
 
 function renderExams() {
     const content = document.getElementById('content');
-    const quizzes = getCourseQuizzes();
+    const quizzes = canvasQuizzes.length > 0 ? canvasQuizzes : getCourseQuizzes();
     
     let tbodyHtml = '';
     quizzes.forEach(q => {

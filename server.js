@@ -359,6 +359,107 @@ app.post('/api/verify-passcode', (req, res) => {
     res.status(400).json({ error: 'Incorrect passcode' });
 });
 
+// Helper to retrieve Canvas API credentials
+async function getCanvasCredentials(ltiSession) {
+    const alternativeId = ltiSession.alternativeCourseId || '1';
+    const contextId = ltiSession.canvasCourseId;
+    const { Pool: PgPool } = require('pg');
+    
+    // Attempt to connect to the attendance database to fetch the token dynamically
+    let attendanceDbUrl = process.env.DATABASE_URL;
+    try {
+        const parsedUrl = new URL(process.env.DATABASE_URL);
+        parsedUrl.pathname = '/attendance';
+        attendanceDbUrl = parsedUrl.toString();
+    } catch (err) {
+        console.warn('Failed to parse DATABASE_URL with URL constructor:', err.message);
+        attendanceDbUrl = process.env.DATABASE_URL.replace(/\/postgres$/, '/attendance');
+    }
+    const attendancePool = new PgPool({
+        connectionString: attendanceDbUrl,
+        ssl: { rejectUnauthorized: false }
+    });
+    
+    try {
+        const result = await attendancePool.query(
+            'SELECT canvas_api_token, canvas_api_url FROM courses WHERE canvas_course_id = $1 OR canvas_course_id = $2 LIMIT 1',
+            [alternativeId, contextId]
+        );
+        if (result.rows.length > 0 && result.rows[0].canvas_api_token) {
+            return result.rows[0];
+        }
+    } catch (err) {
+        console.warn('Failed to query attendance DB for Canvas token (normal if running locally):', err.message);
+    } finally {
+        await attendancePool.end();
+    }
+    
+    // Fallback default Canvas credentials for testing and development
+    return {
+        canvas_api_url: 'https://canvas.siotw.net/api/v1',
+        canvas_api_token: '7VYaRtuTa9rU3k9uGwyrZWexaNYuyRKARu7CHLLyW7t22acEBM8WDyHh3Nervx2P'
+    };
+}
+
+// API: Fetch Canvas Quizzes (Teacher)
+app.get('/api/canvas-quizzes', requireInstructor, async (req, res) => {
+    try {
+        const ltiSession = req.session.lti;
+        if (!ltiSession) {
+            return res.status(401).json({ error: 'Session not authenticated' });
+        }
+        
+        const credentials = await getCanvasCredentials(ltiSession);
+        if (!credentials || !credentials.canvas_api_token) {
+            return res.status(400).json({ error: 'Canvas API token is missing.' });
+        }
+        
+        const courseId = ltiSession.alternativeCourseId || '1';
+        const url = `${credentials.canvas_api_url}/courses/${courseId}/quizzes`;
+        
+        const fetchRes = await fetch(url, {
+            headers: { Authorization: `Bearer ${credentials.canvas_api_token}` }
+        });
+        
+        if (!fetchRes.ok) {
+            const errText = await fetchRes.text();
+            throw new Error(`Canvas API responded with status ${fetchRes.status}: ${errText}`);
+        }
+        
+        const quizzes = await fetchRes.json();
+        
+        const formatted = quizzes.map(q => {
+            let typeLabel = "Classic Quiz";
+            if (q.quiz_type === "survey" || q.quiz_type === "graded_survey") {
+                typeLabel = "Survey";
+            } else if (q.quiz_type === "practice_quiz") {
+                typeLabel = "Practice Quiz";
+            } else if (q.quiz_type === "assignment") {
+                typeLabel = "Classic Quiz";
+            }
+            if (q.title && q.title.toLowerCase().includes('new quiz')) {
+                typeLabel = "New Quiz";
+            }
+            
+            const dueAt = q.due_at ? new Date(q.due_at).toLocaleString() : 'No due date';
+            
+            return {
+                id: q.id,
+                title: q.title,
+                type: typeLabel,
+                start_date: q.unlock_at ? new Date(q.unlock_at).toLocaleString() : 'Immediately',
+                end_date: dueAt,
+                quiz_url: q.html_url
+            };
+        });
+        
+        res.json(formatted);
+    } catch (err) {
+        console.error('Failed to fetch quizzes:', err);
+        res.status(500).json({ error: err.message });
+    }
+});
+
 // API: Setup / Get Exams (Teacher)
 app.get('/api/exams', requireInstructor, async (req, res) => {
     try {
