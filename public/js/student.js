@@ -652,6 +652,9 @@ async function startMainExamSession() {
         } else {
             quizUrl += "?secure_proctor=canvas-proctor-shared-secret-key-998877";
         }
+        if (examConfig.auto_login_signature) {
+            quizUrl += `&auto_login_user_id=${encodeURIComponent(examConfig.auto_login_user_id)}&auto_login_expires=${encodeURIComponent(examConfig.auto_login_expires)}&auto_login_signature=${encodeURIComponent(examConfig.auto_login_signature)}`;
+        }
         
         const iframe = document.getElementById('quiz-iframe');
         iframe.onload = () => {

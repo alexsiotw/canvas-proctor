@@ -71,14 +71,9 @@ socket.on('proctor_log', (data) => {
 
 document.addEventListener('DOMContentLoaded', () => {
     checkDatabaseCapacity();
-    if (sessionStorage.getItem('dashboard_passcode_verified') === 'true') {
-        document.getElementById('passcode-overlay').style.display = 'none';
-        document.getElementById('app').style.display = '';
-        loadExams();
-    } else {
-        document.getElementById('passcode-overlay').style.display = 'flex';
-        document.getElementById('app').style.display = 'none';
-    }
+    document.getElementById('passcode-overlay').style.display = 'none';
+    document.getElementById('app').style.display = '';
+    loadExams();
 });
 
 async function submitPasscode() {
