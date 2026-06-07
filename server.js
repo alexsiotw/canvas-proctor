@@ -401,6 +401,51 @@ async function getCanvasCredentials(ltiSession) {
     };
 }
 
+// Helper to update require_lockdown_browser setting on Canvas quiz via API
+async function setCanvasQuizProctorMode(ltiSession, canvasQuizUrl, requireProctorMode) {
+    try {
+        const credentials = await getCanvasCredentials(ltiSession);
+        if (!credentials || !credentials.canvas_api_token) {
+            console.error('Canvas API credentials missing in setCanvasQuizProctorMode');
+            return;
+        }
+
+        // Extract quiz ID from url
+        const match = canvasQuizUrl.match(/\/quizzes\/(\d+)/);
+        if (!match) {
+            console.error('Could not extract quiz ID from URL:', canvasQuizUrl);
+            return;
+        }
+        const quizId = match[1];
+        const courseId = ltiSession.alternativeCourseId || '1';
+        const url = `${credentials.canvas_api_url}/courses/${courseId}/quizzes/${quizId}`;
+
+        console.log(`Setting Canvas quiz ${quizId} proctor mode to ${requireProctorMode} via API...`);
+        const fetchRes = await fetch(url, {
+            method: 'PUT',
+            headers: {
+                'Authorization': `Bearer ${credentials.canvas_api_token}`,
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+                quiz: {
+                    require_lockdown_browser: requireProctorMode,
+                    require_lockdown_browser_for_results: requireProctorMode
+                }
+            })
+        });
+
+        if (!fetchRes.ok) {
+            const errText = await fetchRes.text();
+            console.error(`Failed to update Canvas quiz proctor mode: ${fetchRes.status} - ${errText}`);
+        } else {
+            console.log(`Canvas quiz ${quizId} proctor mode updated successfully to ${requireProctorMode}.`);
+        }
+    } catch (err) {
+        console.error('Error in setCanvasQuizProctorMode:', err);
+    }
+}
+
 // API: Fetch Canvas Quizzes (Teacher)
 app.get('/api/canvas-quizzes', requireInstructor, async (req, res) => {
     try {
@@ -490,6 +535,9 @@ app.post('/api/exams', requireInstructor, async (req, res) => {
             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, false) RETURNING *
         `, [canvasCourseId, title, canvas_quiz_url, require_mic, require_camera, require_screen, disable_right_click, require_fullscreen, require_seb || false, max_attempts || 1, exam_code, max_violations || 0, canvas_quiz_password || '']);
         
+        // Enable proctor mode requirements on the Canvas quiz itself
+        setCanvasQuizProctorMode(req.session.lti, canvas_quiz_url, true);
+        
         res.json(result.rows[0]);
     } catch (err) {
         res.status(500).json({ error: err.message });
@@ -500,7 +548,21 @@ app.post('/api/exams', requireInstructor, async (req, res) => {
 app.delete('/api/exams/:id', requireInstructor, async (req, res) => {
     try {
         const { canvasCourseId, alternativeCourseId } = req.session.lti;
-        await pool.query('DELETE FROM exams WHERE id = $1 AND (canvas_course_id = $2 OR canvas_course_id = $3)', [req.params.id, canvasCourseId, alternativeCourseId || '']);
+        
+        // Fetch exam first to retrieve the quiz URL to disable proctor mode requirements
+        const examResult = await pool.query(
+            'SELECT canvas_quiz_url FROM exams WHERE id = $1 AND (canvas_course_id = $2 OR canvas_course_id = $3)',
+            [req.params.id, canvasCourseId, alternativeCourseId || '']
+        );
+        
+        if (examResult.rows.length > 0) {
+            const quizUrl = examResult.rows[0].canvas_quiz_url;
+            await pool.query('DELETE FROM exams WHERE id = $1 AND (canvas_course_id = $2 OR canvas_course_id = $3)', [req.params.id, canvasCourseId, alternativeCourseId || '']);
+            
+            // Turn off proctor mode requirements on the Canvas quiz itself
+            setCanvasQuizProctorMode(req.session.lti, quizUrl, false);
+        }
+        
         res.json({ success: true });
     } catch (err) {
         res.status(500).json({ error: err.message });
@@ -556,6 +618,12 @@ app.patch('/api/exams/:id', requireInstructor, async (req, res) => {
             max_violations, canvas_quiz_password
         } = req.body;
 
+        // Retrieve old quiz URL to handle changes
+        const oldResult = await pool.query(
+            'SELECT canvas_quiz_url FROM exams WHERE id = $1 AND (canvas_course_id = $2 OR canvas_course_id = $3)',
+            [id, canvasCourseId, alternativeCourseId || '']
+        );
+
         const result = await pool.query(`
             UPDATE exams SET 
                 title = $1, canvas_quiz_url = $2, exam_code = $3, max_attempts = $4,
@@ -572,6 +640,17 @@ app.patch('/api/exams/:id', requireInstructor, async (req, res) => {
         ]);
 
         if (result.rows.length === 0) return res.status(404).json({ error: 'Exam not found' });
+
+        // Update Canvas settings
+        if (canvas_quiz_url) {
+            setCanvasQuizProctorMode(req.session.lti, canvas_quiz_url, true);
+            
+            // If the quiz URL changed, disable it on the previous quiz
+            if (oldResult.rows.length > 0 && oldResult.rows[0].canvas_quiz_url !== canvas_quiz_url) {
+                setCanvasQuizProctorMode(req.session.lti, oldResult.rows[0].canvas_quiz_url, false);
+            }
+        }
+
         res.json(result.rows[0]);
     } catch (err) {
         res.status(500).json({ error: err.message });
