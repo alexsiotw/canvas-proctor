@@ -1015,7 +1015,7 @@ async function createCompositeTrack(screenStream, cameraStream) {
                 let max = 0;
                 for (let i = 0; i < dataArray.length; i++) if(dataArray[i] > max) max = dataArray[i];
                 volumeLevel = max;
-                requestAnimationFrame(updateVolume);
+                setTimeout(updateVolume, 100);
             }
             updateVolume();
         }
@@ -1113,10 +1113,10 @@ async function createCompositeTrack(screenStream, cameraStream) {
             alertY += 55;
         }
         
-        compositeAnimationId = requestAnimationFrame(draw);
+        compositeAnimationId = setTimeout(draw, 1000 / 15);
     }
     
-    compositeAnimationId = requestAnimationFrame(draw);
+    compositeAnimationId = setTimeout(draw, 1000 / 15);
     
     const canvasStream = canvas.captureStream(15); 
     const outputStream = new MediaStream([canvasStream.getVideoTracks()[0]]);
@@ -1238,7 +1238,7 @@ async function bootStudent() {
         }
     } catch(e){}
     
-    if (compositeAnimationId) cancelAnimationFrame(compositeAnimationId);
+    if (compositeAnimationId) clearTimeout(compositeAnimationId);
     compositeAnimationId = null;
     
     try {
@@ -1394,7 +1394,7 @@ async function endExam() {
             }
         } catch(e){}
 
-        if (compositeAnimationId) cancelAnimationFrame(compositeAnimationId);
+        if (compositeAnimationId) clearTimeout(compositeAnimationId);
         compositeAnimationId = null;
         
         try {
@@ -1481,7 +1481,7 @@ async function autoEndExamSession() {
             }
         } catch(e){}
 
-        if (compositeAnimationId) cancelAnimationFrame(compositeAnimationId);
+        if (compositeAnimationId) clearTimeout(compositeAnimationId);
         compositeAnimationId = null;
         
         try {
