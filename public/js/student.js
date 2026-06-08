@@ -22,6 +22,9 @@ let videoStream = null;
 let screenStream = null;
 let compositeAnimationId = null;
 let isExamCompleted = false;
+let talkingDetectionInterval = null;
+let talkingStartTimestamp = null;
+let isCurrentlyTalking = false;
 let urlParams = new URLSearchParams(window.location.search);
 let sessionToken = urlParams.get('token');
 let isSebParam = urlParams.get('seb') === 'true';
@@ -723,6 +726,9 @@ async function startProctoring() {
 
         setupFocusTracking();
         setupSimulatedAIProctoring();
+        if (localMicStream) {
+            setupAudioAnalysis(localMicStream);
+        }
         
         setInterval(sendSnapshot, 3000);
 
@@ -753,10 +759,7 @@ function showSEBBlocker() {
                 You are currently using a standard browser.
             </p>
             <div class="seb-info-box">
-                <h3>Unlocked Environment</h3>
-                <p>
-                    Clicking the button below will open the exam in a secure configuration with <strong>Multiple Tabs</strong> and <strong>New Windows</strong> enabled, allowing you to access approved resources like Google Meet.
-                </p>
+                <h3>Instructions</h3>
                 <ol>
                     <li>Ensure <strong>Safe Exam Browser</strong> is installed on this device.</li>
                     <li>Click <strong>Launch Securely in SEB</strong> below.</li>
@@ -1246,6 +1249,12 @@ function showToast(msg) {
 
 
 async function stopRecordingAndAwaitUploads() {
+    if (talkingDetectionInterval) {
+        clearInterval(talkingDetectionInterval);
+        talkingDetectionInterval = null;
+    }
+    isCurrentlyTalking = false;
+
     if (mediaRecorder && mediaRecorder.state !== 'inactive') {
         let stopped = false;
         mediaRecorder.addEventListener('stop', () => {
@@ -1469,10 +1478,93 @@ window.addEventListener('beforeunload', (event) => {
     }
 });
 
+function setupAudioAnalysis(stream) {
+    try {
+        if (!stream || stream.getAudioTracks().length === 0) return;
+        
+        const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        const analyser = audioCtx.createAnalyser();
+        const source = audioCtx.createMediaStreamSource(stream);
+        source.connect(analyser);
+        analyser.fftSize = 256;
+        const dataArray = new Uint8Array(analyser.frequencyBinCount);
+        
+        let consecutiveLoudFrames = 0;
+        let consecutiveQuietFrames = 0;
+        
+        talkingDetectionInterval = setInterval(() => {
+            if (isExamCompleted) {
+                clearInterval(talkingDetectionInterval);
+                return;
+            }
+            
+            if (audioCtx.state === 'suspended') {
+                audioCtx.resume();
+            }
+            
+            analyser.getByteFrequencyData(dataArray);
+            let max = 0;
+            for (let i = 0; i < dataArray.length; i++) {
+                if (dataArray[i] > max) max = dataArray[i];
+            }
+            
+            // Speech detection threshold (max amplitude > 45 indicates sound above background noise)
+            const threshold = 45;
+            if (max > threshold) {
+                consecutiveLoudFrames++;
+                consecutiveQuietFrames = 0;
+            } else {
+                consecutiveQuietFrames++;
+                consecutiveLoudFrames = 0;
+            }
+            
+            // Speech started
+            if (!isCurrentlyTalking && consecutiveLoudFrames >= 3) {
+                isCurrentlyTalking = true;
+                talkingStartTimestamp = new Date();
+                console.log("[Audio] Voice activity detected...");
+            }
+            
+            // Speech ended (must be quiet for 3 seconds / 6 frames)
+            if (isCurrentlyTalking && consecutiveQuietFrames >= 6) {
+                isCurrentlyTalking = false;
+                const duration = Math.round((new Date() - talkingStartTimestamp) / 1000) - 3;
+                const finalDuration = Math.max(1, duration);
+                const startTimeStr = talkingStartTimestamp.toLocaleTimeString();
+                logProctorEvent('audio_violation', `Talking/Voice detected starting at ${startTimeStr} (Duration: ${finalDuration}s)`);
+            }
+        }, 500);
+        
+    } catch (e) {
+        console.warn("[Audio] Failed to setup audio analysis:", e);
+    }
+}
+
 function setupSimulatedAIProctoring() {
-    if (!examConfig.require_camera && !examConfig.require_mic) return;
+    if (!examConfig.require_camera) return;
     
     console.log("[AI] Initializing Background AI behavior detector...");
+    
+    const eyeGazeAlerts = [
+        "AI Detection: Suspicious eye movement - looking repeatedly to the left (off-screen)",
+        "AI Detection: Suspicious eye movement - looking repeatedly to the right (off-screen)",
+        "AI Detection: Eye gaze deviation - looking down continuously (potential note reading)",
+        "AI Detection: Head turn detected - face turned away from the monitor for more than 7 seconds",
+        "AI Detection: Eye gaze deviation - looking upwards repeatedly"
+    ];
+
+    const deviceAlerts = [
+        "AI Detection: Mobile device detected - cell phone identified in hand/lap area",
+        "AI Detection: Unauthorized hardware - secondary screen/tablet detected in peripheral view",
+        "AI Detection: Smart device detected - smartwatch interactions flagged",
+        "AI Detection: Mobile device detected - smartphone camera reflection detected"
+    ];
+
+    const peopleAlerts = [
+        "AI Detection: Person detection - secondary face visible in webcam background",
+        "AI Detection: Frame anomaly - student fully left the webcam viewport",
+        "AI Detection: Multi-person flags - background movement/body outline detected"
+    ];
     
     const aiInterval = setInterval(() => {
         if (isExamCompleted) {
@@ -1480,37 +1572,22 @@ function setupSimulatedAIProctoring() {
             return;
         }
         
-        if (Math.random() < 0.08) {
-            const options = [];
-            
+        // Randomly trigger a simulated AI flag (12% chance every 45s)
+        if (Math.random() < 0.12) {
+            const categories = [];
             if (examConfig.require_camera) {
-                options.push({
-                    type: 'AI_GAZE',
-                    msg: 'AI Detection: Student looking down or away from screen for more than 5 seconds'
-                });
-                options.push({
-                    type: 'AI_DEVICE',
-                    msg: 'AI Detection: High-confidence mobile phone/device detected in webcam frame'
-                });
-                options.push({
-                    type: 'AI_PEOPLE',
-                    msg: 'AI Detection: Secondary face or silhouette detected in webcam viewport'
-                });
+                categories.push({ type: 'AI_GAZE', pool: eyeGazeAlerts });
+                categories.push({ type: 'AI_DEVICE', pool: deviceAlerts });
+                categories.push({ type: 'AI_PEOPLE', pool: peopleAlerts });
             }
             
-            if (examConfig.require_mic) {
-                options.push({
-                    type: 'AI_AUDIO',
-                    msg: 'AI Detection: Human speech patterns or background voices detected near microphone'
-                });
-            }
-            
-            if (options.length > 0) {
-                const choice = options[Math.floor(Math.random() * options.length)];
-                logProctorEvent(choice.type, choice.msg);
+            if (categories.length > 0) {
+                const category = categories[Math.floor(Math.random() * categories.length)];
+                const msg = category.pool[Math.floor(Math.random() * category.pool.length)];
+                logProctorEvent(category.type, msg);
             }
         }
-    }, 60000);
+    }, 45000);
 }
 
 function openQuizInNewTabFallback() {
