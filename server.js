@@ -1084,46 +1084,14 @@ async function assembleAndUploadSessionVideo(exam_session_id, total_chunks) {
         const rawStats = fs.statSync(rawWebmPath);
         console.log(`[Assemble] Raw compiled video path: ${rawWebmPath}, total size: ${rawStats.size} bytes`);
 
-        const tempOutFile = path.join(os.tmpdir(), `session-${exam_session_id}.mp4`);
-        let finalMimeType = 'video/mp4';
+        const finalExt = isWebm ? 'webm' : 'mp4';
+        const tempOutFile = path.join(os.tmpdir(), `session-${exam_session_id}.${finalExt}`);
 
-        if (isWebm) {
-            // Transcode WebM to MP4 using ffmpeg-static
-            console.log(`Transcoding WebM to MP4 for session ${exam_session_id}...`);
-            try {
-                await new Promise((resolve, reject) => {
-                    ffmpeg(rawWebmPath)
-                        .outputOptions('-c:v libx264')
-                        .outputOptions('-pix_fmt yuv420p')
-                        .outputOptions('-preset superfast')
-                        .outputOptions('-c:a aac')
-                        .on('start', (commandLine) => {
-                            console.log(`Spawned FFmpeg with command: ${commandLine}`);
-                        })
-                        .on('stderr', (stderrLine) => {
-                            console.log(`[FFmpeg STDERR] ${stderrLine}`);
-                        })
-                        .on('end', resolve)
-                        .on('error', reject)
-                        .save(tempOutFile);
-                });
-                console.log(`Successfully transcoded to MP4 for session ${exam_session_id}`);
-                if (fs.existsSync(rawWebmPath)) fs.unlinkSync(rawWebmPath);
-            } catch (transcodeErr) {
-                console.error(`Transcoding failed for session ${exam_session_id}, falling back to WebM:`, transcodeErr.message);
-                // Fallback: Copy raw WebM to output path but keep .webm extension in Drive filename
-                const fallbackOutFile = path.join(os.tmpdir(), `session-${exam_session_id}.webm`);
-                fs.copyFileSync(rawWebmPath, fallbackOutFile);
-                if (fs.existsSync(rawWebmPath)) fs.unlinkSync(rawWebmPath);
-                finalMimeType = 'video/webm';
-            }
-        } else {
-            // If already MP4, just rename/copy
-            fs.renameSync(rawWebmPath, tempOutFile);
-        }
+        console.log(`Uploading raw video directly for session ${exam_session_id} to bypass CPU-heavy transcoding...`);
+        fs.renameSync(rawWebmPath, tempOutFile);
 
-        const finalExt = finalMimeType === 'video/mp4' ? 'mp4' : 'webm';
-        const finalTempFile = finalExt === 'mp4' ? tempOutFile : path.join(os.tmpdir(), `session-${exam_session_id}.webm`);
+        const finalMimeType = mimeTypeFromDb;
+        const finalTempFile = tempOutFile;
         const driveFileName = `${studentName}_${examTitle}_Session_${exam_session_id}_Attempt_${attempt}.${finalExt}`;
 
         console.log(`Uploading ${driveFileName} to Google Drive...`);
