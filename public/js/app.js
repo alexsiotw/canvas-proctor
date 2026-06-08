@@ -53,7 +53,7 @@ socket.on('proctor_log', (data) => {
         const s = liveStudents[data.exam_session_id];
         if (!s.flagCount) s.flagCount = 0;
         
-        const isFlag = ['tab_blur', 'window_blur', 'fullscreen_exit', 'error', 'fail'].includes(data.event_type) || data.event_type.startsWith('AI_');
+        const isFlag = ['tab_blur', 'window_blur', 'fullscreen_exit', 'audio_violation', 'error', 'fail'].includes(data.event_type) || data.event_type.startsWith('AI_');
         if (isFlag) {
             s.flagCount++;
             s.hasFlags = true;
@@ -500,12 +500,13 @@ function getRiskInfo(session) {
     const logs = Array.isArray(session.logs) ? session.logs : [];
     const focusWarnings = logs.filter(l => ['tab_blur', 'window_blur', 'fullscreen_exit'].includes(l.event_type)).length;
     const aiWarnings = logs.filter(l => l.event_type.startsWith('AI_')).length;
-    const totalWarnings = focusWarnings + aiWarnings;
+    const audioWarnings = logs.filter(l => l.event_type === 'audio_violation').length;
+    const totalWarnings = focusWarnings + aiWarnings + audioWarnings;
 
     let category = 'low';
     let html = '<span class="badge badge-success">🟢 Low Risk</span>';
 
-    if (totalWarnings > 2 || aiWarnings > 0) {
+    if (totalWarnings > 2 || aiWarnings > 0 || audioWarnings > 0) {
         category = 'high';
         html = `<span class="badge badge-danger" style="box-shadow: 0 0 8px rgba(239, 68, 68, 0.2);">🔴 High Risk (${totalWarnings} flags)</span>`;
     } else if (totalWarnings > 0) {
@@ -513,7 +514,7 @@ function getRiskInfo(session) {
         html = `<span class="badge badge-warning">🟡 Mod Risk (${totalWarnings} flags)</span>`;
     }
 
-    return { category, html, totalWarnings, focusWarnings, aiWarnings };
+    return { category, html, totalWarnings, focusWarnings, aiWarnings, audioWarnings };
 }
 
 function filterReports(examId) {
@@ -596,7 +597,7 @@ async function fetchReportData(examId) {
         
         sessions.forEach(s => {
             const logs = s.logs || [];
-            const studentFlags = logs.filter(l => ['tab_blur', 'window_blur', 'fullscreen_exit', 'error', 'fail'].includes(l.event_type)).length;
+            const studentFlags = logs.filter(l => ['tab_blur', 'window_blur', 'fullscreen_exit', 'audio_violation', 'error', 'fail'].includes(l.event_type) || l.event_type.startsWith('AI_')).length;
             totalViolationsVal += studentFlags;
             if (studentFlags > 0) flaggedAttemptsCount++;
         });
@@ -685,12 +686,12 @@ function viewStudentReport(sessionId, examId) {
         // Filter by severity
         if (activeLogFilterSeverity === 'flag') {
             filteredLogs = filteredLogs.filter(l => 
-                ['tab_blur', 'window_blur', 'fullscreen_exit', 'error', 'fail'].includes(l.event_type) || 
+                ['tab_blur', 'window_blur', 'fullscreen_exit', 'audio_violation', 'error', 'fail'].includes(l.event_type) || 
                 l.event_type.startsWith('AI_')
             );
         } else if (activeLogFilterSeverity === 'info') {
             filteredLogs = filteredLogs.filter(l => 
-                !['tab_blur', 'window_blur', 'fullscreen_exit', 'error', 'fail'].includes(l.event_type) && 
+                !['tab_blur', 'window_blur', 'fullscreen_exit', 'audio_violation', 'error', 'fail'].includes(l.event_type) && 
                 !l.event_type.startsWith('AI_')
             );
         }
@@ -698,9 +699,9 @@ function viewStudentReport(sessionId, examId) {
         let logsHtml = '';
         filteredLogs.forEach(l => {
             const isAI = l.event_type.startsWith('AI_');
-            const isDanger = ['tab_blur', 'window_blur', 'fullscreen_exit', 'booted', 'error', 'fail'].includes(l.event_type) || isAI;
+            const isDanger = ['tab_blur', 'window_blur', 'fullscreen_exit', 'audio_violation', 'booted', 'error', 'fail'].includes(l.event_type) || isAI;
             const badgeColor = isAI ? 'badge-warning' : (isDanger ? 'badge-danger' : 'badge-success');
-            const badgeLabel = isAI ? '🤖 AI DETECTION' : l.event_type.toUpperCase();
+            const badgeLabel = l.event_type === 'audio_violation' ? '🗣️ AUDIO VIOLATION' : (isAI ? '🤖 AI DETECTION' : l.event_type.toUpperCase());
             
             logsHtml += `
                 <li style="margin-bottom: 12px; border-bottom: 1px solid var(--border); padding-bottom: 10px; display: flex; flex-direction: column; gap: 4px;">

@@ -1459,19 +1459,19 @@ app.get('/api/seb/config/:token/:filename?', async (req, res) => {
 	<key>allowDisplayMirroring</key>
 	<true/>
 	<key>browserWindowAllowNewTab</key>
-	<true/>
-	<key>browserWindowAllowNewWindow</key>
-	<true/>
-	<key>browserWindowShowAddressBar</key>
-	<true/>
-	<key>browserWindowShowNavigationButtons</key>
-	<true/>
-	<key>newBrowserWindowByLinkPolicy</key>
-	<integer>1</integer>
-	<key>prohibitMultitasking</key>
 	<false/>
-	<key>showTaskBar</key>
+	<key>browserWindowAllowNewWindow</key>
+	<false/>
+	<key>browserWindowShowAddressBar</key>
+	<false/>
+	<key>browserWindowShowNavigationButtons</key>
+	<false/>
+	<key>newBrowserWindowByLinkPolicy</key>
+	<integer>0</integer>
+	<key>prohibitMultitasking</key>
 	<true/>
+	<key>showTaskBar</key>
+	<false/>
 	<key>startURL</key>
 	<string>${startUrl}</string>
 	<key>quitURL</key>

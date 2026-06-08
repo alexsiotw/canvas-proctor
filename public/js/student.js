@@ -1550,20 +1550,31 @@ function setupSimulatedAIProctoring() {
         "AI Detection: Suspicious eye movement - looking repeatedly to the right (off-screen)",
         "AI Detection: Eye gaze deviation - looking down continuously (potential note reading)",
         "AI Detection: Head turn detected - face turned away from the monitor for more than 7 seconds",
-        "AI Detection: Eye gaze deviation - looking upwards repeatedly"
+        "AI Detection: Eye gaze deviation - looking upwards repeatedly",
+        "AI Detection: Eye gaze deviation - looking down-right repeatedly (suspected off-screen device)",
+        "AI Detection: Eye gaze deviation - looking down-left repeatedly (suspected notes/device)",
+        "AI Detection: Head turning anomaly - gaze shifted off-screen to the right for 12 seconds",
+        "AI Detection: Head turning anomaly - gaze shifted off-screen to the left for 9 seconds",
+        "AI Detection: Eye gaze deviation - looking down continuously at lap area",
+        "AI Detection: Gaze shift - student looking upwards and to the side (potential second screen/notes)"
     ];
 
     const deviceAlerts = [
         "AI Detection: Mobile device detected - cell phone identified in hand/lap area",
         "AI Detection: Unauthorized hardware - secondary screen/tablet detected in peripheral view",
         "AI Detection: Smart device detected - smartwatch interactions flagged",
-        "AI Detection: Mobile device detected - smartphone camera reflection detected"
+        "AI Detection: Mobile device detected - smartphone camera reflection detected",
+        "AI Detection: Mobile device detected - smartphone face-up on desk detected in camera peripheral",
+        "AI Detection: Screen reflection - phone display glow/reflection detected on glasses/eyes",
+        "AI Detection: Unauthorized device - tablet/secondary monitor detected on left peripheral",
+        "AI Detection: Audio accessory - wireless earbud/headphones detected in ear"
     ];
 
     const peopleAlerts = [
         "AI Detection: Person detection - secondary face visible in webcam background",
         "AI Detection: Frame anomaly - student fully left the webcam viewport",
-        "AI Detection: Multi-person flags - background movement/body outline detected"
+        "AI Detection: Multi-person flags - background movement/body outline detected",
+        "AI Detection: Anomaly - background shadows or secondary body outlines detected"
     ];
     
     const aiInterval = setInterval(() => {
