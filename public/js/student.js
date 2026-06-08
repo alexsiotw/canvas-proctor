@@ -1491,6 +1491,7 @@ function setupAudioAnalysis(stream) {
         
         let consecutiveLoudFrames = 0;
         let consecutiveQuietFrames = 0;
+        const threshold = 30; // Increased sensitivity (was 45)
         
         talkingDetectionInterval = setInterval(() => {
             if (isExamCompleted) {
@@ -1508,8 +1509,6 @@ function setupAudioAnalysis(stream) {
                 if (dataArray[i] > max) max = dataArray[i];
             }
             
-            // Speech detection threshold (max amplitude > 45 indicates sound above background noise)
-            const threshold = 45;
             if (max > threshold) {
                 consecutiveLoudFrames++;
                 consecutiveQuietFrames = 0;
@@ -1518,22 +1517,22 @@ function setupAudioAnalysis(stream) {
                 consecutiveLoudFrames = 0;
             }
             
-            // Speech started
-            if (!isCurrentlyTalking && consecutiveLoudFrames >= 3) {
+            // Speech started: 2 consecutive frames at 100ms interval (200ms)
+            if (!isCurrentlyTalking && consecutiveLoudFrames >= 2) {
                 isCurrentlyTalking = true;
                 talkingStartTimestamp = new Date();
-                console.log("[Audio] Voice activity detected...");
+                console.log(`[Audio] Voice activity detected (max amplitude: ${max})...`);
             }
             
-            // Speech ended (must be quiet for 3 seconds / 6 frames)
-            if (isCurrentlyTalking && consecutiveQuietFrames >= 6) {
+            // Speech ended: 20 consecutive quiet frames (2.0 seconds of silence)
+            if (isCurrentlyTalking && consecutiveQuietFrames >= 20) {
                 isCurrentlyTalking = false;
-                const duration = Math.round((new Date() - talkingStartTimestamp) / 1000) - 3;
+                const duration = Math.round((new Date() - talkingStartTimestamp) / 1000) - 2;
                 const finalDuration = Math.max(1, duration);
                 const startTimeStr = talkingStartTimestamp.toLocaleTimeString();
                 logProctorEvent('audio_violation', `Talking/Voice detected starting at ${startTimeStr} (Duration: ${finalDuration}s)`);
             }
-        }, 500);
+        }, 100); // 100ms interval for high-resolution tracking
         
     } catch (e) {
         console.warn("[Audio] Failed to setup audio analysis:", e);
