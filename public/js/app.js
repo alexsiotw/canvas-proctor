@@ -439,9 +439,30 @@ function updateLiveGrid() {
 
     const grid = document.getElementById('live-grid');
     if(!grid) return;
-    grid.innerHTML = '';
 
-    Object.keys(liveStudents).forEach(sessionId => {
+    const sessionIds = Object.keys(liveStudents);
+    
+    if (sessionIds.length === 0) {
+        grid.innerHTML = '<div id="empty-grid-msg" style="color: var(--text-muted); font-size: 14px; grid-column:1/-1; padding:20px 0; text-align:center;">Live queue is currently empty. Waiting for students to authenticate...</div>';
+        const activeMetric = document.getElementById('stat-active-sessions');
+        if (activeMetric) activeMetric.innerText = 0;
+        return;
+    }
+
+    // Remove empty message if it exists
+    const emptyMsg = document.getElementById('empty-grid-msg');
+    if (emptyMsg) emptyMsg.remove();
+
+    // Clean up cards for student sessions that are no longer active
+    const cards = grid.querySelectorAll('.student-live-card');
+    cards.forEach(card => {
+        const id = card.id.replace('student-card-', '');
+        if (!liveStudents[id]) {
+            card.remove();
+        }
+    });
+
+    sessionIds.forEach(sessionId => {
         const s = liveStudents[sessionId];
         const statusColor = s.status === 'online' ? 'var(--success)' : 'var(--text-muted)';
         
@@ -472,22 +493,65 @@ function updateLiveGrid() {
             </div>
         ` : '';
 
-        grid.innerHTML += `
-            <div class="card ${ringClass}" style="${cardStyle}">
+        let card = document.getElementById('student-card-' + sessionId);
+        if (!card) {
+            // Create a brand new card for this student
+            card = document.createElement('div');
+            card.id = 'student-card-' + sessionId;
+            card.className = `card student-live-card ${ringClass}`;
+            card.setAttribute('style', cardStyle);
+            card.innerHTML = `
                 <div style="display:flex; justify-content:space-between; margin-bottom:10px; align-items:center;">
                     <strong style="font-size: 14px; font-weight:600;">${s.name || 'Testing...'}</strong>
-                    <span style="width: 8px; height: 8px; background: ${statusColor}; border-radius: 50%; display:inline-block; box-shadow: 0 0 6px ${statusColor};"></span>
+                    <span class="status-dot" style="width: 8px; height: 8px; background: ${statusColor}; border-radius: 50%; display:inline-block; box-shadow: 0 0 6px ${statusColor};"></span>
                 </div>
-                ${content}
-                ${flagText}
-                ${warningBtn}
-            </div>
-        `;
+                <div class="card-screenshot-container">${content}</div>
+                <div class="card-flag-container">${flagText}</div>
+                <div class="card-button-container">${warningBtn}</div>
+            `;
+            grid.appendChild(card);
+        } else {
+            // Highly efficient in-place DOM patching
+            card.className = `card student-live-card ${ringClass}`;
+            card.setAttribute('style', cardStyle);
+            
+            const dot = card.querySelector('.status-dot');
+            if (dot) {
+                dot.style.background = statusColor;
+                dot.style.boxShadow = `0 0 6px ${statusColor}`;
+            }
+            
+            const screenshotContainer = card.querySelector('.card-screenshot-container');
+            if (screenshotContainer) {
+                const img = screenshotContainer.querySelector('img');
+                if (s.screenshot) {
+                    // Only update the image if the screenshot URL has changed to prevent browser image flickering/flashing
+                    if (!img || img.src !== s.screenshot) {
+                        screenshotContainer.innerHTML = content;
+                    }
+                } else {
+                    if (img || screenshotContainer.innerHTML === '') {
+                        screenshotContainer.innerHTML = content;
+                    }
+                }
+            }
+            
+            const flagContainer = card.querySelector('.card-flag-container');
+            if (flagContainer) {
+                // Only write if changed to prevent repaint cycles
+                if (flagContainer.innerHTML !== flagText) {
+                    flagContainer.innerHTML = flagText;
+                }
+            }
+            
+            const buttonContainer = card.querySelector('.card-button-container');
+            if (buttonContainer) {
+                if (buttonContainer.innerHTML !== warningBtn) {
+                    buttonContainer.innerHTML = warningBtn;
+                }
+            }
+        }
     });
-
-    if(Object.keys(liveStudents).length === 0) {
-        grid.innerHTML = '<div style="color: var(--text-muted); font-size: 14px; grid-column:1/-1; padding:20px 0; text-align:center;">Live queue is currently empty. Waiting for students to authenticate...</div>';
-    }
 
     // Refresh active count in metrics
     const activeVal = Object.keys(liveStudents).filter(id => liveStudents[id].status === 'online').length;
