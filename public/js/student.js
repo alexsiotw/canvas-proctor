@@ -1313,6 +1313,13 @@ function showToast(msg) {
 
 
 async function stopRecordingAndAwaitUploads() {
+    if (isCurrentlyTalking && talkingStartTimestamp) {
+        const duration = Math.round((new Date() - talkingStartTimestamp) / 1000);
+        const finalDuration = Math.max(1, duration);
+        const startTimeStr = talkingStartTimestamp.toLocaleTimeString();
+        logProctorEvent('audio_violation', `Talking/Voice detected starting at ${startTimeStr} (Duration: ${finalDuration}s)`);
+    }
+
     if (talkingDetectionInterval) {
         clearInterval(talkingDetectionInterval);
         talkingDetectionInterval = null;
