@@ -1084,13 +1084,45 @@ async function assembleAndUploadSessionVideo(exam_session_id, total_chunks) {
         const rawStats = fs.statSync(rawWebmPath);
         console.log(`[Assemble] Raw compiled video path: ${rawWebmPath}, total size: ${rawStats.size} bytes`);
 
-        const finalExt = isWebm ? 'webm' : 'mp4';
-        const tempOutFile = path.join(os.tmpdir(), `session-${exam_session_id}.${finalExt}`);
+        let tempOutFile = path.join(os.tmpdir(), `session-${exam_session_id}.${isWebm ? 'webm' : 'mp4'}`);
+        let finalMimeType = mimeTypeFromDb;
+        let finalExt = isWebm ? 'webm' : 'mp4';
 
-        console.log(`Uploading raw video directly for session ${exam_session_id} to bypass CPU-heavy transcoding...`);
-        fs.renameSync(rawWebmPath, tempOutFile);
+        if (isWebm && process.env.TRANSCODE_TO_MP4 === 'true') {
+            console.log(`[Assemble] TRANSCODE_TO_MP4 is enabled. Transcoding WebM to MP4 for session ${exam_session_id}...`);
+            const mp4OutFile = path.join(os.tmpdir(), `session-${exam_session_id}.mp4`);
+            try {
+                await new Promise((resolve, reject) => {
+                    ffmpeg(rawWebmPath)
+                        .outputOptions('-c:v libx264')
+                        .outputOptions('-pix_fmt yuv420p')
+                        .outputOptions('-preset ultrafast') // Use ultrafast preset to minimize CPU/RAM usage
+                        .outputOptions('-crf 30')          // Lower quality/high compression to speed up transcoding
+                        .outputOptions('-c:a aac')
+                        .on('start', (commandLine) => {
+                            console.log(`Spawned FFmpeg with command: ${commandLine}`);
+                        })
+                        .on('end', resolve)
+                        .on('error', reject)
+                        .save(mp4OutFile);
+                });
+                console.log(`Successfully transcoded to MP4 for session ${exam_session_id}`);
+                if (fs.existsSync(rawWebmPath)) fs.unlinkSync(rawWebmPath);
+                tempOutFile = mp4OutFile;
+                finalMimeType = 'video/mp4';
+                finalExt = 'mp4';
+            } catch (transcodeErr) {
+                console.error(`Transcoding failed for session ${exam_session_id}, falling back to WebM:`, transcodeErr.message);
+                tempOutFile = path.join(os.tmpdir(), `session-${exam_session_id}.webm`);
+                fs.renameSync(rawWebmPath, tempOutFile);
+                finalMimeType = 'video/webm';
+                finalExt = 'webm';
+            }
+        } else {
+            console.log(`[Assemble] Direct upload mode (no transcoding) for session ${exam_session_id}`);
+            fs.renameSync(rawWebmPath, tempOutFile);
+        }
 
-        const finalMimeType = mimeTypeFromDb;
         const finalTempFile = tempOutFile;
         const driveFileName = `${studentName}_${examTitle}_Session_${exam_session_id}_Attempt_${attempt}.${finalExt}`;
 

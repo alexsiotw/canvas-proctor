@@ -572,6 +572,15 @@ async function requestScreenShareStep() {
 async function startMainExamSession() {
     if (isStartingExam) return;
     isStartingExam = true;
+
+    // Resume the pre-authorized audio context on user gesture to bypass browser autoplay policies
+    if (typeof micAudioContext !== 'undefined' && micAudioContext) {
+        micAudioContext.resume().then(() => {
+            console.log("[Audio] micAudioContext successfully resumed during Begin Exam user gesture.");
+        }).catch(err => {
+            console.warn("[Audio] Failed to resume micAudioContext:", err);
+        });
+    }
     
     const btn = document.getElementById('btn-begin-exam');
     if (btn) {
@@ -1542,7 +1551,13 @@ function setupAudioAnalysis(stream) {
     try {
         if (!stream || stream.getAudioTracks().length === 0) return;
         
-        const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        // Reuse the pre-authorized audio context if available to bypass browser autoplay policies
+        const audioCtx = (typeof micAudioContext !== 'undefined' && micAudioContext) ? micAudioContext : new (window.AudioContext || window.webkitAudioContext)();
+        
+        if (audioCtx.state === 'suspended') {
+            audioCtx.resume().catch(e => console.warn("[Audio] Could not resume audioCtx:", e));
+        }
+
         const analyser = audioCtx.createAnalyser();
         const source = audioCtx.createMediaStreamSource(stream);
         source.connect(analyser);
