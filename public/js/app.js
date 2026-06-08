@@ -57,6 +57,8 @@ socket.on('proctor_log', (data) => {
         if (isFlag) {
             s.flagCount++;
             s.hasFlags = true;
+            s.lastFlagType = data.event_type;
+            s.lastFlagMessage = data.event_message;
             
             // Update Flagged Warnings counter in header
             const flagsValEl = document.getElementById('stat-flagged-violations');
@@ -411,7 +413,30 @@ function closeExamDashboard() {
 }
 
 // LIVE VIEW LOGIC
+function getShortFlagLabel(type) {
+    if (type === 'audio_violation') return '🗣️ Speaking';
+    if (type === 'tab_blur' || type === 'window_blur') return '🔒 Focus Lost';
+    if (type === 'fullscreen_exit') return '🖥️ Fullscreen Exit';
+    if (type.startsWith('AI_GAZE')) return '🤖 Eye Gaze Shift';
+    if (type.startsWith('AI_DEVICE')) return '📱 Device Detected';
+    if (type.startsWith('AI_PEOPLE')) return '👥 Person Anomaly';
+    return type.toUpperCase();
+}
+
 function updateLiveGrid() {
+    if (!document.getElementById('live-pulse-style')) {
+        const style = document.createElement('style');
+        style.id = 'live-pulse-style';
+        style.textContent = `
+            @keyframes live-pulse-flag {
+                0% { border-color: rgba(239, 68, 68, 0.4); box-shadow: 0 0 5px rgba(239, 68, 68, 0.2); }
+                50% { border-color: rgba(239, 68, 68, 1); box-shadow: 0 0 15px rgba(239, 68, 68, 0.5); }
+                100% { border-color: rgba(239, 68, 68, 0.4); box-shadow: 0 0 5px rgba(239, 68, 68, 0.2); }
+            }
+        `;
+        document.head.appendChild(style);
+    }
+
     const grid = document.getElementById('live-grid');
     if(!grid) return;
     grid.innerHTML = '';
@@ -436,13 +461,25 @@ function updateLiveGrid() {
         const hasFlags = s.hasFlags || false;
         const ringClass = s.status === 'online' ? (hasFlags ? 'live-ring-flagged' : 'live-ring-online') : 'live-ring-offline';
 
+        let cardStyle = "padding: 16px; background: rgba(30, 41, 59, 0.2); transition: all 0.3s;";
+        if (s.status === 'online' && hasFlags) {
+            cardStyle += " border: 1.5px solid #ef4444; box-shadow: 0 0 10px rgba(239, 68, 68, 0.3); animation: live-pulse-flag 1.5s infinite;";
+        }
+
+        const flagText = (s.status === 'online' && s.lastFlagType) ? `
+            <div style="margin-top: 8px; font-size: 11px; padding: 6px 8px; border-radius: 4px; background: rgba(239, 68, 68, 0.15); border: 1px solid rgba(239, 68, 68, 0.3); color: #ef4444; display: flex; align-items: center; gap: 4px;">
+                ⚠️ <strong>Alert:</strong> ${getShortFlagLabel(s.lastFlagType)}
+            </div>
+        ` : '';
+
         grid.innerHTML += `
-            <div class="card ${ringClass}" style="padding: 16px; background: rgba(30, 41, 59, 0.2);">
+            <div class="card ${ringClass}" style="${cardStyle}">
                 <div style="display:flex; justify-content:space-between; margin-bottom:10px; align-items:center;">
                     <strong style="font-size: 14px; font-weight:600;">${s.name || 'Testing...'}</strong>
                     <span style="width: 8px; height: 8px; background: ${statusColor}; border-radius: 50%; display:inline-block; box-shadow: 0 0 6px ${statusColor};"></span>
                 </div>
                 ${content}
+                ${flagText}
                 ${warningBtn}
             </div>
         `;
@@ -667,12 +704,43 @@ function viewStudentReport(sessionId, examId) {
     activeLogFilterSeverity = 'all';
     activeLogFilterSearch = '';
 
+    const logs = Array.isArray(session.logs) ? session.logs : [];
+    const gazeCount = logs.filter(l => l.event_type.startsWith('AI_GAZE')).length;
+    const deviceCount = logs.filter(l => l.event_type.startsWith('AI_DEVICE')).length;
+    const voiceCount = logs.filter(l => l.event_type === 'audio_violation').length;
+    const focusCount = logs.filter(l => ['tab_blur', 'window_blur', 'fullscreen_exit'].includes(l.event_type)).length;
+
+    const metricsHtml = `
+        <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin-bottom: 15px; text-align: center;">
+            <div style="background: rgba(59, 130, 246, 0.05); border: 1px solid rgba(59, 130, 246, 0.15); padding: 8px 4px; border-radius: var(--radius-sm);">
+                <div style="font-size: 14px; margin-bottom: 2px;">🤖</div>
+                <div style="font-size: 13px; font-weight: 700; color: var(--text-primary);">${gazeCount}</div>
+                <div style="font-size: 8px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.2px;">Gaze Shifts</div>
+            </div>
+            <div style="background: rgba(245, 158, 11, 0.05); border: 1px solid rgba(245, 158, 11, 0.15); padding: 8px 4px; border-radius: var(--radius-sm);">
+                <div style="font-size: 14px; margin-bottom: 2px;">📱</div>
+                <div style="font-size: 13px; font-weight: 700; color: var(--text-primary);">${deviceCount}</div>
+                <div style="font-size: 8px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.2px;">Devices</div>
+            </div>
+            <div style="background: rgba(239, 68, 68, 0.05); border: 1px solid rgba(239, 68, 68, 0.15); padding: 8px 4px; border-radius: var(--radius-sm);">
+                <div style="font-size: 14px; margin-bottom: 2px;">🗣️</div>
+                <div style="font-size: 13px; font-weight: 700; color: var(--text-primary);">${voiceCount}</div>
+                <div style="font-size: 8px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.2px;">Speaking</div>
+            </div>
+            <div style="background: rgba(16, 185, 129, 0.05); border: 1px solid rgba(16, 185, 129, 0.15); padding: 8px 4px; border-radius: var(--radius-sm);">
+                <div style="font-size: 14px; margin-bottom: 2px;">🔒</div>
+                <div style="font-size: 13px; font-weight: 700; color: var(--text-primary);">${focusCount}</div>
+                <div style="font-size: 8px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.2px;">Tab Leaves</div>
+            </div>
+        </div>
+    `;
+
     const renderLogsTimeline = () => {
-        const logs = Array.isArray(session.logs) ? session.logs : [];
+        const timelineLogs = Array.isArray(session.logs) ? session.logs : [];
         const container = document.getElementById('modal-timeline-list');
         if (!container) return;
 
-        let filteredLogs = logs;
+        let filteredLogs = timelineLogs;
 
         // Filter by search query
         if (activeLogFilterSearch) {
@@ -778,6 +846,7 @@ function viewStudentReport(sessionId, examId) {
                 <!-- Right Pane: Timeline & Filters -->
                 <div style="display:flex; flex-direction:column; height: 100%;">
                     <h4 style="margin: 0 0 10px 0; font-size:14px; font-weight:700; color:var(--text-primary);">Security Integrity Log</h4>
+                    ${metricsHtml}
                     
                     <!-- Search & Filter Controls -->
                     <div class="filter-search-container">
@@ -1118,12 +1187,12 @@ async function linkPlacement(examId) {
             
             if (contentItemReturnUrl) {
                 const exam = exams.find(e => e.id == examId);
-                const examTitle = exam ? exam.title : 'Proctor Gateway Assignment';
+                const examTitle = exam ? exam.title : 'Secure Exam Proctor Assignment';
                 const launchUrl = window.location.origin + '/lti/launch';
                 window.location.href = `/api/placements/lti-return?content_item_return_url=${encodeURIComponent(contentItemReturnUrl)}&exam_title=${encodeURIComponent(examTitle)}&launch_url=${encodeURIComponent(launchUrl)}`;
             } else if (launchReturnUrl) {
                 const exam = exams.find(e => e.id == examId);
-                const examTitle = exam ? exam.title : 'Proctor Gateway Assignment';
+                const examTitle = exam ? exam.title : 'Secure Exam Proctor Assignment';
                 const launchUrl = window.location.origin + '/lti/launch';
                 const returnRedirectUrl = `${launchReturnUrl}?return_type=lti_launch_url&url=${encodeURIComponent(launchUrl)}&title=${encodeURIComponent(examTitle)}&text=${encodeURIComponent(examTitle)}`;
                 
@@ -1148,7 +1217,7 @@ async function linkPlacement(examId) {
 function embedExamSelection(examId) {
     if (!contentItemReturnUrl) return;
     const exam = exams.find(e => e.id == examId);
-    const examTitle = exam ? exam.title : 'Proctor Gateway Assignment';
+    const examTitle = exam ? exam.title : 'Secure Exam Proctor Assignment';
     // Embed the exam_id in the launch URL returned to Canvas
     const launchUrl = `${window.location.origin}/lti/launch?exam_id=${examId}`;
     let targetUrl = `/api/placements/lti-return?content_item_return_url=${encodeURIComponent(contentItemReturnUrl)}&exam_title=${encodeURIComponent(examTitle)}&launch_url=${encodeURIComponent(launchUrl)}`;

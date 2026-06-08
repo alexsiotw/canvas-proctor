@@ -82,7 +82,7 @@ app.get('/lti/config.xml', (req, res) => {
     xmlns:lticm="http://www.imsglobal.org/xsd/imslticm_v1p0"
     xmlns:lticp="http://www.imsglobal.org/xsd/imslticp_v1p0"
     xmlns:canvas="http://canvas.instructure.com/lti/course_navigation">
-  <blti:title>Proctor Gateway</blti:title>
+  <blti:title>Secure Exam Proctor</blti:title>
   <blti:description>Secure Proctoring environment for LMS Quizzes.</blti:description>
   <blti:launch_url>${baseUrl}/lti/launch</blti:launch_url>
   <blti:extensions platform="canvas.instructure.com">
@@ -90,14 +90,14 @@ app.get('/lti/config.xml', (req, res) => {
     <lticm:property name="domain">${new URL(baseUrl).host}</lticm:property>
     <lticm:options name="course_navigation">
       <lticm:property name="enabled">true</lticm:property>
-      <lticm:property name="text">Proctor Gateway</lticm:property>
-      <lticm:property name="visibility">public</lticm:property>
+      <lticm:property name="text">Secure Exam Proctor</lticm:property>
+      <lticm:property name="visibility">admins</lticm:property>
       <lticm:property name="default">enabled</lticm:property>
       <lticm:property name="windowTarget">_self</lticm:property>
     </lticm:options>
     <lticm:options name="assignment_selection">
       <lticm:property name="enabled">true</lticm:property>
-      <lticm:property name="text">Proctor Gateway Assignment</lticm:property>
+      <lticm:property name="text">Secure Exam Proctor Assignment</lticm:property>
       <lticm:property name="message_type">ContentItemSelectionRequest</lticm:property>
       <lticm:property name="url">${baseUrl}/lti/launch</lticm:property>
       <lticm:property name="selection_width">1000</lticm:property>
@@ -105,7 +105,7 @@ app.get('/lti/config.xml', (req, res) => {
     </lticm:options>
     <lticm:options name="link_selection">
       <lticm:property name="enabled">true</lticm:property>
-      <lticm:property name="text">Proctor Gateway Module Item</lticm:property>
+      <lticm:property name="text">Secure Exam Proctor Module Item</lticm:property>
       <lticm:property name="message_type">ContentItemSelectionRequest</lticm:property>
       <lticm:property name="url">${baseUrl}/lti/launch</lticm:property>
       <lticm:property name="selection_width">1000</lticm:property>
@@ -532,8 +532,8 @@ app.post('/api/exams', requireInstructor, async (req, res) => {
             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, false) RETURNING *
         `, [canvasCourseId, title, canvas_quiz_url, require_mic, require_camera, require_screen, disable_right_click, require_fullscreen, require_seb || false, max_attempts || 1, exam_code, max_violations || 0, canvas_quiz_password || '', disable_clipboard || false, disable_printing || false]);
         
-        // Enable proctor mode requirements on the Canvas quiz itself
-        setCanvasQuizProctorMode(req.session.lti, canvas_quiz_url, true);
+        // Enable proctor mode requirements on the Canvas quiz itself (keep off by default)
+        setCanvasQuizProctorMode(req.session.lti, canvas_quiz_url, false);
         
         res.json(result.rows[0]);
     } catch (err) {
@@ -641,9 +641,9 @@ app.patch('/api/exams/:id', requireInstructor, async (req, res) => {
 
         if (result.rows.length === 0) return res.status(404).json({ error: 'Exam not found' });
 
-        // Update Canvas settings
+        // Update Canvas settings (keep off by default)
         if (canvas_quiz_url) {
-            setCanvasQuizProctorMode(req.session.lti, canvas_quiz_url, true);
+            setCanvasQuizProctorMode(req.session.lti, canvas_quiz_url, false);
             
             // If the quiz URL changed, disable it on the previous quiz
             if (oldResult.rows.length > 0 && oldResult.rows[0].canvas_quiz_url !== canvas_quiz_url) {
@@ -681,7 +681,13 @@ app.post('/api/exams/verify-code', requireAuth, async (req, res) => {
         const totalAllowed = (exam.max_attempts || 1) + extraAttempts;
         
         if (attemptCount >= totalAllowed) {
-            return res.status(403).json({ error: `You have reached the maximum allowable attempts (${totalAllowed}) for this exam.` });
+            const latestSession = await pool.query('SELECT status FROM exam_sessions WHERE exam_id = $1 AND student_canvas_id = $2 ORDER BY id DESC LIMIT 1', [exam.id, userId]);
+            const isCompleted = latestSession.rows.length > 0 && (latestSession.rows[0].status === 'completed' || latestSession.rows[0].status === 'booted');
+            return res.status(403).json({ 
+                error: `You have reached the maximum allowable attempts (${totalAllowed}) for this exam.`,
+                already_completed: isCompleted,
+                canvas_quiz_url: exam.canvas_quiz_url
+            });
         }
         
         const crypto = require('crypto');
@@ -738,7 +744,13 @@ app.post('/api/exams/verify-placement', requireAuth, async (req, res) => {
         const totalAllowed = (exam.max_attempts || 1) + extraAttempts;
         
         if (attemptCount >= totalAllowed) {
-            return res.status(403).json({ error: `You have reached the maximum allowable attempts (${totalAllowed}) for this exam.` });
+            const latestSession = await pool.query('SELECT status FROM exam_sessions WHERE exam_id = $1 AND student_canvas_id = $2 ORDER BY id DESC LIMIT 1', [exam.id, userId]);
+            const isCompleted = latestSession.rows.length > 0 && (latestSession.rows[0].status === 'completed' || latestSession.rows[0].status === 'booted');
+            return res.status(403).json({ 
+                error: `You have reached the maximum allowable attempts (${totalAllowed}) for this exam.`,
+                already_completed: isCompleted,
+                canvas_quiz_url: exam.canvas_quiz_url
+            });
         }
         
         const crypto = require('crypto');
@@ -883,6 +895,45 @@ function signLti1Response(url, params, secret) {
         .update(signatureBase)
         .digest('base64');
 }
+
+// API: Get Exam Session Status (used for blocker page polling)
+app.get('/api/session/status', requireAuth, async (req, res) => {
+    try {
+        const token = req.query.token || (req.session.lti ? req.session.lti.sessionToken : null);
+        if (!token) return res.status(400).json({ error: 'Missing session token' });
+
+        const ltiResult = await pool.query('SELECT * FROM lti_sessions WHERE session_token = $1', [token]);
+        if (ltiResult.rows.length === 0) return res.status(404).json({ error: 'LTI session not found' });
+        const lti = ltiResult.rows[0];
+
+        const examId = req.query.exam_id;
+        let sessionQuery = 'SELECT * FROM exam_sessions WHERE student_canvas_id = $1';
+        let queryParams = [lti.canvas_user_id];
+
+        if (examId) {
+            sessionQuery += ' AND exam_id = $2';
+            queryParams.push(examId);
+        }
+        sessionQuery += ' ORDER BY id DESC LIMIT 1';
+
+        const sessionResult = await pool.query(sessionQuery, queryParams);
+        
+        let quizUrl = '';
+        const targetExamId = examId || (sessionResult.rows.length > 0 ? sessionResult.rows[0].exam_id : null);
+        if (targetExamId) {
+            const examResult = await pool.query('SELECT canvas_quiz_url FROM exams WHERE id = $1', [targetExamId]);
+            quizUrl = examResult.rows.length > 0 ? examResult.rows[0].canvas_quiz_url : '';
+        }
+
+        if (sessionResult.rows.length === 0) {
+            return res.json({ status: 'not_started', canvas_quiz_url: quizUrl });
+        }
+
+        res.json({ status: sessionResult.rows[0].status, canvas_quiz_url: quizUrl });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
 
 // API: Start Exam Session (Student)
 app.post('/api/session/start', requireAuth, async (req, res) => {
@@ -1650,6 +1701,6 @@ app.get('/', (req, res) => {
 
 initDatabase().then(() => {
     server.listen(PORT, () => {
-        console.log(`Proctor Gateway running on port ${PORT}`);
+        console.log(`Secure Exam Proctor running on port ${PORT}`);
     });
 }).catch(console.error);

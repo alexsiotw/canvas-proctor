@@ -75,6 +75,15 @@ async function verifyExamCode() {
         
         const data = await res.json();
         if(!res.ok) {
+            if (data.already_completed && data.canvas_quiz_url) {
+                console.log("[Verification] Student has already completed all attempts. Redirecting top window to Canvas quiz page.");
+                if (window.top !== window.self) {
+                    window.top.location.href = data.canvas_quiz_url;
+                } else {
+                    window.location.href = data.canvas_quiz_url;
+                }
+                return;
+            }
             throw new Error(data.error || 'Authentication failed');
         }
         
@@ -100,6 +109,15 @@ async function verifyPlacement(pId, eId = null) {
         
         const data = await res.json();
         if(!res.ok) {
+            if (data.already_completed && data.canvas_quiz_url) {
+                console.log("[Verification] Student has already completed all attempts. Redirecting top window to Canvas quiz page.");
+                if (window.top !== window.self) {
+                    window.top.location.href = data.canvas_quiz_url;
+                } else {
+                    window.location.href = data.canvas_quiz_url;
+                }
+                return;
+            }
             throw new Error(data.error || 'Verification of placement failed');
         }
         
@@ -199,10 +217,35 @@ function initStepWizard() {
     }
     if (examConfig.require_seb && !isSEB()) {
         showSEBBlocker();
+        startBlockerPolling();
         return;
     }
     const firstStep = getNextStep(0);
     goToStep(firstStep);
+}
+
+function startBlockerPolling() {
+    const pollInterval = setInterval(async () => {
+        try {
+            const url = `/api/session/status?token=${encodeURIComponent(sessionToken)}&exam_id=${encodeURIComponent(examConfig.id)}`;
+            const res = await fetch(url);
+            if (res.ok) {
+                const data = await res.json();
+                if (data.status === 'completed' || data.status === 'booted') {
+                    clearInterval(pollInterval);
+                    const targetUrl = data.canvas_quiz_url || 'https://canvas.siotw.net';
+                    console.log("[Blocker] Polling detected session completion. Redirecting top window to:", targetUrl);
+                    if (window.top !== window.self) {
+                        window.top.location.href = targetUrl;
+                    } else {
+                        window.location.href = targetUrl;
+                    }
+                }
+            }
+        } catch(e) {
+            console.warn("Blocker poll failed:", e);
+        }
+    }, 4000);
 }
 
 function goToStep(step) {
@@ -853,35 +896,51 @@ function setupRecording() {
             
             const reader = new FileReader();
             reader.onloadend = async () => {
-                try {
-                    const result = reader.result || '';
-                    const base64Part = result.indexOf(';base64,');
-                    const base64Data = base64Part !== -1 ? result.substring(base64Part + 8) : (result.indexOf(',') !== -1 ? result.substring(result.indexOf(',') + 1) : result);
-                    
-                    console.log(`[Recorder] Chunk #${currentIndex}: size=${e.data.size} bytes, base64Len=${base64Data.length}`);
-                    
-                    const response = await fetch('/api/session/upload-chunk', { 
-                        method: 'POST', 
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({
-                            exam_session_id: sessionInfo.id,
-                            chunk_index: currentIndex,
-                            base64_video: base64Data,
-                            token: sessionToken
-                        })
-                    });
-                    
-                    if (!response.ok) {
-                        const errorData = await response.json().catch(() => ({}));
-                        throw new Error(errorData.error || `HTTP ${response.status}`);
+                const result = reader.result || '';
+                const base64Part = result.indexOf(';base64,');
+                const base64Data = base64Part !== -1 ? result.substring(base64Part + 8) : (result.indexOf(',') !== -1 ? result.substring(result.indexOf(',') + 1) : result);
+                
+                console.log(`[Recorder] Chunk #${currentIndex}: size=${e.data.size} bytes, base64Len=${base64Data.length}`);
+                
+                const uploadWithRetry = async (attempt = 1) => {
+                    try {
+                        const response = await fetch('/api/session/upload-chunk', { 
+                            method: 'POST', 
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({
+                                exam_session_id: sessionInfo.id,
+                                chunk_index: currentIndex,
+                                base64_video: base64Data,
+                                token: sessionToken
+                            })
+                        });
+                        
+                        if (!response.ok) {
+                            const errorData = await response.json().catch(() => ({}));
+                            throw new Error(errorData.error || `HTTP ${response.status}`);
+                        }
+                        console.log(`[Recorder] Chunk #${currentIndex} upload success (attempt ${attempt})`);
+                    } catch(err) {
+                        console.warn(`[Recorder] Chunk #${currentIndex} upload failed (attempt ${attempt}):`, err.message);
+                        if (attempt < 3) {
+                            const delay = attempt * 1500;
+                            console.log(`[Recorder] Retrying chunk #${currentIndex} in ${delay}ms...`);
+                            await new Promise(r => setTimeout(r, delay));
+                            return uploadWithRetry(attempt + 1);
+                        }
+                        throw err;
                     }
+                };
+
+                try {
+                    await uploadWithRetry(1);
                 } catch(err) {
-                    console.error(`[Recorder] Failed to upload chunk #${currentIndex}`, err);
+                    console.error(`[Recorder] Failed to upload chunk #${currentIndex} after 3 attempts`, err);
                     if (socket) {
                         socket.emit('proctor_log', {
                             exam_session_id: sessionInfo.id,
                             event_type: 'error',
-                            event_message: `Chunk #${currentIndex} upload failed: ${err.message}`
+                            event_message: `Chunk #${currentIndex} upload failed after 3 attempts: ${err.message}`
                         });
                     }
                 } finally {
@@ -1454,7 +1513,12 @@ async function autoEndExamSession() {
         await new Promise(r => setTimeout(r, 1500));
         window.location.href = '/api/seb/quit';
     } else {
-        window.location.href = examConfig.canvas_quiz_url;
+        console.log("[End Session] Non-SEB exam finished. Redirecting top window to Canvas quiz page:", examConfig.canvas_quiz_url);
+        if (window.top !== window.self) {
+            window.top.location.href = examConfig.canvas_quiz_url;
+        } else {
+            window.location.href = examConfig.canvas_quiz_url;
+        }
     }
 }
 
@@ -1491,7 +1555,10 @@ function setupAudioAnalysis(stream) {
         
         let consecutiveLoudFrames = 0;
         let consecutiveQuietFrames = 0;
-        const threshold = 30; // Increased sensitivity (was 45)
+        const threshold = 15; // Lowered threshold for higher sensitivity (was 30)
+        let logCounter = 0;
+        
+        console.log("[Audio] Initializing voice activity analysis. Threshold:", threshold);
         
         talkingDetectionInterval = setInterval(() => {
             if (isExamCompleted) {
@@ -1509,7 +1576,13 @@ function setupAudioAnalysis(stream) {
                 if (dataArray[i] > max) max = dataArray[i];
             }
             
+            logCounter++;
+            if (logCounter % 50 === 0) { // Log peak amplitude every 5 seconds to console for debugging
+                console.log(`[Audio] Monitoring... Peak amplitude in last 5s: ${max} (threshold is ${threshold})`);
+            }
+            
             if (max > threshold) {
+                console.log(`[Audio] Sound level (${max}) exceeds threshold (${threshold})`);
                 consecutiveLoudFrames++;
                 consecutiveQuietFrames = 0;
             } else {
