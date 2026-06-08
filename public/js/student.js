@@ -499,57 +499,6 @@ async function startMainExamSession() {
     }
     
     try {
-        // Clean up checking URLs/Timers
-        if (webcamVideoUrl) {
-            URL.revokeObjectURL(webcamVideoUrl);
-            webcamVideoUrl = null;
-        }
-        
-        videoStream = localCamStream;
-        screenStream = localScreenStream;
-        
-        const tracks = [];
-        let compositeStream = null;
-        const addedTrackIds = new Set();
-
-        if (screenStream) {
-            console.log("[Media] Initializing composite track layout (with sidebar indicators/flags)...");
-            compositeStream = await createCompositeTrack(screenStream, videoStream);
-            compositeStream.getTracks().forEach(t => {
-                if (!addedTrackIds.has(t.id)) {
-                    tracks.push(t);
-                    addedTrackIds.add(t.id);
-                }
-            });
-        } else if (videoStream) {
-            videoStream.getTracks().forEach(t => {
-                if (!addedTrackIds.has(t.id)) {
-                    tracks.push(t);
-                    addedTrackIds.add(t.id);
-                }
-            });
-        }
-
-        // Add active microphone stream audio tracks to ensure audio recording is captured
-        if (localMicStream) {
-            localMicStream.getAudioTracks().forEach(t => {
-                if (!addedTrackIds.has(t.id)) {
-                    console.log("[Media] Appending microphone audio track to final recorded stream:", t.label);
-                    tracks.push(t);
-                    addedTrackIds.add(t.id);
-                }
-            });
-        }
-
-        finalStream = new MediaStream(tracks);
-        console.log(`[Media] Final stream created with ${finalStream.getVideoTracks().length} video and ${finalStream.getAudioTracks().length} audio tracks.`);
-
-        if(screenStream) {
-            document.getElementById('local-video').srcObject = screenStream;
-        } else if(videoStream) {
-            document.getElementById('local-video').srcObject = videoStream;
-        }
-
         console.log("[Session] Registering session on backend...");
         const sessionRes = await fetch('/api/session/start', {
             method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -560,42 +509,6 @@ async function startMainExamSession() {
             throw new Error(sessionInfo.error || "Session authentication failed");
         }
 
-        setupRecording();
-
-        // Report the chosen format to the server now that sessionInfo is defined
-        if (sessionInfo && sessionInfo.id && mediaRecorder) {
-            const mimeType = mediaRecorder.mimeType || 'video/webm';
-            fetch(`/api/session/${sessionInfo.id}/format`, {
-                method: 'PATCH',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ mime_type: mimeType, token: sessionToken })
-            }).catch(err => console.warn("[Format] Handshake failed."));
-        }
-
-        console.log("[Media] Warming up tracks for stable recording...");
-        await new Promise(resolve => setTimeout(resolve, 1500));
-
-        if (mediaRecorder) {
-            mediaRecorder.start(5000);
-            console.log("[Recorder] Session recording started with 5s slices.");
-        }
-
-        socket.emit('join_student', {
-            exam_id: examConfig.id,
-            exam_session_id: sessionInfo.id,
-            student_name: sessionInfo.student_name
-        });
-
-        if (examConfig.require_fullscreen && !document.fullscreenElement && typeof document.documentElement.requestFullscreen === 'function') {
-             await document.documentElement.requestFullscreen().catch(e => console.log('Fullscreen failed:', e));
-        }
-
-        if (examConfig.disable_right_click) {
-             document.addEventListener('contextmenu', event => event.preventDefault());
-        }
-
-        document.getElementById('setup-container').style.display = 'none';
-        document.getElementById('active-exam-container').style.display = 'flex';
         if (isIOS()) {
             const warningEl = document.getElementById('ios-iframe-warning');
             if (warningEl) warningEl.style.display = 'flex';
@@ -652,8 +565,8 @@ async function startMainExamSession() {
         } else {
             quizUrl += "?secure_proctor=canvas-proctor-shared-secret-key-998877";
         }
-        if (examConfig.auto_login_signature) {
-            quizUrl += `&auto_login_user_id=${encodeURIComponent(examConfig.auto_login_user_id)}&auto_login_expires=${encodeURIComponent(examConfig.auto_login_expires)}&auto_login_signature=${encodeURIComponent(examConfig.auto_login_signature)}`;
+        if (sessionInfo.auto_login_signature) {
+            quizUrl += `&auto_login_user_id=${encodeURIComponent(sessionInfo.auto_login_user_id)}&auto_login_expires=${encodeURIComponent(sessionInfo.auto_login_expires)}&auto_login_signature=${encodeURIComponent(sessionInfo.auto_login_signature)}`;
         }
         
         const iframe = document.getElementById('quiz-iframe');
@@ -668,10 +581,8 @@ async function startMainExamSession() {
         };
         iframe.src = quizUrl;
 
-        setupFocusTracking();
-
-        setInterval(sendSnapshot, 3000);
-        setupSimulatedAIProctoring();
+        document.getElementById('setup-container').style.display = 'none';
+        document.getElementById('active-exam-container').style.display = 'flex';
 
     } catch(err) {
         isStartingExam = false;
@@ -681,6 +592,110 @@ async function startMainExamSession() {
             btn.innerText = "Begin Exam Now";
         }
         alert("Failed to initialize proctoring session: " + err.message);
+    }
+}
+
+let isProctoringStarted = false;
+
+async function startProctoring() {
+    if (isProctoringStarted) return;
+    isProctoringStarted = true;
+
+    try {
+        console.log("[Proctor] Starting proctoring stream & recordings...");
+        
+        if (webcamVideoUrl) {
+            URL.revokeObjectURL(webcamVideoUrl);
+            webcamVideoUrl = null;
+        }
+        
+        videoStream = localCamStream;
+        screenStream = localScreenStream;
+        
+        const tracks = [];
+        let compositeStream = null;
+        const addedTrackIds = new Set();
+
+        if (screenStream) {
+            console.log("[Media] Initializing composite track layout (with sidebar indicators/flags)...");
+            compositeStream = await createCompositeTrack(screenStream, videoStream);
+            compositeStream.getTracks().forEach(t => {
+                if (!addedTrackIds.has(t.id)) {
+                    tracks.push(t);
+                    addedTrackIds.add(t.id);
+                }
+            });
+        } else if (videoStream) {
+            videoStream.getTracks().forEach(t => {
+                if (!addedTrackIds.has(t.id)) {
+                    tracks.push(t);
+                    addedTrackIds.add(t.id);
+                }
+            });
+        }
+
+        if (localMicStream) {
+            localMicStream.getAudioTracks().forEach(t => {
+                if (!addedTrackIds.has(t.id)) {
+                    console.log("[Media] Appending microphone audio track to final recorded stream:", t.label);
+                    tracks.push(t);
+                    addedTrackIds.add(t.id);
+                }
+            });
+        }
+
+        finalStream = new MediaStream(tracks);
+        console.log(`[Media] Final stream created with ${finalStream.getVideoTracks().length} video and ${finalStream.getAudioTracks().length} audio tracks.`);
+
+        if(screenStream) {
+            document.getElementById('local-video').srcObject = screenStream;
+        } else if(videoStream) {
+            document.getElementById('local-video').srcObject = videoStream;
+        }
+
+        setupRecording();
+
+        if (sessionInfo && sessionInfo.id && mediaRecorder) {
+            const mimeType = mediaRecorder.mimeType || 'video/webm';
+            fetch(`/api/session/${sessionInfo.id}/format`, {
+                method: 'PATCH',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ mime_type: mimeType, token: sessionToken })
+            }).catch(err => console.warn("[Format] Handshake failed."));
+        }
+
+        console.log("[Media] Warming up tracks for stable recording...");
+        await new Promise(resolve => setTimeout(resolve, 1500));
+
+        if (mediaRecorder) {
+            mediaRecorder.start(5000);
+            console.log("[Recorder] Session recording started with 5s slices.");
+        }
+
+        socket.emit('join_student', {
+            exam_id: examConfig.id,
+            exam_session_id: sessionInfo.id,
+            student_name: sessionInfo.student_name
+        });
+
+        if (examConfig.require_fullscreen && !document.fullscreenElement && typeof document.documentElement.requestFullscreen === 'function') {
+             await document.documentElement.requestFullscreen().catch(e => console.log('Fullscreen failed:', e));
+        }
+
+        if (examConfig.disable_right_click) {
+             document.addEventListener('contextmenu', event => event.preventDefault());
+        }
+
+        setupFocusTracking();
+        setupSimulatedAIProctoring();
+        
+        setInterval(sendSnapshot, 3000);
+
+        showToast("Proctoring session successfully started.");
+
+    } catch (err) {
+        console.error("Failed to start proctoring:", err);
+        showToast("Failed to start proctoring: " + err.message);
     }
 }
 
@@ -1356,6 +1371,9 @@ window.addEventListener('message', async (event) => {
     if (event.data && event.data.type === 'canvas_quiz_submitted') {
         console.log("[Integration] Canvas quiz submission detected via message. Auto-ending session...");
         await autoEndExamSession();
+    } else if (event.data && event.data.type === 'canvas_quiz_started') {
+        console.log("[Integration] Canvas quiz start detected via message. Starting proctoring...");
+        startProctoring();
     }
 });
 

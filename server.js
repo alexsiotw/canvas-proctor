@@ -897,7 +897,20 @@ app.post('/api/session/start', requireAuth, async (req, res) => {
             INSERT INTO exam_sessions (exam_id, student_canvas_id, student_name, attempt_number)
             VALUES ($1, $2, $3, $4) RETURNING *
         `, [exam_id, userId, userName, currentAttempts + 1]);
-        res.json(sessionResult.rows[0]);
+
+        const crypto = require('crypto');
+        const auto_login_user_id = userId;
+        const auto_login_expires = Math.floor(Date.now() / 1000) + 300; // 5 minutes validity
+        const secret = "canvas-proctor-shared-secret-key-998877";
+        const signData = `auto_login_user_id=${auto_login_user_id}&expires=${auto_login_expires}`;
+        const auto_login_signature = crypto.createHmac('sha256', secret).update(signData).digest('hex');
+
+        res.json({
+            ...sessionResult.rows[0],
+            auto_login_user_id,
+            auto_login_expires,
+            auto_login_signature
+        });
     } catch (err) {
         res.status(500).json({ error: err.message });
     }
