@@ -427,7 +427,7 @@ async function setCanvasQuizProctorMode(ltiSession, canvasQuizUrl, requireProcto
             body: JSON.stringify({
                 quiz: {
                     require_lockdown_browser: requireProctorMode,
-                    require_lockdown_browser_for_results: requireProctorMode
+                    require_lockdown_browser_for_results: false // Keep results viewing unlocked by default
                 }
             })
         });
@@ -532,8 +532,8 @@ app.post('/api/exams', requireInstructor, async (req, res) => {
             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, false) RETURNING *
         `, [canvasCourseId, title, canvas_quiz_url, require_mic, require_camera, require_screen, disable_right_click, require_fullscreen, require_seb || false, max_attempts || 1, exam_code, max_violations || 0, canvas_quiz_password || '', disable_clipboard || false, disable_printing || false]);
         
-        // Enable proctor mode requirements on the Canvas quiz itself (keep off by default)
-        setCanvasQuizProctorMode(req.session.lti, canvas_quiz_url, false);
+        // Enable proctor mode requirements on the Canvas quiz itself (results lockdown stays off)
+        setCanvasQuizProctorMode(req.session.lti, canvas_quiz_url, true);
         
         res.json(result.rows[0]);
     } catch (err) {
@@ -641,9 +641,9 @@ app.patch('/api/exams/:id', requireInstructor, async (req, res) => {
 
         if (result.rows.length === 0) return res.status(404).json({ error: 'Exam not found' });
 
-        // Update Canvas settings (keep off by default)
+        // Update Canvas settings (results lockdown stays off)
         if (canvas_quiz_url) {
-            setCanvasQuizProctorMode(req.session.lti, canvas_quiz_url, false);
+            setCanvasQuizProctorMode(req.session.lti, canvas_quiz_url, true);
             
             // If the quiz URL changed, disable it on the previous quiz
             if (oldResult.rows.length > 0 && oldResult.rows[0].canvas_quiz_url !== canvas_quiz_url) {
