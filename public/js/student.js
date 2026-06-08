@@ -728,11 +728,7 @@ async function startProctoring() {
         finalStream = new MediaStream(tracks);
         console.log(`[Media] Final stream created with ${finalStream.getVideoTracks().length} video and ${finalStream.getAudioTracks().length} audio tracks.`);
 
-        if(screenStream) {
-            document.getElementById('local-video').srcObject = screenStream;
-        } else if(videoStream) {
-            document.getElementById('local-video').srcObject = videoStream;
-        }
+        // local-video srcObject assignment removed to avoid redundant decoding/rendering
 
         setupRecording();
 
