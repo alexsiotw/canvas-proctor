@@ -37,6 +37,24 @@ window.addEventListener('load', () => {
         document.getElementById('access-code-input').value = autoExamCode;
         verifyExamCode();
     }
+
+    document.addEventListener('fullscreenchange', () => {
+        if (currentStep === 4) {
+            const nextBtn = document.getElementById('btn-next-step');
+            const fsBtn = document.querySelector('button[onclick="requestFullscreenStep()"]');
+            if (document.fullscreenElement) {
+                if (fsBtn) fsBtn.style.display = 'none';
+                if (nextBtn) nextBtn.disabled = false;
+                const statusEl = document.getElementById('fullscreen-status');
+                if (statusEl) statusEl.innerHTML = "✓ Fullscreen Mode Enabled";
+            } else {
+                if (fsBtn) fsBtn.style.display = 'inline-block';
+                if (nextBtn) nextBtn.disabled = true;
+                const statusEl = document.getElementById('fullscreen-status');
+                if (statusEl) statusEl.innerHTML = "Fullscreen not yet active";
+            }
+        }
+    });
 });
 
 // Wait for explicit verification
@@ -116,7 +134,7 @@ function updateSidebarNav() {
     const stepsConfig = [
         { id: 1, req: () => examConfig.require_mic },
         { id: 2, req: () => examConfig.require_camera },
-        { id: 3, req: () => examConfig.require_screen },
+        { id: 3, req: () => examConfig.require_screen && !isSEB() },
         { id: 4, req: () => examConfig.require_fullscreen },
         { id: 5, req: () => true }
     ];
@@ -149,7 +167,7 @@ function getNextStep(current) {
     const stepsConfig = [
         { id: 1, req: () => examConfig.require_mic },
         { id: 2, req: () => examConfig.require_camera },
-        { id: 3, req: () => examConfig.require_screen },
+        { id: 3, req: () => examConfig.require_screen && !isSEB() },
         { id: 4, req: () => examConfig.require_fullscreen },
         { id: 5, req: () => true }
     ];
@@ -264,7 +282,7 @@ function goToStep(step) {
                     <div id="step-error" style="color: var(--danger); font-size: 14px; margin-top: 10px; display: none;"></div>
                 </div>
                 <div style="display: flex; justify-content: flex-end; gap: 15px; margin-top: 20px;">
-                    ${ios ? '' : `<button class="btn btn-primary" onclick="requestScreenShareStep()">Share Entire Screen</button>`}
+                    ${ios ? '' : `<button class="btn btn-primary" onclick="requestScreenShareStep()" style="${localScreenStream ? 'display:none;' : ''}">Share Entire Screen</button>`}
                     <button id="btn-next-step" class="btn btn-primary" style="background:#f97316; color:white; border:none;" onclick="goToStep(getNextStep(3))" ${ios || localScreenStream ? '' : 'disabled'}>Next Step</button>
                 </div>
             `;
@@ -290,7 +308,7 @@ function goToStep(step) {
                     <div id="step-error" style="color: var(--danger); font-size: 14px; margin-top: 10px; display: none;"></div>
                 </div>
                 <div style="display: flex; justify-content: flex-end; gap: 15px; margin-top: 20px;">
-                    ${fullscreenSupported ? `<button class="btn btn-primary" onclick="requestFullscreenStep()">Enter Fullscreen</button>` : ''}
+                    ${fullscreenSupported ? `<button class="btn btn-primary" onclick="requestFullscreenStep()" style="${document.fullscreenElement ? 'display:none;' : ''}">Enter Fullscreen</button>` : ''}
                     <button id="btn-next-step" class="btn btn-primary" style="background:#f97316; color:white; border:none;" onclick="goToStep(getNextStep(4))" ${!fullscreenSupported || document.fullscreenElement ? '' : 'disabled'}>Next Step</button>
                 </div>
             `;
@@ -333,6 +351,9 @@ async function startMicCheck() {
         const meterFill = document.getElementById('mic-volume-fill');
         const nextBtn = document.getElementById('btn-next-step');
         if (nextBtn) nextBtn.disabled = false;
+        
+        const checkBtn = document.querySelector('button[onclick="startMicCheck()"]');
+        if (checkBtn) checkBtn.style.display = 'none';
         
         micVolInterval = setInterval(() => {
             micAnalyser.getByteFrequencyData(dataArray);
@@ -427,8 +448,7 @@ function startWebcam5sRecord() {
             timerEl.innerHTML = '<span style="color: #059669;">✓ Review Complete</span>';
         }
         
-        recordBtn.innerText = "Record Again";
-        recordBtn.disabled = false;
+        recordBtn.style.display = 'none';
         document.getElementById('btn-next-step').disabled = false;
     };
     
@@ -481,8 +501,23 @@ async function requestScreenShareStep() {
             throw new Error("You must share your ENTIRE SCREEN, not just a window or tab.");
         }
         
+        track.onended = () => {
+            localScreenStream = null;
+            if (currentStep === 3) {
+                const nextBtn = document.getElementById('btn-next-step');
+                const ssBtn = document.querySelector('button[onclick="requestScreenShareStep()"]');
+                if (nextBtn) nextBtn.disabled = true;
+                if (ssBtn) ssBtn.style.display = 'inline-block';
+                const statusEl = document.getElementById('screenshare-status');
+                if (statusEl) statusEl.innerHTML = "Screen share not yet active";
+            }
+        };
+        
         document.getElementById('screenshare-status').innerHTML = "✓ Screen Share Active";
         document.getElementById('btn-next-step').disabled = false;
+        
+        const ssBtn = document.querySelector('button[onclick="requestScreenShareStep()"]');
+        if (ssBtn) ssBtn.style.display = 'none';
     } catch (screenErr) {
         showStepError(screenErr.message);
     }
@@ -729,7 +764,6 @@ function showSEBBlocker() {
                 </ol>
             </div>
             <button class="btn btn-primary" onclick="launchSEB()">Launch Securely in SEB</button>
-            <button class="btn btn-secondary" onclick="location.reload()">Back to Code Entry</button>
             
             <p class="seb-footer-hint">
                 Trouble launching? <a href="javascript:void(0)" onclick="downloadSEBConfig()">Download config file manually</a>
@@ -1113,6 +1147,13 @@ async function bootStudent() {
     // Clear overlay
     document.getElementById('focus-violation-overlay').style.display = 'none';
 
+    // Stop recording and wait for final uploads
+    try {
+        await stopRecordingAndAwaitUploads();
+    } catch(e) {
+        console.warn("Failed to stop recording on boot:", e);
+    }
+
     // Teardown tracks safely
     const allStreams = [videoStream, screenStream, finalStream, localMicStream, localCamStream, localScreenStream];
     allStreams.forEach(stream => {
@@ -1204,6 +1245,37 @@ function showToast(msg) {
 
 
 
+async function stopRecordingAndAwaitUploads() {
+    if (mediaRecorder && mediaRecorder.state !== 'inactive') {
+        let stopped = false;
+        mediaRecorder.addEventListener('stop', () => {
+            stopped = true;
+            console.log("[Recorder] MediaRecorder stop event received.");
+        }, { once: true });
+
+        try {
+            mediaRecorder.stop();
+        } catch(e) {
+            console.warn("Failed to stop mediaRecorder:", e);
+            stopped = true;
+        }
+
+        // Wait for the stop event to fire (up to 4 seconds)
+        const stopWaitStart = Date.now();
+        while (!stopped && (Date.now() - stopWaitStart < 4000)) {
+            await new Promise(r => setTimeout(r, 100));
+        }
+    }
+
+    // Now wait for all active uploads to complete (up to 20 seconds)
+    console.log(`[Recorder] Waiting for active uploads to finish. Current active uploads: ${activeUploads}`);
+    const uploadWaitStart = Date.now();
+    while (activeUploads > 0 && (Date.now() - uploadWaitStart < 20000)) {
+        await new Promise(r => setTimeout(r, 100));
+    }
+    console.log(`[Recorder] Finished waiting for uploads. Remaining active uploads: ${activeUploads}`);
+}
+
 async function endExam() {
     isExamCompleted = true; // Instantly disable focus tracking
     
@@ -1217,11 +1289,11 @@ async function endExam() {
         <div style="margin: auto; text-align: center; padding: 40px; background: white; border-radius: 8px; max-width: 600px; box-shadow: 0 4px 20px rgba(0,0,0,0.15); font-family: sans-serif;">
             <div style="width: 80px; height: 80px; border-radius: 50%; background: #ecfdf5; display: flex; align-items: center; justify-content: center; margin: 0 auto 20px auto; font-size: 40px; color: #059669;">✓</div>
             <h2 style="color: #059669; font-weight: 700; margin: 0 0 10px 0;">${isSeb ? 'Quiz Submitted Successfully' : 'Exam Successfully Submitted'}</h2>
-            <p style="color: var(--text-secondary); font-size: 16px; line-height: 1.5; margin: 0 0 10px 0;">
+            <p id="proctor-upload-status" style="color: var(--text-secondary); font-size: 16px; line-height: 1.5; margin: 0 0 10px 0;">
                 ${isSeb ? 'Finalizing and uploading proctoring recording... Please wait.' : 'Your proctored exam session is complete. You may safely close this tab.'}
             </p>
             ${isSeb ? `
-            <div class="volume-meter" style="width: 100%; max-width: 300px; margin: 20px auto 0 auto; height: 8px; background: #e2e8f0; border-radius: 4px; overflow: hidden;">
+            <div id="proctor-upload-progress" class="volume-meter" style="width: 100%; max-width: 300px; margin: 20px auto 0 auto; height: 8px; background: #e2e8f0; border-radius: 4px; overflow: hidden;">
                 <div style="width: 100%; height: 100%; background: #10b981; animation: pulse 1.5s infinite ease-in-out;"></div>
             </div>
             ` : ''}
@@ -1230,19 +1302,7 @@ async function endExam() {
 
     // Perform final actions in the background
     try {
-        if(mediaRecorder && mediaRecorder.state !== 'inactive') {
-            try {
-                mediaRecorder.stop();
-            } catch(e) {
-                console.warn("Failed to stop mediaRecorder:", e);
-            }
-        }
-        
-        // Wait up to 15s for any remaining chunk uploads to finish
-        const waitStart = Date.now();
-        while (activeUploads > 0 && (Date.now() - waitStart < 15000)) {
-            await new Promise(r => setTimeout(r, 100));
-        }
+        await stopRecordingAndAwaitUploads();
         
         // Stop hardware tracking streams safely
         const allStreams = [videoStream, screenStream, finalStream, localMicStream, localCamStream, localScreenStream];
@@ -1290,6 +1350,13 @@ async function endExam() {
     }
 
     if (isSeb) {
+        // Show check mark confirmation page inside SEB for 1.5s before quitting
+        const statusEl = document.getElementById('proctor-upload-status');
+        const progressEl = document.getElementById('proctor-upload-progress');
+        if (statusEl) statusEl.innerText = "Upload Complete! Exiting Safe Exam Browser...";
+        if (progressEl) progressEl.style.display = 'none';
+        
+        await new Promise(r => setTimeout(r, 1500));
         window.location.href = '/api/seb/quit';
     }
 }
@@ -1302,14 +1369,15 @@ async function autoEndExamSession() {
         document.exitFullscreen().catch(err => console.log('Exit fullscreen failed:', err));
     }
     
+    const isSeb = isSEB();
     document.getElementById('active-exam-container').innerHTML = `
         <div style="margin: auto; text-align: center; padding: 40px; background: white; border-radius: 8px; max-width: 600px; box-shadow: 0 4px 20px rgba(0,0,0,0.15); font-family: sans-serif;">
             <div style="width: 80px; height: 80px; border-radius: 50%; background: #ecfdf5; display: flex; align-items: center; justify-content: center; margin: 0 auto 20px auto; font-size: 40px; color: #059669;">✓</div>
             <h2 style="color: #059669; font-weight: 700; margin: 0 0 10px 0;">Quiz Submitted Successfully</h2>
-            <p style="color: var(--text-secondary); font-size: 16px; line-height: 1.5; margin: 0 0 20px 0;">
+            <p id="proctor-upload-status" style="color: var(--text-secondary); font-size: 16px; line-height: 1.5; margin: 0 0 20px 0;">
                 Finalizing and uploading proctoring recording... Please wait.
             </p>
-            <div class="volume-meter" style="width: 100%; max-width: 300px; margin: 0 auto; height: 8px; background: #e2e8f0; border-radius: 4px; overflow: hidden;">
+            <div id="proctor-upload-progress" class="volume-meter" style="width: 100%; max-width: 300px; margin: 0 auto; height: 8px; background: #e2e8f0; border-radius: 4px; overflow: hidden;">
                 <div style="width: 100%; height: 100%; background: #10b981; animation: pulse 1.5s infinite ease-in-out;"></div>
             </div>
             <style>
@@ -1322,19 +1390,7 @@ async function autoEndExamSession() {
     `;
 
     try {
-        if(mediaRecorder && mediaRecorder.state !== 'inactive') {
-            try {
-                mediaRecorder.stop();
-            } catch(e) {
-                console.warn("Failed to stop mediaRecorder:", e);
-            }
-        }
-        
-        // Wait up to 15s for any remaining chunk uploads to finish
-        const waitStart = Date.now();
-        while (activeUploads > 0 && (Date.now() - waitStart < 15000)) {
-            await new Promise(r => setTimeout(r, 100));
-        }
+        await stopRecordingAndAwaitUploads();
         
         const allStreams = [videoStream, screenStream, finalStream, localMicStream, localCamStream, localScreenStream];
         allStreams.forEach(stream => {
@@ -1380,7 +1436,13 @@ async function autoEndExamSession() {
         console.error("Background teardown error:", err);
     }
 
-    if (isSEB()) {
+    if (isSeb) {
+        const statusEl = document.getElementById('proctor-upload-status');
+        const progressEl = document.getElementById('proctor-upload-progress');
+        if (statusEl) statusEl.innerText = "Upload Complete! Exiting Safe Exam Browser...";
+        if (progressEl) progressEl.style.display = 'none';
+        
+        await new Promise(r => setTimeout(r, 1500));
         window.location.href = '/api/seb/quit';
     } else {
         window.location.href = examConfig.canvas_quiz_url;
