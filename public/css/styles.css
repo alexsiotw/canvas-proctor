@@ -187,7 +187,6 @@ body::before {
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
   padding: 24px;
-  backdrop-filter: blur(10px);
   transition: var(--transition);
 }
 
@@ -547,15 +546,13 @@ tbody tr:last-child td {
   border-color: var(--accent);
 }
 
-/* ===== MODAL ===== */
 .modal-overlay {
   position: fixed;
   top: 0;
   left: 0;
   right: 0;
   bottom: 0;
-  background: rgba(0, 0, 0, 0.7);
-  backdrop-filter: blur(4px);
+  background: rgba(15, 23, 42, 0.85); /* Premium dark slate overlay */
   z-index: 1000;
   display: flex;
   align-items: center;
