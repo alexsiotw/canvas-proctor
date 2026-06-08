@@ -23,6 +23,6 @@
 	<key>showTaskBar</key>
 	<false/>
 	<key>startURL</key>
-	<string>https://canvas-proctor.onrender.com/student.html</string>
+	<string>https://proctor.siotw.net/student.html</string>
 </dict>
 </plist>
