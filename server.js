@@ -1098,6 +1098,7 @@ async function assembleAndUploadSessionVideo(exam_session_id, total_chunks) {
                         .outputOptions('-pix_fmt yuv420p')
                         .outputOptions('-preset ultrafast') // Use ultrafast preset to minimize CPU/RAM usage
                         .outputOptions('-crf 30')          // Lower quality/high compression to speed up transcoding
+                        .outputOptions('-threads 2')        // Limit CPU threads to protect Canvas LMS resources
                         .outputOptions('-c:a aac')
                         .on('start', (commandLine) => {
                             console.log(`Spawned FFmpeg with command: ${commandLine}`);
