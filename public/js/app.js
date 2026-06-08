@@ -53,7 +53,7 @@ socket.on('proctor_log', (data) => {
         const s = liveStudents[data.exam_session_id];
         if (!s.flagCount) s.flagCount = 0;
         
-        const isFlag = ['tab_blur', 'window_blur', 'fullscreen_exit', 'audio_violation', 'error', 'fail'].includes(data.event_type) || data.event_type.startsWith('AI_');
+        const isFlag = ['tab_blur', 'window_blur', 'fullscreen_exit', 'audio_violation', 'mic_muted', 'error', 'fail'].includes(data.event_type) || data.event_type.startsWith('AI_');
         if (isFlag) {
             s.flagCount++;
             s.hasFlags = true;
@@ -415,6 +415,7 @@ function closeExamDashboard() {
 // LIVE VIEW LOGIC
 function getShortFlagLabel(type) {
     if (type === 'audio_violation') return '🗣️ Speaking';
+    if (type === 'mic_muted') return '🔇 Mic Muted';
     if (type === 'tab_blur' || type === 'window_blur') return '🔒 Focus Lost';
     if (type === 'fullscreen_exit') return '🖥️ Fullscreen Exit';
     if (type.startsWith('AI_GAZE')) return '🤖 Eye Gaze Shift';
@@ -601,7 +602,7 @@ function getRiskInfo(session) {
     const logs = Array.isArray(session.logs) ? session.logs : [];
     const focusWarnings = logs.filter(l => ['tab_blur', 'window_blur', 'fullscreen_exit'].includes(l.event_type)).length;
     const aiWarnings = logs.filter(l => l.event_type.startsWith('AI_')).length;
-    const audioWarnings = logs.filter(l => l.event_type === 'audio_violation').length;
+    const audioWarnings = logs.filter(l => l.event_type === 'audio_violation' || l.event_type === 'mic_muted').length;
     const totalWarnings = focusWarnings + aiWarnings + audioWarnings;
 
     let category = 'low';
@@ -831,9 +832,9 @@ function viewStudentReport(sessionId, examId) {
         let logsHtml = '';
         filteredLogs.forEach(l => {
             const isAI = l.event_type.startsWith('AI_');
-            const isDanger = ['tab_blur', 'window_blur', 'fullscreen_exit', 'audio_violation', 'booted', 'error', 'fail'].includes(l.event_type) || isAI;
-            const badgeColor = isAI ? 'badge-warning' : (isDanger ? 'badge-danger' : 'badge-success');
-            const badgeLabel = l.event_type === 'audio_violation' ? '🗣️ AUDIO VIOLATION' : (isAI ? '🤖 AI DETECTION' : l.event_type.toUpperCase());
+            const isDanger = ['tab_blur', 'window_blur', 'fullscreen_exit', 'audio_violation', 'mic_muted', 'booted', 'error', 'fail'].includes(l.event_type) || isAI;
+            const badgeColor = isAI ? 'badge-warning' : (isDanger ? 'badge-danger' : (l.event_type === 'mic_unmuted' ? 'badge-success' : 'badge-success'));
+            const badgeLabel = l.event_type === 'audio_violation' ? '🗣️ AUDIO VIOLATION' : (l.event_type === 'mic_muted' ? '🔇 MIC MUTED' : (l.event_type === 'mic_unmuted' ? '🔊 MIC UNMUTED' : (isAI ? '🤖 AI DETECTION' : l.event_type.toUpperCase())));
             
             logsHtml += `
                 <li style="margin-bottom: 12px; border-bottom: 1px solid var(--border); padding-bottom: 10px; display: flex; flex-direction: column; gap: 4px;">

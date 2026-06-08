@@ -387,6 +387,16 @@ function showStepError(msg) {
 async function startMicCheck() {
     try {
         localMicStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        
+        localMicStream.getAudioTracks().forEach(track => {
+            track.onmute = () => {
+                logProctorEvent('mic_muted', 'Microphone was muted by the student (hardware/system mute).');
+            };
+            track.onunmute = () => {
+                logProctorEvent('mic_unmuted', 'Microphone was unmuted by the student.');
+            };
+        });
+
         micAudioContext = new (window.AudioContext || window.webkitAudioContext)();
         micAnalyser = micAudioContext.createAnalyser();
         const source = micAudioContext.createMediaStreamSource(localMicStream);
@@ -706,23 +716,15 @@ async function startProctoring() {
         let compositeStream = null;
         const addedTrackIds = new Set();
 
-        if (screenStream) {
-            console.log("[Media] Initializing composite track layout (with sidebar indicators/flags)...");
-            compositeStream = await createCompositeTrack(screenStream, videoStream);
-            compositeStream.getTracks().forEach(t => {
-                if (!addedTrackIds.has(t.id)) {
-                    tracks.push(t);
-                    addedTrackIds.add(t.id);
-                }
-            });
-        } else if (videoStream) {
-            videoStream.getTracks().forEach(t => {
-                if (!addedTrackIds.has(t.id)) {
-                    tracks.push(t);
-                    addedTrackIds.add(t.id);
-                }
-            });
-        }
+        // Always create a composite track layout to ensure proctoring status indicators and flags are drawn on the recording
+        console.log("[Media] Initializing composite track layout...");
+        compositeStream = await createCompositeTrack(screenStream, videoStream);
+        compositeStream.getTracks().forEach(t => {
+            if (!addedTrackIds.has(t.id)) {
+                tracks.push(t);
+                addedTrackIds.add(t.id);
+            }
+        });
 
         if (localMicStream) {
             localMicStream.getAudioTracks().forEach(t => {
@@ -981,11 +983,14 @@ async function createCompositeTrack(screenStream, cameraStream) {
     canvas.height = 720;
     const ctx = canvas.getContext('2d');
 
-    const vScreen = document.createElement('video');
-    vScreen.srcObject = screenStream;
-    vScreen.muted = true;
-    vScreen.setAttribute('playsinline', ''); 
-    await vScreen.play();
+    let vScreen = null;
+    if (screenStream) {
+        vScreen = document.createElement('video');
+        vScreen.srcObject = screenStream;
+        vScreen.muted = true;
+        vScreen.setAttribute('playsinline', ''); 
+        await vScreen.play().catch(e => console.warn("[Media] Screen video play failed:", e));
+    }
 
     let vCam = null;
     if (cameraStream && cameraStream.getVideoTracks().length > 0) {
@@ -1034,7 +1039,16 @@ async function createCompositeTrack(screenStream, cameraStream) {
         ctx.fillStyle = "#0f172a";
         ctx.fillRect(0, 0, canvas.width, canvas.height);
 
-        ctx.drawImage(vScreen, 0, 0, 1280, 720);
+        if (vScreen && screenStream) {
+            ctx.drawImage(vScreen, 0, 0, 1280, 720);
+        } else {
+            ctx.fillStyle = "#1e293b";
+            ctx.fillRect(0, 0, 1280, 720);
+            ctx.fillStyle = "#94a3b8";
+            ctx.font = "bold 20px Arial";
+            const placeholderText = "SCREEN MONITORING INACTIVE";
+            ctx.fillText(placeholderText, (1280 - ctx.measureText(placeholderText).width) / 2, 360);
+        }
         
         const sidebarX = 1280;
         const camW = 320;
@@ -1062,7 +1076,7 @@ async function createCompositeTrack(screenStream, cameraStream) {
         ctx.fillText(camLabel, sidebarX + (320 - ctx.measureText(camLabel).width) / 2, camY - 15);
 
         // Mic Status Box - Hardware connectivity based
-        const hasMic = localMicStream && localMicStream.getAudioTracks().some(t => t.enabled && t.readyState === 'live');
+        const hasMic = localMicStream && localMicStream.getAudioTracks().some(t => t.enabled && !t.muted && t.readyState === 'live');
         const micBoxY = camY + camH + 40;
         const micBoxW = 240;
         const micBoxH = 60;
