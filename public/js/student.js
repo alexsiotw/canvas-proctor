@@ -707,29 +707,32 @@ function isSEB() {
 }
 
 function showSEBBlocker() {
-    document.getElementById('setup-container').innerHTML = `
+    const setupContainer = document.getElementById('setup-container');
+    setupContainer.classList.add('seb-blocker-active');
+    setupContainer.innerHTML = `
         <div class="check-card">
-            <h1 style="color:var(--danger)">🛡️ Safe Exam Browser Required</h1>
-            <p style="color: var(--text-secondary); margin-bottom: 20px;">
-                This exam requires the Safe Exam Browser to ensure a secure testing environment. 
+            <div class="seb-shield-icon">🛡️</div>
+            <h1 class="danger">Safe Exam Browser Required</h1>
+            <p class="seb-desc">
+                This exam requires the Safe Exam Browser to ensure a secure, distraction-free testing environment. 
                 You are currently using a standard browser.
             </p>
-            <div style="background: #eef2ff; border: 1px solid #c7d2fe; padding: 15px; border-radius: 8px; margin-bottom: 20px; text-align: left;">
-                <h3 style="margin-top:0; font-size:14px; color: #4338ca;">Unlocked Environment:</h3>
-                <p style="font-size:13px; color: #4338ca; margin-bottom:10px;">
-                    Click the button below to <strong>Launch Securely</strong>. It will open SEB with <strong>Multiple Tabs</strong> and <strong>New Windows</strong> enabled so you can use Google Meet or other resources.
+            <div class="seb-info-box">
+                <h3>Unlocked Environment</h3>
+                <p>
+                    Clicking the button below will open the exam in a secure configuration with <strong>Multiple Tabs</strong> and <strong>New Windows</strong> enabled, allowing you to access approved resources like Google Meet.
                 </p>
-                <ol style="font-size:13px; color: #4338ca; padding-left: 20px;">
-                    <li>Ensure Safe Exam Browser is installed.</li>
-                    <li>Click <strong>Launch Securely</strong> below.</li>
-                    <li>If prompted, allow the browser to open "Safe Exam Browser".</li>
+                <ol>
+                    <li>Ensure <strong>Safe Exam Browser</strong> is installed on this device.</li>
+                    <li>Click <strong>Launch Securely in SEB</strong> below.</li>
+                    <li>Choose <strong>Open Safe Exam Browser</strong> if prompted by your browser.</li>
                 </ol>
             </div>
-            <button class="btn btn-primary" style="width: 100%; justify-content: center; padding: 14px; font-size: 16px;" onclick="launchSEB()">Launch Securely in SEB</button>
-            <button class="btn btn-secondary" style="width: 100%; justify-content: center; margin-top: 10px; border:none; background:none; color:var(--text-secondary);" onclick="location.reload()">Back to Code Entry</button>
+            <button class="btn btn-primary" onclick="launchSEB()">Launch Securely in SEB</button>
+            <button class="btn btn-secondary" onclick="location.reload()">Back to Code Entry</button>
             
-            <p style="font-size:11px; color:var(--text-muted); margin-top:15px;">
-                Trouble launching? <a href="javascript:void(0)" onclick="downloadSEBConfig()" style="color:var(--primary)">Download config file manually</a>
+            <p class="seb-footer-hint">
+                Trouble launching? <a href="javascript:void(0)" onclick="downloadSEBConfig()">Download config file manually</a>
             </p>
         </div>
     `;
@@ -1209,11 +1212,19 @@ async function endExam() {
     }
     
     // Display the successfully submitted message immediately
+    const isSeb = isSEB();
     document.getElementById('active-exam-container').innerHTML = `
         <div style="margin: auto; text-align: center; padding: 40px; background: white; border-radius: 8px; max-width: 600px; box-shadow: 0 4px 20px rgba(0,0,0,0.15); font-family: sans-serif;">
             <div style="width: 80px; height: 80px; border-radius: 50%; background: #ecfdf5; display: flex; align-items: center; justify-content: center; margin: 0 auto 20px auto; font-size: 40px; color: #059669;">✓</div>
-            <h2 style="color: #059669; font-weight: 700; margin: 0 0 10px 0;">Exam Successfully Submitted</h2>
-            <p style="color: var(--text-secondary); font-size: 16px; line-height: 1.5; margin: 0 0 10px 0;">Your proctored exam session is complete. You may safely close this tab.</p>
+            <h2 style="color: #059669; font-weight: 700; margin: 0 0 10px 0;">${isSeb ? 'Quiz Submitted Successfully' : 'Exam Successfully Submitted'}</h2>
+            <p style="color: var(--text-secondary); font-size: 16px; line-height: 1.5; margin: 0 0 10px 0;">
+                ${isSeb ? 'Finalizing and uploading proctoring recording... Please wait.' : 'Your proctored exam session is complete. You may safely close this tab.'}
+            </p>
+            ${isSeb ? `
+            <div class="volume-meter" style="width: 100%; max-width: 300px; margin: 20px auto 0 auto; height: 8px; background: #e2e8f0; border-radius: 4px; overflow: hidden;">
+                <div style="width: 100%; height: 100%; background: #10b981; animation: pulse 1.5s infinite ease-in-out;"></div>
+            </div>
+            ` : ''}
         </div>
     `;
 
@@ -1227,9 +1238,9 @@ async function endExam() {
             }
         }
         
-        // Wait briefly (up to 1.5s) for any remaining chunk uploads
+        // Wait up to 15s for any remaining chunk uploads to finish
         const waitStart = Date.now();
-        while (activeUploads > 0 && (Date.now() - waitStart < 1500)) {
+        while (activeUploads > 0 && (Date.now() - waitStart < 15000)) {
             await new Promise(r => setTimeout(r, 100));
         }
         
@@ -1277,6 +1288,10 @@ async function endExam() {
     } catch(err) {
         console.error("Background teardown error:", err);
     }
+
+    if (isSeb) {
+        window.location.href = '/api/seb/quit';
+    }
 }
 
 async function autoEndExamSession() {
@@ -1315,8 +1330,9 @@ async function autoEndExamSession() {
             }
         }
         
+        // Wait up to 15s for any remaining chunk uploads to finish
         const waitStart = Date.now();
-        while (activeUploads > 0 && (Date.now() - waitStart < 3000)) {
+        while (activeUploads > 0 && (Date.now() - waitStart < 15000)) {
             await new Promise(r => setTimeout(r, 100));
         }
         
@@ -1364,7 +1380,11 @@ async function autoEndExamSession() {
         console.error("Background teardown error:", err);
     }
 
-    window.location.href = examConfig.canvas_quiz_url;
+    if (isSEB()) {
+        window.location.href = '/api/seb/quit';
+    } else {
+        window.location.href = examConfig.canvas_quiz_url;
+    }
 }
 
 window.addEventListener('message', async (event) => {

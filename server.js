@@ -1425,9 +1425,26 @@ app.get('/api/seb/config/:token/:filename?', async (req, res) => {
             if (startUrlRegex.test(sebConfig)) {
                 sebConfig = sebConfig.replace(startUrlRegex, `$1${startUrl}$3`);
             } else {
-                // If regex fails (unlikely in valid plist), just append it to the dict if possible or fallback
-                // For safety, if we can't inject, tell the dev
                 console.log('Template exists but startURL key not found or misformatted. Using fallback.');
+            }
+
+            // Inject or update quitURL
+            const quitUrlStr = `${baseUrl}/api/seb/quit`;
+            const quitUrlRegex = /(<key>quitURL<\/key>\s*<string>)([^<]*)(<\/string>)/;
+            if (quitUrlRegex.test(sebConfig)) {
+                sebConfig = sebConfig.replace(quitUrlRegex, `$1${quitUrlStr}$3`);
+            } else {
+                // Safely append to root dict right before the closing tags
+                sebConfig = sebConfig.replace(/(<\/dict>\s*<\/plist>\s*$)/, `\t<key>quitURL</key>\n\t<string>${quitUrlStr}</string>\n$1`);
+            }
+
+            // Inject or update quitURLConfirm
+            const quitUrlConfirmRegex = /(<key>quitURLConfirm<\/key>\s*)(<true\/>|<false\/>)/;
+            if (quitUrlConfirmRegex.test(sebConfig)) {
+                sebConfig = sebConfig.replace(quitUrlConfirmRegex, `$1<false/>`);
+            } else {
+                // Safely append to root dict right before the closing tags
+                sebConfig = sebConfig.replace(/(<\/dict>\s*<\/plist>\s*$)/, `\t<key>quitURLConfirm</key>\n\t<false/>\n$1`);
             }
         }
 
@@ -1457,6 +1474,10 @@ app.get('/api/seb/config/:token/:filename?', async (req, res) => {
 	<true/>
 	<key>startURL</key>
 	<string>${startUrl}</string>
+	<key>quitURL</key>
+	<string>${baseUrl}/api/seb/quit</string>
+	<key>quitURLConfirm</key>
+	<false/>
 </dict>
 </plist>`;
         }
@@ -1466,6 +1487,81 @@ app.get('/api/seb/config/:token/:filename?', async (req, res) => {
     } catch (err) {
         res.status(500).send(err.message);
     }
+});
+
+// API: Quit SEB route (intercepted by SEB or displayed as a fallback complete page)
+app.get('/api/seb/quit', (req, res) => {
+    res.send(`
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <title>Exam Complete</title>
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;700&family=Plus+Jakarta+Sans:wght@400;600&display=swap" rel="stylesheet">
+            <style>
+                body {
+                    font-family: 'Plus Jakarta Sans', sans-serif;
+                    background: #f5f6f8;
+                    color: #2d3b45;
+                    display: flex;
+                    align-items: center;
+                    justify-content: center;
+                    height: 100vh;
+                    margin: 0;
+                }
+                .card {
+                    background: white;
+                    padding: 40px 30px;
+                    border-radius: 16px;
+                    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.05);
+                    text-align: center;
+                    max-width: 450px;
+                    width: 90%;
+                    border: 1px solid rgba(0,0,0,0.06);
+                }
+                .icon {
+                    font-size: 48px;
+                    margin-bottom: 20px;
+                }
+                h1 {
+                    font-family: 'Outfit', sans-serif;
+                    font-size: 24px;
+                    margin: 0 0 12px 0;
+                    color: #008a00;
+                }
+                p {
+                    color: #4a5c68;
+                    font-size: 15px;
+                    line-height: 1.6;
+                    margin: 0 0 24px 0;
+                }
+                .btn {
+                    display: inline-block;
+                    background: #2d3b45;
+                    color: white;
+                    padding: 12px 24px;
+                    border-radius: 8px;
+                    text-decoration: none;
+                    font-weight: 600;
+                    font-size: 14px;
+                    transition: all 0.2s;
+                }
+                .btn:hover {
+                    background: #1e272e;
+                    transform: translateY(-1px);
+                }
+            </style>
+        </head>
+        <body>
+            <div class="card">
+                <div class="icon">🏁</div>
+                <h1>Exam Complete!</h1>
+                <p>Your proctored exam session has finished and your recording is securely uploaded. You may now safely exit Safe Exam Browser.</p>
+                <a href="javascript:window.close()" class="btn">Close Window</a>
+            </div>
+        </body>
+        </html>
+    `);
 });
 
 const activeDisconnectTimers = new Map();
