@@ -1054,7 +1054,11 @@ async function assembleAndUploadSessionVideo(exam_session_id, total_chunks) {
             studentName = s.student_name ? s.student_name.replace(/[^a-z0-9]/gi, '_') : 'student';
             examTitle = s.title ? s.title.replace(/[^a-z0-9]/gi, '_') : 'exam';
             attempt = s.attempt_number || 1;
-            startedAt = s.started_at ? new Date(s.started_at).toISOString() : '';
+            startedAt = s.started_at ? new Date(s.started_at).toLocaleString('en-US', {
+                timeZone: 'America/New_York',
+                dateStyle: 'short',
+                timeStyle: 'medium'
+            }) + ' EST' : '';
             mimeTypeFromDb = s.mime_type || 'video/webm';
         }
 
@@ -1144,19 +1148,57 @@ async function assembleAndUploadSessionVideo(exam_session_id, total_chunks) {
                 ORDER BY event_timestamp ASC
             `, [exam_session_id]);
 
+            const formatDuration = (ms) => {
+                if (isNaN(ms) || ms < 0) ms = 0;
+                const totalSeconds = Math.floor(ms / 1000);
+                const hours = Math.floor(totalSeconds / 3600);
+                const minutes = Math.floor((totalSeconds % 3600) / 60);
+                const seconds = totalSeconds % 60;
+                const pad = (num) => String(num).padStart(2, '0');
+                if (hours > 0) {
+                    return `${hours}:${pad(minutes)}:${pad(seconds)}`;
+                }
+                return `${minutes}:${pad(seconds)}`;
+            };
+
+            const sessionStartMs = s.started_at ? new Date(s.started_at).getTime() : 0;
+
             let logRowsHtml = '';
             for (const row of logsQuery.rows) {
-                const timestamp = row.event_timestamp ? new Date(row.event_timestamp).toISOString() : '';
+                let timestampStr = '';
+                let videoMarker = '0:00';
+                if (row.event_timestamp) {
+                    const rowDate = new Date(row.event_timestamp);
+                    timestampStr = rowDate.toLocaleTimeString('en-US', {
+                        timeZone: 'America/New_York',
+                        hour: 'numeric',
+                        minute: '2-digit',
+                        second: '2-digit',
+                        hour12: true
+                    }) + ' EST';
+
+                    if (sessionStartMs) {
+                        const offsetMs = rowDate.getTime() - sessionStartMs;
+                        videoMarker = formatDuration(offsetMs);
+                    }
+                }
                 const type = row.event_type || '';
                 const msg = row.event_message || '';
                 const typeClass = (type.toLowerCase() === 'error' || type.toLowerCase() === 'failed') ? 'class="error"' : (type.toLowerCase().includes('violation') || type.toLowerCase().includes('warning') ? 'class="warning"' : '');
                 
                 logRowsHtml += `<tr>
-                    <td>${timestamp}</td>
+                    <td>${timestampStr}</td>
+                    <td>${videoMarker}</td>
                     <td ${typeClass}>${type.toUpperCase()}</td>
                     <td>${msg}</td>
                 </tr>`;
             }
+
+            const reportGeneratedEST = new Date().toLocaleString('en-US', {
+                timeZone: 'America/New_York',
+                dateStyle: 'short',
+                timeStyle: 'medium'
+            }) + ' EST';
 
             const logsDocHtml = `<!DOCTYPE html>
 <html>
@@ -1182,18 +1224,19 @@ async function assembleAndUploadSessionVideo(exam_session_id, total_chunks) {
     <p><strong>Attempt Number:</strong> ${attempt}</p>
     <p><strong>Session ID:</strong> ${exam_session_id}</p>
     <p><strong>Started At:</strong> ${startedAt}</p>
-    <p><strong>Report Generated:</strong> ${new Date().toISOString()}</p>
+    <p><strong>Report Generated:</strong> ${reportGeneratedEST}</p>
   </div>
   <table>
     <thead>
       <tr>
-        <th style="width: 25%;">Timestamp</th>
-        <th style="width: 20%;">Event Type</th>
-        <th style="width: 55%;">Message</th>
+        <th style="width: 25%;">Timestamp (EST)</th>
+        <th style="width: 15%;">Video Marker</th>
+        <th style="width: 15%;">Event Type</th>
+        <th style="width: 45%;">Message</th>
       </tr>
     </thead>
     <tbody>
-      ${logRowsHtml || '<tr><td colspan="3" style="text-align:center;">No logs found for this session.</td></tr>'}
+      ${logRowsHtml || '<tr><td colspan="4" style="text-align:center;">No logs found for this session.</td></tr>'}
     </tbody>
   </table>
 </body>
