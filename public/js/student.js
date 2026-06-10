@@ -716,24 +716,41 @@ async function startProctoring() {
         let compositeStream = null;
         const addedTrackIds = new Set();
 
-        // Always create a composite track layout to ensure proctoring status indicators and flags are drawn on the recording
-        console.log("[Media] Initializing composite track layout...");
-        compositeStream = await createCompositeTrack(screenStream, videoStream);
-        compositeStream.getTracks().forEach(t => {
-            if (!addedTrackIds.has(t.id)) {
-                tracks.push(t);
-                addedTrackIds.add(t.id);
+        const ios = isIOS();
+        if (ios) {
+            console.log("[Media] iOS/Safari detected: recording raw webcam and mic directly for maximum stability.");
+            if (localCamStream && localCamStream.getVideoTracks().length > 0) {
+                localCamStream.getVideoTracks().forEach(t => {
+                    tracks.push(t);
+                    addedTrackIds.add(t.id);
+                });
             }
-        });
-
-        if (localMicStream) {
-            localMicStream.getAudioTracks().forEach(t => {
+            if (localMicStream) {
+                localMicStream.getAudioTracks().forEach(t => {
+                    tracks.push(t);
+                    addedTrackIds.add(t.id);
+                });
+            }
+        } else {
+            // Always create a composite track layout to ensure proctoring status indicators and flags are drawn on the recording
+            console.log("[Media] Initializing composite track layout...");
+            compositeStream = await createCompositeTrack(screenStream, videoStream);
+            compositeStream.getTracks().forEach(t => {
                 if (!addedTrackIds.has(t.id)) {
-                    console.log("[Media] Appending microphone audio track to final recorded stream:", t.label);
                     tracks.push(t);
                     addedTrackIds.add(t.id);
                 }
             });
+
+            if (localMicStream) {
+                localMicStream.getAudioTracks().forEach(t => {
+                    if (!addedTrackIds.has(t.id)) {
+                        console.log("[Media] Appending microphone audio track to final recorded stream:", t.label);
+                        tracks.push(t);
+                        addedTrackIds.add(t.id);
+                    }
+                });
+            }
         }
 
         finalStream = new MediaStream(tracks);
@@ -778,6 +795,7 @@ async function startProctoring() {
         setupSimulatedAIProctoring();
         if (localMicStream) {
             setupAudioAnalysis(localMicStream);
+            setupSpeechRecognition();
         }
         
         setInterval(sendSnapshot, 3000);
@@ -787,6 +805,18 @@ async function startProctoring() {
     } catch (err) {
         console.error("Failed to start proctoring:", err);
         showToast("Failed to start proctoring: " + err.message);
+        if (sessionInfo && sessionInfo.id) {
+            fetch('/api/session/log', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    exam_session_id: sessionInfo.id,
+                    event_type: 'error',
+                    event_message: `Failed to start proctoring: ${err.message}`,
+                    token: sessionToken
+                })
+            }).catch(e => {});
+        }
     }
 }
 
@@ -1373,6 +1403,13 @@ async function stopRecordingAndAwaitUploads() {
 async function endExam() {
     isExamCompleted = true; // Instantly disable focus tracking
     
+    if (speechRecognition) {
+        try {
+            speechRecognition.stop();
+        } catch(e){}
+        speechRecognition = null;
+    }
+    
     if (document.fullscreenElement) {
         document.exitFullscreen().catch(err => console.log('Exit fullscreen failed:', err));
     }
@@ -1458,6 +1495,13 @@ async function endExam() {
 async function autoEndExamSession() {
     if (isExamCompleted) return;
     isExamCompleted = true;
+    
+    if (speechRecognition) {
+        try {
+            speechRecognition.stop();
+        } catch(e){}
+        speechRecognition = null;
+    }
     
     if (document.fullscreenElement) {
         document.exitFullscreen().catch(err => console.log('Exit fullscreen failed:', err));
@@ -1641,6 +1685,55 @@ function setupAudioAnalysis(stream) {
         
     } catch (e) {
         console.warn("[Audio] Failed to setup audio analysis:", e);
+    }
+}
+
+let speechRecognition = null;
+function setupSpeechRecognition() {
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SpeechRecognition) {
+        console.warn("[Speech] Web Speech API is not supported in this browser.");
+        return;
+    }
+
+    try {
+        speechRecognition = new SpeechRecognition();
+        speechRecognition.continuous = true;
+        speechRecognition.interimResults = false;
+        speechRecognition.lang = 'en-US';
+
+        speechRecognition.onresult = (event) => {
+            const lastResultIndex = event.results.length - 1;
+            const transcript = event.results[lastResultIndex][0].transcript.trim();
+            if (transcript) {
+                console.log(`[Speech] Student said: "${transcript}"`);
+                logProctorEvent('voice_transcript', `Speaking detected: "${transcript}"`);
+                if (socket) {
+                    socket.emit('proctor_log', {
+                        exam_session_id: sessionInfo.id,
+                        event_type: 'voice_transcript',
+                        event_message: `Speaking detected: "${transcript}"`
+                    });
+                }
+            }
+        };
+
+        speechRecognition.onerror = (event) => {
+            console.warn("[Speech] Recognition error:", event.error);
+        };
+
+        speechRecognition.onend = () => {
+            if (!isExamCompleted && speechRecognition) {
+                try {
+                    speechRecognition.start();
+                } catch(e) {}
+            }
+        };
+
+        speechRecognition.start();
+        console.log("[Speech] Speech recognition active.");
+    } catch (e) {
+        console.warn("[Speech] Failed to start speech recognition:", e);
     }
 }
 

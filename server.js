@@ -1046,6 +1046,7 @@ async function assembleAndUploadSessionVideo(exam_session_id, total_chunks) {
         let studentNameRaw = 'student';
         let examTitleRaw = 'exam';
         let mimeTypeFromDb = 'video/webm';
+        let sessionStartMs = 0;
         
         if (sessionInfo.rows.length > 0) {
             const s = sessionInfo.rows[0];
@@ -1059,6 +1060,9 @@ async function assembleAndUploadSessionVideo(exam_session_id, total_chunks) {
                 dateStyle: 'short',
                 timeStyle: 'medium'
             }) + ' EST' : '';
+            if (s.started_at) {
+                sessionStartMs = new Date(s.started_at).getTime();
+            }
             mimeTypeFromDb = s.mime_type || 'video/webm';
         }
 
@@ -1160,8 +1164,6 @@ async function assembleAndUploadSessionVideo(exam_session_id, total_chunks) {
                 }
                 return `${minutes}:${pad(seconds)}`;
             };
-
-            const sessionStartMs = s.started_at ? new Date(s.started_at).getTime() : 0;
 
             let logRowsHtml = '';
             for (const row of logsQuery.rows) {
