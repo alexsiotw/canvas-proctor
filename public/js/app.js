@@ -988,6 +988,12 @@ async function deleteStudentAttempt(sessionId, examId) {
 function showCreateExamModal(examId = null) {
     const exam = examId ? exams.find(e => e.id == examId) : null;
     const defaultCode = exam ? exam.exam_code : Math.random().toString(36).substring(2, 8).toUpperCase();
+    
+    // Set wider modal size for spacious card layout
+    const modalContainer = document.getElementById('modal-content');
+    modalContainer.style.maxWidth = '850px';
+    modalContainer.style.width = '95%';
+
     const html = `
         <div class="modal-header">
             <h2 class="modal-title" style="font-family:'Outfit', sans-serif; font-size:20px; font-weight:700;">${exam ? 'Edit Exam Settings' : 'Enable Proctoring'}</h2>
@@ -1024,98 +1030,89 @@ function showCreateExamModal(examId = null) {
         
         <!-- Recording Options -->
         <h4 style="margin: 24px 0 6px 0; font-family:'Outfit',sans-serif; font-size:14px; font-weight:700; color:var(--text-primary);">Recording Options</h4>
-        <p style="font-size:11px; color:var(--text-muted); margin-bottom: 12px;">Select all that apply</p>
+        <p style="font-size:11px; color:var(--text-muted); margin-bottom: 12px;">Select all that apply (hover to view descriptions)</p>
         
         <div class="proctorio-grid">
-            <div class="proctorio-card ${!exam || exam.require_camera ? 'selected' : ''}" id="card-camera" onclick="toggleProctorioOption('chk-camera', 'card-camera')">
+            <div class="proctorio-card ${!exam || exam.require_camera ? 'selected' : ''}" id="card-camera" onclick="toggleProctorioOption('chk-camera', 'card-camera')" title="Record student webcam">
                 <div class="proctorio-check">✓</div>
                 <div class="proctorio-icon">📷</div>
                 <div class="proctorio-title">Record Video</div>
-                <div style="font-size: 9px; color: var(--text-muted); margin-top: 4px;">Record student webcam</div>
                 <input type="checkbox" id="chk-camera" ${!exam || exam.require_camera ? 'checked' : ''} style="display:none;" />
             </div>
             
-            <div class="proctorio-card ${!exam || exam.require_mic ? 'selected' : ''}" id="card-mic" onclick="toggleProctorioOption('chk-mic', 'card-mic')">
+            <div class="proctorio-card ${!exam || exam.require_mic ? 'selected' : ''}" id="card-mic" onclick="toggleProctorioOption('chk-mic', 'card-mic')" title="Record student microphone">
                 <div class="proctorio-check">✓</div>
                 <div class="proctorio-icon">🎤</div>
                 <div class="proctorio-title">Record Audio</div>
-                <div style="font-size: 9px; color: var(--text-muted); margin-top: 4px;">Record student microphone</div>
                 <input type="checkbox" id="chk-mic" ${!exam || exam.require_mic ? 'checked' : ''} style="display:none;" />
             </div>
             
-            <div class="proctorio-card ${!exam || exam.require_screen ? 'selected' : ''}" id="card-screen" onclick="toggleProctorioOption('chk-screen', 'card-screen')">
+            <div class="proctorio-card ${!exam || exam.require_screen ? 'selected' : ''}" id="card-screen" onclick="toggleProctorioOption('chk-screen', 'card-screen')" title="Record full desktop screen">
                 <div class="proctorio-check">✓</div>
                 <div class="proctorio-icon">💻</div>
                 <div class="proctorio-title">Record Screen</div>
-                <div style="font-size: 9px; color: var(--text-muted); margin-top: 4px;">Record full desktop screen</div>
                 <input type="checkbox" id="chk-screen" ${!exam || exam.require_screen ? 'checked' : ''} style="display:none;" />
             </div>
         </div>
 
         <!-- Lockdown Options -->
         <h4 style="margin: 24px 0 6px 0; font-family:'Outfit',sans-serif; font-size:14px; font-weight:700; color:var(--text-primary);">Lock Down Options</h4>
-        <p style="font-size:11px; color:var(-        <div class="proctorio-grid">
-            <div class="proctorio-card ${!exam || exam.require_fullscreen ? 'selected' : ''}" id="card-fs" onclick="toggleProctorioOption('chk-fs', 'card-fs')">
+        <p style="font-size:11px; color:var(--text-muted); margin-bottom: 12px;">Select all that apply (hover to view descriptions)</p>
+        
+        <div class="proctorio-grid">
+            <div class="proctorio-card ${!exam || exam.require_fullscreen ? 'selected' : ''}" id="card-fs" onclick="toggleProctorioOption('chk-fs', 'card-fs')" title="Prevent window resizing">
                 <div class="proctorio-check">✓</div>
                 <div class="proctorio-icon">🖥️</div>
                 <div class="proctorio-title">Force Full Screen</div>
-                <div style="font-size: 9px; color: var(--text-muted); margin-top: 4px;">Prevent window resizing</div>
                 <input type="checkbox" id="chk-fs" ${!exam || exam.require_fullscreen ? 'checked' : ''} style="display:none;" />
             </div>
             
-            <div class="proctorio-card ${!exam || exam.disable_right_click ? 'selected' : ''}" id="card-rc" onclick="toggleProctorioOption('chk-rc', 'card-rc')">
+            <div class="proctorio-card ${!exam || exam.disable_right_click ? 'selected' : ''}" id="card-rc" onclick="toggleProctorioOption('chk-rc', 'card-rc')" title="Block right click / context menu">
                 <div class="proctorio-check">✓</div>
                 <div class="proctorio-icon">🔒</div>
                 <div class="proctorio-title">Block Navigation</div>
-                <div style="font-size: 9px; color: var(--text-muted); margin-top: 4px;">Block right click / context menu</div>
                 <input type="checkbox" id="chk-rc" ${!exam || exam.disable_right_click ? 'checked' : ''} style="display:none;" />
             </div>
             
-            <div class="proctorio-card ${exam && exam.require_seb ? 'selected' : ''}" id="card-seb" onclick="toggleProctorioOption('chk-seb', 'card-seb')">
+            <div class="proctorio-card ${exam && exam.require_seb ? 'selected' : ''}" id="card-seb" onclick="toggleProctorioOption('chk-seb', 'card-seb')" title="Require SEB LTI app launch">
                 <div class="proctorio-check">✓</div>
                 <div class="proctorio-icon">🛡️</div>
                 <div class="proctorio-title">Safe Exam Browser</div>
-                <div style="font-size: 9px; color: var(--text-muted); margin-top: 4px;">Require SEB LTI app launch</div>
                 <input type="checkbox" id="chk-seb" ${exam && exam.require_seb ? 'checked' : ''} style="display:none;" />
             </div>
 
-            <div class="proctorio-card ${exam && exam.disable_clipboard ? 'selected' : ''}" id="card-clipboard" onclick="toggleProctorioOption('chk-clipboard', 'card-clipboard')">
+            <div class="proctorio-card ${exam && exam.disable_clipboard ? 'selected' : ''}" id="card-clipboard" onclick="toggleProctorioOption('chk-clipboard', 'card-clipboard')" title="Block copy, cut, and paste">
                 <div class="proctorio-check">✓</div>
                 <div class="proctorio-icon">📋</div>
                 <div class="proctorio-title">Disable Clipboard</div>
-                <div style="font-size: 9px; color: var(--text-muted); margin-top: 4px;">Block copy, cut, and paste</div>
                 <input type="checkbox" id="chk-clipboard" ${exam && exam.disable_clipboard ? 'checked' : ''} style="display:none;" />
             </div>
 
-            <div class="proctorio-card ${exam && exam.disable_printing ? 'selected' : ''}" id="card-printing" onclick="toggleProctorioOption('chk-printing', 'card-printing')">
+            <div class="proctorio-card ${exam && exam.disable_printing ? 'selected' : ''}" id="card-printing" onclick="toggleProctorioOption('chk-printing', 'card-printing')" title="Block and hide printing">
                 <div class="proctorio-check">✓</div>
                 <div class="proctorio-icon">🖨️</div>
                 <div class="proctorio-title">Disable Printing</div>
-                <div style="font-size: 9px; color: var(--text-muted); margin-top: 4px;">Block and hide printing</div>
                 <input type="checkbox" id="chk-printing" ${exam && exam.disable_printing ? 'checked' : ''} style="display:none;" />
             </div>
 
-            <div class="proctorio-card ${exam && exam.only_one_screen ? 'selected' : ''}" id="card-one-screen" onclick="toggleProctorioOption('chk-one-screen', 'card-one-screen')">
+            <div class="proctorio-card ${exam && exam.only_one_screen ? 'selected' : ''}" id="card-one-screen" onclick="toggleProctorioOption('chk-one-screen', 'card-one-screen')" title="Block secondary/dual displays">
                 <div class="proctorio-check">✓</div>
-                <div class="proctorio-icon">🖥️</div>
+                <div class="proctorio-icon">📺</div>
                 <div class="proctorio-title">Only One Screen</div>
-                <div style="font-size: 9px; color: var(--text-muted); margin-top: 4px;">Block secondary/dual displays</div>
                 <input type="checkbox" id="chk-one-screen" ${exam && exam.only_one_screen ? 'checked' : ''} style="display:none;" />
             </div>
 
-            <div class="proctorio-card ${exam && exam.block_downloads ? 'selected' : ''}" id="card-downloads" onclick="toggleProctorioOption('chk-downloads', 'card-downloads')">
+            <div class="proctorio-card ${exam && exam.block_downloads ? 'selected' : ''}" id="card-downloads" onclick="toggleProctorioOption('chk-downloads', 'card-downloads')" title="Block file downloading">
                 <div class="proctorio-check">✓</div>
                 <div class="proctorio-icon">📥</div>
                 <div class="proctorio-title">Block Downloads</div>
-                <div style="font-size: 9px; color: var(--text-muted); margin-top: 4px;">Block file downloading</div>
                 <input type="checkbox" id="chk-downloads" ${exam && exam.block_downloads ? 'checked' : ''} style="display:none;" />
             </div>
 
-            <div class="proctorio-card ${exam && exam.prevent_reentry ? 'selected' : ''}" id="card-reentry" onclick="toggleProctorioOption('chk-reentry', 'card-reentry')">
+            <div class="proctorio-card ${exam && exam.prevent_reentry ? 'selected' : ''}" id="card-reentry" onclick="toggleProctorioOption('chk-reentry', 'card-reentry')" title="Block re-entry after exit">
                 <div class="proctorio-check">✓</div>
                 <div class="proctorio-icon">🚪</div>
                 <div class="proctorio-title">Prevent Re-entry</div>
-                <div style="font-size: 9px; color: var(--text-muted); margin-top: 4px;">Block re-entry after exit</div>
                 <input type="checkbox" id="chk-reentry" ${exam && exam.prevent_reentry ? 'checked' : ''} style="display:none;" />
             </div>
         </div>

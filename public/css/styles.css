@@ -1356,8 +1356,8 @@ body::before {
 /* ===== PROCTORIO CONFIG GRID ===== */
 .proctorio-grid {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 16px;
+  grid-template-columns: repeat(6, 1fr);
+  gap: 12px;
   margin-top: 8px;
   margin-bottom: 24px;
 }
@@ -1367,11 +1367,17 @@ body::before {
   background: var(--bg-secondary);
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
-  padding: 16px 10px;
+  padding: 10px 4px;
   text-align: center;
   cursor: pointer;
   transition: var(--transition);
   user-select: none;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  aspect-ratio: 1 / 1;
+  box-sizing: border-box;
 }
 
 .proctorio-card:hover {
@@ -1407,12 +1413,13 @@ body::before {
 }
 
 .proctorio-icon {
-  font-size: 28px;
-  margin-bottom: 6px;
+  font-size: 24px;
+  margin-bottom: 4px;
 }
 
 .proctorio-title {
-  font-size: 12px;
+  font-size: 10.5px;
+  line-height: 1.25;
   font-weight: 700;
   color: var(--text-primary);
 }
