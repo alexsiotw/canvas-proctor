@@ -172,7 +172,7 @@ app.post('/lti/launch', (req, res) => {
         `, [sessionToken, userId, canvasCourseId, alternativeCourseId, userName, req.session.lti.role, JSON.stringify(req.body)]).catch(err => console.error('Failed to persist LTI session', err));
 
         if (isInstructor) {
-            let redirectUrl = `/index.html?resource_link_id=${encodeURIComponent(resourceLinkId)}`;
+            let redirectUrl = `/index.html?v=1.0.6&resource_link_id=${encodeURIComponent(resourceLinkId)}`;
             if (launchReturnUrl) {
                 redirectUrl += `&launch_presentation_return_url=${encodeURIComponent(launchReturnUrl)}`;
             }
@@ -185,7 +185,7 @@ app.post('/lti/launch', (req, res) => {
             res.redirect(redirectUrl);
         } else {
             const queryExamId = req.query.exam_id || '';
-            res.redirect(`/student.html?token=${sessionToken}${resourceLinkId ? '&placement_id=' + encodeURIComponent(resourceLinkId) : ''}${queryExamId ? '&exam_id=' + encodeURIComponent(queryExamId) : ''}`);
+            res.redirect(`/student.html?v=1.0.6&token=${sessionToken}${resourceLinkId ? '&placement_id=' + encodeURIComponent(resourceLinkId) : ''}${queryExamId ? '&exam_id=' + encodeURIComponent(queryExamId) : ''}`);
         }
     });
 });
