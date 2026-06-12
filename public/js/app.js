@@ -853,7 +853,7 @@ function viewStudentReport(sessionId, examId) {
         container.innerHTML = logsHtml;
     };
 
-    const showVideo = session.status === 'completed' && !session.video_archived;
+    const showVideo = (session.status === 'completed' || session.status === 'abandoned') && !session.video_archived;
     let videoElementHtml = '';
     if (showVideo) {
         if (session.drive_file_id) {
