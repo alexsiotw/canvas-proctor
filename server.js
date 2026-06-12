@@ -525,12 +525,17 @@ app.get('/api/exams', requireInstructor, async (req, res) => {
 app.post('/api/exams', requireInstructor, async (req, res) => {
     try {
         const { canvasCourseId } = req.session.lti;
-        const { title, canvas_quiz_url, require_mic, require_camera, require_screen, disable_right_click, require_fullscreen, require_seb, max_attempts, exam_code, max_violations, canvas_quiz_password, disable_clipboard, disable_printing } = req.body;
+        const { title, canvas_quiz_url, require_mic, require_camera, require_screen, disable_right_click, require_fullscreen, require_seb, max_attempts, exam_code, max_violations, canvas_quiz_password, disable_clipboard, disable_printing, only_one_screen, block_downloads, prevent_reentry } = req.body;
         
         const result = await pool.query(`
-            INSERT INTO exams (canvas_course_id, title, canvas_quiz_url, require_mic, require_camera, require_screen, disable_right_click, require_fullscreen, require_seb, max_attempts, exam_code, max_violations, canvas_quiz_password, disable_clipboard, disable_printing, is_open)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, false) RETURNING *
-        `, [canvasCourseId, title, canvas_quiz_url, require_mic, require_camera, require_screen, disable_right_click, require_fullscreen, require_seb || false, max_attempts || 1, exam_code, max_violations || 0, canvas_quiz_password || '', disable_clipboard || false, disable_printing || false]);
+            INSERT INTO exams (canvas_course_id, title, canvas_quiz_url, require_mic, require_camera, require_screen, disable_right_click, require_fullscreen, require_seb, max_attempts, exam_code, max_violations, canvas_quiz_password, disable_clipboard, disable_printing, only_one_screen, block_downloads, prevent_reentry, is_open)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, false) RETURNING *
+        `, [
+            canvasCourseId, title, canvas_quiz_url, require_mic, require_camera, require_screen, 
+            disable_right_click, require_fullscreen, require_seb || false, max_attempts || 1, exam_code, max_violations || 0, 
+            canvas_quiz_password || '', disable_clipboard || false, disable_printing || false,
+            only_one_screen || false, block_downloads || false, prevent_reentry || false
+        ]);
         
         // Enable proctor mode requirements on the Canvas quiz itself (results lockdown stays off)
         setCanvasQuizProctorMode(req.session.lti, canvas_quiz_url, true);
@@ -612,7 +617,8 @@ app.patch('/api/exams/:id', requireInstructor, async (req, res) => {
             title, canvas_quiz_url, exam_code, max_attempts,
             require_camera, require_mic, require_screen,
             disable_right_click, require_fullscreen, require_seb,
-            max_violations, canvas_quiz_password, disable_clipboard, disable_printing
+            max_violations, canvas_quiz_password, disable_clipboard, disable_printing,
+            only_one_screen, block_downloads, prevent_reentry
         } = req.body;
 
         // Retrieve old quiz URL to handle changes
@@ -627,8 +633,10 @@ app.patch('/api/exams/:id', requireInstructor, async (req, res) => {
                 require_camera = $5, require_mic = $6, require_screen = $7,
                 disable_right_click = $8, require_fullscreen = $9, require_seb = $10,
                 max_violations = $11, canvas_quiz_password = $12, 
-                disable_clipboard = $13, disable_printing = $14, updated_at = NOW()
-            WHERE id = $15 AND (canvas_course_id = $16 OR canvas_course_id = $17)
+                disable_clipboard = $13, disable_printing = $14,
+                only_one_screen = $15, block_downloads = $16, prevent_reentry = $17,
+                updated_at = NOW()
+            WHERE id = $18 AND (canvas_course_id = $19 OR canvas_course_id = $20)
             RETURNING *
         `, [
             title, canvas_quiz_url, exam_code, max_attempts,
@@ -636,6 +644,7 @@ app.patch('/api/exams/:id', requireInstructor, async (req, res) => {
             disable_right_click, require_fullscreen, require_seb,
             max_violations || 0, canvas_quiz_password || '', 
             disable_clipboard || false, disable_printing || false,
+            only_one_screen || false, block_downloads || false, prevent_reentry || false,
             id, canvasCourseId, alternativeCourseId || ''
         ]);
 
@@ -657,6 +666,70 @@ app.patch('/api/exams/:id', requireInstructor, async (req, res) => {
     }
 });
 
+// API: Helper to verify student exam access & handle resumption / prevent_reentry
+async function verifyStudentExamAccess(exam, userId) {
+    if (!exam.is_open) {
+        throw new Error('This exam is currently closed by the instructor.');
+    }
+    
+    // Check latest session status for resumption
+    const latestSessionQuery = await pool.query(
+        'SELECT * FROM exam_sessions WHERE exam_id = $1 AND student_canvas_id = $2 ORDER BY id DESC LIMIT 1', 
+        [exam.id, userId]
+    );
+    const latestSession = latestSessionQuery.rows[0];
+    let isResuming = false;
+    
+    if (latestSession) {
+        if (latestSession.status === 'started') {
+            isResuming = true;
+        } else if (latestSession.status === 'unexpected') {
+            if (exam.prevent_reentry) {
+                const err = new Error('This exam does not allow re-entry. Since you closed, refreshed, or navigated away from the exam, you cannot resume it.');
+                err.prevent_reentry_blocked = true;
+                throw err;
+            } else {
+                isResuming = true;
+            }
+        }
+    }
+
+    const sessionCountQuery = await pool.query(
+        'SELECT COUNT(*) as attempt_count FROM exam_sessions WHERE exam_id = $1 AND student_canvas_id = $2', 
+        [exam.id, userId]
+    );
+    const attemptCount = parseInt(sessionCountQuery.rows[0].attempt_count, 10);
+    
+    const overrideQuery = await pool.query(
+        'SELECT extra_attempts FROM exam_overrides WHERE exam_id = $1 AND student_canvas_id = $2', 
+        [exam.id, userId]
+    );
+    const extraAttempts = overrideQuery.rows.length > 0 ? parseInt(overrideQuery.rows[0].extra_attempts, 10) : 0;
+    
+    const totalAllowed = (exam.max_attempts || 1) + extraAttempts;
+    
+    if (attemptCount >= totalAllowed && !isResuming) {
+        const isCompleted = latestSession && (latestSession.status === 'completed' || latestSession.status === 'booted' || latestSession.status === 'abandoned');
+        const err = new Error(`You have reached the maximum allowable attempts (${totalAllowed}) for this exam.`);
+        err.already_completed = isCompleted;
+        throw err;
+    }
+
+    const crypto = require('crypto');
+    const auto_login_user_id = userId;
+    const auto_login_expires = Math.floor(Date.now() / 1000) + 300; // 5 minutes validity
+    const secret = "canvas-proctor-shared-secret-key-998877";
+    const signData = `auto_login_user_id=${auto_login_user_id}&expires=${auto_login_expires}`;
+    const auto_login_signature = crypto.createHmac('sha256', secret).update(signData).digest('hex');
+
+    return {
+        ...exam,
+        auto_login_user_id,
+        auto_login_expires,
+        auto_login_signature
+    };
+}
+
 // API: Get Exam details (For Student entering / pre-flight)
 app.post('/api/exams/verify-code', requireAuth, async (req, res) => {
     try {
@@ -667,43 +740,23 @@ app.post('/api/exams/verify-code', requireAuth, async (req, res) => {
         if (examResult.rows.length === 0) return res.status(404).json({ error: 'Invalid exam code' });
         
         const exam = examResult.rows[0];
-        
-        if (!exam.is_open) {
-            return res.status(403).json({ error: 'This exam is currently closed by the instructor.' });
-        }
-        
-        const sessionCountQuery = await pool.query('SELECT COUNT(*) as attempt_count FROM exam_sessions WHERE exam_id = $1 AND student_canvas_id = $2', [exam.id, userId]);
-        const attemptCount = parseInt(sessionCountQuery.rows[0].attempt_count, 10);
-        
-        const overrideQuery = await pool.query('SELECT extra_attempts FROM exam_overrides WHERE exam_id = $1 AND student_canvas_id = $2', [exam.id, userId]);
-        const extraAttempts = overrideQuery.rows.length > 0 ? parseInt(overrideQuery.rows[0].extra_attempts, 10) : 0;
-        
-        const totalAllowed = (exam.max_attempts || 1) + extraAttempts;
-        
-        if (attemptCount >= totalAllowed) {
-            const latestSession = await pool.query('SELECT status FROM exam_sessions WHERE exam_id = $1 AND student_canvas_id = $2 ORDER BY id DESC LIMIT 1', [exam.id, userId]);
-            const isCompleted = latestSession.rows.length > 0 && (latestSession.rows[0].status === 'completed' || latestSession.rows[0].status === 'booted');
-            return res.status(403).json({ 
-                error: `You have reached the maximum allowable attempts (${totalAllowed}) for this exam.`,
-                already_completed: isCompleted,
-                canvas_quiz_url: exam.canvas_quiz_url
-            });
-        }
-        
-        const crypto = require('crypto');
-        const auto_login_user_id = userId;
-        const auto_login_expires = Math.floor(Date.now() / 1000) + 300; // 5 minutes validity
-        const secret = "canvas-proctor-shared-secret-key-998877";
-        const signData = `auto_login_user_id=${auto_login_user_id}&expires=${auto_login_expires}`;
-        const auto_login_signature = crypto.createHmac('sha256', secret).update(signData).digest('hex');
-
-        res.json({
-            ...exam,
-            auto_login_user_id,
-            auto_login_expires,
-            auto_login_signature
-        });
+        const result = await verifyStudentExamAccess(exam, userId);
+        res.json(result);
     } catch (err) {
+        let canvas_quiz_url = '';
+        try {
+            const { exam_code } = req.body;
+            const { canvasCourseId, alternativeCourseId } = req.session.lti;
+            const examResult = await pool.query('SELECT canvas_quiz_url FROM exams WHERE (canvas_course_id = $1 OR canvas_course_id = $2) AND exam_code = $3', [canvasCourseId, alternativeCourseId || '', exam_code]);
+            if (examResult.rows.length > 0) canvas_quiz_url = examResult.rows[0].canvas_quiz_url;
+        } catch (e) {}
+
+        if (err.prevent_reentry_blocked) {
+            return res.status(403).json({ error: err.message, prevent_reentry_blocked: true, canvas_quiz_url });
+        }
+        if (err.already_completed !== undefined) {
+            return res.status(403).json({ error: err.message, already_completed: err.already_completed, canvas_quiz_url });
+        }
         res.status(500).json({ error: err.message });
     }
 });
@@ -730,43 +783,29 @@ app.post('/api/exams/verify-placement', requireAuth, async (req, res) => {
         if (examResult.rows.length === 0) return res.status(404).json({ error: 'Linked exam not found' });
         
         const exam = examResult.rows[0];
-        
-        if (!exam.is_open) {
-            return res.status(403).json({ error: 'This exam is currently closed by the instructor.' });
-        }
-        
-        const sessionCountQuery = await pool.query('SELECT COUNT(*) as attempt_count FROM exam_sessions WHERE exam_id = $1 AND student_canvas_id = $2', [exam.id, userId]);
-        const attemptCount = parseInt(sessionCountQuery.rows[0].attempt_count, 10);
-        
-        const overrideQuery = await pool.query('SELECT extra_attempts FROM exam_overrides WHERE exam_id = $1 AND student_canvas_id = $2', [exam.id, userId]);
-        const extraAttempts = overrideQuery.rows.length > 0 ? parseInt(overrideQuery.rows[0].extra_attempts, 10) : 0;
-        
-        const totalAllowed = (exam.max_attempts || 1) + extraAttempts;
-        
-        if (attemptCount >= totalAllowed) {
-            const latestSession = await pool.query('SELECT status FROM exam_sessions WHERE exam_id = $1 AND student_canvas_id = $2 ORDER BY id DESC LIMIT 1', [exam.id, userId]);
-            const isCompleted = latestSession.rows.length > 0 && (latestSession.rows[0].status === 'completed' || latestSession.rows[0].status === 'booted');
-            return res.status(403).json({ 
-                error: `You have reached the maximum allowable attempts (${totalAllowed}) for this exam.`,
-                already_completed: isCompleted,
-                canvas_quiz_url: exam.canvas_quiz_url
-            });
-        }
-        
-        const crypto = require('crypto');
-        const auto_login_user_id = userId;
-        const auto_login_expires = Math.floor(Date.now() / 1000) + 300; // 5 minutes validity
-        const secret = "canvas-proctor-shared-secret-key-998877";
-        const signData = `auto_login_user_id=${auto_login_user_id}&expires=${auto_login_expires}`;
-        const auto_login_signature = crypto.createHmac('sha256', secret).update(signData).digest('hex');
-
-        res.json({
-            ...exam,
-            auto_login_user_id,
-            auto_login_expires,
-            auto_login_signature
-        });
+        const result = await verifyStudentExamAccess(exam, userId);
+        res.json(result);
     } catch (err) {
+        let canvas_quiz_url = '';
+        try {
+            const { exam_id, placement_id } = req.body;
+            let targetExamId = exam_id;
+            if (!targetExamId && placement_id) {
+                const placementResult = await pool.query('SELECT exam_id FROM exam_placements WHERE resource_link_id = $1', [placement_id]);
+                if (placementResult.rows.length > 0) targetExamId = placementResult.rows[0].exam_id;
+            }
+            if (targetExamId) {
+                const examResult = await pool.query('SELECT canvas_quiz_url FROM exams WHERE id = $1', [targetExamId]);
+                if (examResult.rows.length > 0) canvas_quiz_url = examResult.rows[0].canvas_quiz_url;
+            }
+        } catch (e) {}
+
+        if (err.prevent_reentry_blocked) {
+            return res.status(403).json({ error: err.message, prevent_reentry_blocked: true, canvas_quiz_url });
+        }
+        if (err.already_completed !== undefined) {
+            return res.status(403).json({ error: err.message, already_completed: err.already_completed, canvas_quiz_url });
+        }
         res.status(500).json({ error: err.message });
     }
 });
@@ -941,13 +980,57 @@ app.post('/api/session/start', requireAuth, async (req, res) => {
         const { exam_id } = req.body;
         const { userId, userName } = req.session.lti;
 
-        // Always create a new session since attempt constraints were checked in verify-code
-        const countQuery = await pool.query('SELECT COUNT(*) as attempts FROM exam_sessions WHERE exam_id = $1 AND student_canvas_id = $2', [exam_id, userId]);
-        const currentAttempts = parseInt(countQuery.rows[0].attempts, 10);
-        const sessionResult = await pool.query(`
-            INSERT INTO exam_sessions (exam_id, student_canvas_id, student_name, attempt_number)
-            VALUES ($1, $2, $3, $4) RETURNING *
-        `, [exam_id, userId, userName, currentAttempts + 1]);
+        // Check if there is an active/resumable session
+        const latestSessionQuery = await pool.query(
+            'SELECT * FROM exam_sessions WHERE exam_id = $1 AND student_canvas_id = $2 ORDER BY id DESC LIMIT 1',
+            [exam_id, userId]
+        );
+        const latestSession = latestSessionQuery.rows[0];
+        
+        // Find if exam has prevent_reentry enabled
+        const examResult = await pool.query('SELECT prevent_reentry FROM exams WHERE id = $1', [exam_id]);
+        const exam = examResult.rows[0];
+        const preventReentry = exam ? exam.prevent_reentry : false;
+
+        let session;
+        let next_chunk_index = 0;
+
+        if (latestSession && (latestSession.status === 'started' || (latestSession.status === 'unexpected' && !preventReentry))) {
+            // Resume the existing session
+            session = latestSession;
+            if (session.status === 'unexpected') {
+                await pool.query("UPDATE exam_sessions SET status = 'started' WHERE id = $1", [session.id]);
+                session.status = 'started';
+            }
+            
+            // Determine next chunk index
+            const chunkDir = path.join(os.tmpdir(), `chunks-${session.id}`);
+            if (fs.existsSync(chunkDir)) {
+                const files = fs.readdirSync(chunkDir);
+                let maxIdx = -1;
+                for (const file of files) {
+                    const match = file.match(/^chunk-(\d+)\.dat$/);
+                    if (match) {
+                        const idx = parseInt(match[1], 10);
+                        if (idx > maxIdx) maxIdx = idx;
+                    }
+                }
+                if (maxIdx >= 0) {
+                    next_chunk_index = maxIdx;
+                }
+            }
+            console.log(`[Resume Session] Student ${userName} resuming session ${session.id}, next_chunk_index: ${next_chunk_index}`);
+        } else {
+            // Create a new session
+            const countQuery = await pool.query('SELECT COUNT(*) as attempts FROM exam_sessions WHERE exam_id = $1 AND student_canvas_id = $2', [exam_id, userId]);
+            const currentAttempts = parseInt(countQuery.rows[0].attempts, 10);
+            const sessionResult = await pool.query(`
+                INSERT INTO exam_sessions (exam_id, student_canvas_id, student_name, attempt_number)
+                VALUES ($1, $2, $3, $4) RETURNING *
+            `, [exam_id, userId, userName, currentAttempts + 1]);
+            session = sessionResult.rows[0];
+            console.log(`[New Session] Student ${userName} starting new session ${session.id}`);
+        }
 
         const crypto = require('crypto');
         const auto_login_user_id = userId;
@@ -957,7 +1040,8 @@ app.post('/api/session/start', requireAuth, async (req, res) => {
         const auto_login_signature = crypto.createHmac('sha256', secret).update(signData).digest('hex');
 
         res.json({
-            ...sessionResult.rows[0],
+            ...session,
+            next_chunk_index,
             auto_login_user_id,
             auto_login_expires,
             auto_login_signature
@@ -1282,7 +1366,20 @@ async function assembleAndUploadSessionVideo(exam_session_id, total_chunks) {
 // API: End Exam Session
 app.post('/api/session/end', requireAuth, async (req, res) => {
     try {
-        const { exam_session_id, status, total_chunks } = req.body;
+        const { exam_session_id, status, total_chunks, exit_type } = req.body;
+        if (exit_type === 'unexpected') {
+            console.log(`[End Session] Unexpected exit for session ${exam_session_id}`);
+            await pool.query("UPDATE exam_sessions SET status = 'unexpected' WHERE id = $1", [exam_session_id]);
+            
+            const examIdQuery = await pool.query('SELECT exam_id FROM exam_sessions WHERE id=$1', [exam_session_id]);
+            if (examIdQuery.rows.length > 0) {
+                io.to('teacher_' + examIdQuery.rows[0].exam_id).emit('student_status', { 
+                    session_id: exam_session_id, status: 'unexpected' 
+                });
+            }
+            return res.json({ success: true });
+        }
+
         const finalStatus = status || 'completed';
         console.log(`[End Session] Ending session ${exam_session_id} with status: ${finalStatus}, total_chunks expected: ${total_chunks}`);
         await pool.query('UPDATE exam_sessions SET status=$1 WHERE id=$2', [finalStatus, exam_session_id]);
@@ -1492,6 +1589,18 @@ app.get('/api/exams/:exam_id/reports', requireInstructor, async (req, res) => {
     }
 });
 
+// Helper to set/update Boolean key in plist XML string
+function setPlistBooleanKey(plistStr, keyName, value) {
+    const regex = new RegExp(`(<key>${keyName}</key>\\s*)(<true\\/>|<false\\/>)`);
+    const valTag = value ? '<true/>' : '<false/>';
+    if (regex.test(plistStr)) {
+        return plistStr.replace(regex, `$1${valTag}`);
+    } else {
+        // Append right before the closing dict tag
+        return plistStr.replace(/(<\/dict>\s*<\/plist>\s*$)/, `\t<key>${keyName}</key>\n\t${valTag}\n$1`);
+    }
+}
+
 // API: Generate Dynamic SEB Config
 app.get('/api/seb/config/:token/:filename?', async (req, res) => {
     const { token } = req.params;
@@ -1509,6 +1618,22 @@ app.get('/api/seb/config/:token/:filename?', async (req, res) => {
         if (placement_id) startUrl += `&placement_id=${encodeURIComponent(placement_id)}`;
         if (exam_id) startUrl += `&exam_id=${encodeURIComponent(exam_id)}`;
         startUrl = startUrl.replace(/&/g, '&amp;');
+
+        // Fetch exam configuration to customize the SEB file settings
+        let exam = null;
+        if (exam_id) {
+            const examResult = await pool.query('SELECT * FROM exams WHERE id = $1', [exam_id]);
+            if (examResult.rows.length > 0) exam = examResult.rows[0];
+        } else if (placement_id) {
+            const placementResult = await pool.query('SELECT exam_id FROM exam_placements WHERE resource_link_id = $1', [placement_id]);
+            if (placementResult.rows.length > 0) {
+                const examResult = await pool.query('SELECT * FROM exams WHERE id = $1', [placementResult.rows[0].exam_id]);
+                if (examResult.rows.length > 0) exam = examResult.rows[0];
+            }
+        } else if (exam_code) {
+            const examResult = await pool.query('SELECT * FROM exams WHERE exam_code = $1', [exam_code]);
+            if (examResult.rows.length > 0) exam = examResult.rows[0];
+        }
 
         let sebConfig = '';
         const templatePath = path.join(__dirname, 'public', 'config.seb');
@@ -1577,6 +1702,15 @@ app.get('/api/seb/config/:token/:filename?', async (req, res) => {
 	<false/>
 </dict>
 </plist>`;
+        }
+
+        // Apply exam constraints to the configuration dynamically
+        if (exam) {
+            // If only_one_screen is enabled, block display mirroring and secondary displays
+            sebConfig = setPlistBooleanKey(sebConfig, 'allowDisplayMirroring', !exam.only_one_screen);
+            sebConfig = setPlistBooleanKey(sebConfig, 'allowSecondaryDisplays', !exam.only_one_screen);
+            // If block_downloads is enabled, block downloads
+            sebConfig = setPlistBooleanKey(sebConfig, 'allowDownloads', !exam.block_downloads);
         }
 
         res.setHeader('Content-Type', 'application/seb');
@@ -1723,7 +1857,7 @@ io.on('connection', (socket) => {
                 activeDisconnectTimers.delete(exam_session_id);
                 try {
                     const sessionQuery = await pool.query('SELECT status FROM exam_sessions WHERE id = $1', [exam_session_id]);
-                    if (sessionQuery.rows.length > 0 && sessionQuery.rows[0].status === 'started') {
+                    if (sessionQuery.rows.length > 0 && (sessionQuery.rows[0].status === 'started' || sessionQuery.rows[0].status === 'unexpected')) {
                         console.log(`Session ${exam_session_id} abandoned by disconnect. Auto-finalizing...`);
                         await pool.query("UPDATE exam_sessions SET status = 'abandoned' WHERE id = $1", [exam_session_id]);
                         assembleAndUploadSessionVideo(exam_session_id);

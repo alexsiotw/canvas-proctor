@@ -91,6 +91,9 @@ async function initDatabase() {
       ALTER TABLE exams ADD COLUMN IF NOT EXISTS canvas_quiz_password VARCHAR(255);
       ALTER TABLE exams ADD COLUMN IF NOT EXISTS disable_clipboard BOOLEAN DEFAULT false;
       ALTER TABLE exams ADD COLUMN IF NOT EXISTS disable_printing BOOLEAN DEFAULT false;
+      ALTER TABLE exams ADD COLUMN IF NOT EXISTS only_one_screen BOOLEAN DEFAULT false;
+      ALTER TABLE exams ADD COLUMN IF NOT EXISTS block_downloads BOOLEAN DEFAULT false;
+      ALTER TABLE exams ADD COLUMN IF NOT EXISTS prevent_reentry BOOLEAN DEFAULT false;
       ALTER TABLE exam_sessions ADD COLUMN IF NOT EXISTS video_archived BOOLEAN DEFAULT false;
       ALTER TABLE exam_sessions ADD COLUMN IF NOT EXISTS mime_type VARCHAR(255) DEFAULT 'video/webm';
       ALTER TABLE exam_sessions ADD COLUMN IF NOT EXISTS drive_file_id VARCHAR(255);

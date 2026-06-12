@@ -1094,6 +1094,30 @@ function showCreateExamModal(examId = null) {
                 <div style="font-size: 9px; color: var(--text-muted); margin-top: 4px;">Block and hide printing</div>
                 <input type="checkbox" id="chk-printing" ${exam && exam.disable_printing ? 'checked' : ''} style="display:none;" />
             </div>
+
+            <div class="proctorio-card ${exam && exam.only_one_screen ? 'selected' : ''}" id="card-one-screen" onclick="toggleProctorioOption('chk-one-screen', 'card-one-screen')">
+                <div class="proctorio-check">✓</div>
+                <div class="proctorio-icon">🖥️</div>
+                <div class="proctorio-title">Only One Screen</div>
+                <div style="font-size: 9px; color: var(--text-muted); margin-top: 4px;">Block secondary/dual displays</div>
+                <input type="checkbox" id="chk-one-screen" ${exam && exam.only_one_screen ? 'checked' : ''} style="display:none;" />
+            </div>
+
+            <div class="proctorio-card ${exam && exam.block_downloads ? 'selected' : ''}" id="card-downloads" onclick="toggleProctorioOption('chk-downloads', 'card-downloads')">
+                <div class="proctorio-check">✓</div>
+                <div class="proctorio-icon">📥</div>
+                <div class="proctorio-title">Block Downloads</div>
+                <div style="font-size: 9px; color: var(--text-muted); margin-top: 4px;">Block file downloading</div>
+                <input type="checkbox" id="chk-downloads" ${exam && exam.block_downloads ? 'checked' : ''} style="display:none;" />
+            </div>
+
+            <div class="proctorio-card ${exam && exam.prevent_reentry ? 'selected' : ''}" id="card-reentry" onclick="toggleProctorioOption('chk-reentry', 'card-reentry')">
+                <div class="proctorio-check">✓</div>
+                <div class="proctorio-icon">🚪</div>
+                <div class="proctorio-title">Prevent Re-entry</div>
+                <div style="font-size: 9px; color: var(--text-muted); margin-top: 4px;">Block re-entry after exit</div>
+                <input type="checkbox" id="chk-reentry" ${exam && exam.prevent_reentry ? 'checked' : ''} style="display:none;" />
+            </div>
         </div>
 
         <div style="margin-top: 32px; text-align: right; border-top: 1px solid var(--border); padding-top: 15px;">
@@ -1118,7 +1142,6 @@ function toggleProctorioOption(checkboxId, cardId) {
         }
     }
 }
- 
 async function saveExam(examId = null) {
     const payload = {
         title: document.getElementById('exam-title').value,
@@ -1134,7 +1157,10 @@ async function saveExam(examId = null) {
         require_fullscreen: document.getElementById('chk-fs').checked,
         require_seb: document.getElementById('chk-seb').checked,
         disable_clipboard: document.getElementById('chk-clipboard').checked,
-        disable_printing: document.getElementById('chk-printing').checked
+        disable_printing: document.getElementById('chk-printing').checked,
+        only_one_screen: document.getElementById('chk-one-screen').checked,
+        block_downloads: document.getElementById('chk-downloads').checked,
+        prevent_reentry: document.getElementById('chk-reentry').checked
     };
 
     if(!payload.title || !payload.canvas_quiz_url) return alert('Fill all fields');

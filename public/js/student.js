@@ -608,6 +608,10 @@ async function startMainExamSession() {
         if (!sessionRes.ok || sessionInfo.error) {
             throw new Error(sessionInfo.error || "Session authentication failed");
         }
+        if (sessionInfo.next_chunk_index !== undefined) {
+            chunkIndex = sessionInfo.next_chunk_index;
+            console.log(`[Resume] Setting chunkIndex to ${chunkIndex}`);
+        }
 
         if (isIOS()) {
             const warningEl = document.getElementById('ios-iframe-warning');
@@ -670,6 +674,12 @@ async function startMainExamSession() {
         }
         
         const iframe = document.getElementById('quiz-iframe');
+        if (examConfig.block_downloads) {
+            iframe.setAttribute('sandbox', 'allow-same-origin allow-scripts allow-forms allow-popups allow-popups-to-escape-sandbox allow-modals allow-top-navigation allow-top-navigation-by-user-activation');
+        } else {
+            iframe.setAttribute('sandbox', 'allow-same-origin allow-scripts allow-forms allow-popups allow-popups-to-escape-sandbox allow-modals allow-downloads allow-downloads-without-user-activation allow-top-navigation allow-top-navigation-by-user-activation');
+        }
+
         iframe.onload = () => {
             console.log("[Proctor] Quiz iframe loaded, sending security config postMessage...");
             iframe.contentWindow.postMessage({
@@ -792,6 +802,9 @@ async function startProctoring() {
         }
 
         setupFocusTracking();
+        if (examConfig.only_one_screen) {
+            initDisplayMonitoring();
+        }
         setupSimulatedAIProctoring();
         if (localMicStream) {
             setupAudioAnalysis(localMicStream);
@@ -1202,25 +1215,102 @@ function sendSnapshot() {
         screenshot_data_url: dataUrl
     });
 }
+function handleViolation(type, message) {
+    if (isExamCompleted) return;
+    violationCount++;
+    logProctorEvent(type, `${message} (Violation #${violationCount})`);
+    
+    if (examConfig.max_violations > 0 && violationCount >= examConfig.max_violations) {
+        bootStudent();
+    } else if (type !== 'display_violation') {
+        let msg = 'You have left the exam tab or lost focus of the window. This action has been logged and flagged for your instructor to review.';
+        if (examConfig.max_violations > 0) {
+            msg += ` Warning: You have ${violationCount} / ${examConfig.max_violations} focus violations. Exceeding this limit will automatically terminate your exam session.`;
+        }
+        document.getElementById('focus-violation-overlay').querySelector('p').innerText = msg;
+        document.getElementById('focus-violation-overlay').style.display = 'flex';
+    }
+}
 
-function setupFocusTracking() {
-    function handleViolation(type, message) {
+let dualScreenOverlay = null;
+
+function initDisplayMonitoring() {
+    if (!examConfig.only_one_screen) return;
+
+    // Create the overlay DOM element dynamically if it doesn't exist
+    if (!document.getElementById('dual-screen-blocker')) {
+        dualScreenOverlay = document.createElement('div');
+        dualScreenOverlay.id = 'dual-screen-blocker';
+        dualScreenOverlay.style.cssText = `
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100vw;
+            height: 100vh;
+            background: rgba(15, 23, 42, 0.98);
+            z-index: 9999999;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            color: white;
+            font-family: 'Plus Jakarta Sans', sans-serif;
+            text-align: center;
+            padding: 20px;
+            box-sizing: border-box;
+        `;
+        dualScreenOverlay.innerHTML = `
+            <div style="background: rgba(30, 41, 59, 0.5); padding: 40px; border-radius: 16px; border: 1px solid rgba(255,255,255,0.1); max-width: 500px; box-shadow: 0 20px 40px rgba(0,0,0,0.5);">
+                <div style="font-size: 60px; margin-bottom: 20px;">🖥️🚫</div>
+                <h2 style="font-size: 24px; font-weight: 700; margin: 0 0 15px 0; font-family:'Outfit',sans-serif; color:#f87171;">Multiple Screens Detected</h2>
+                <p style="font-size: 14px; line-height: 1.6; color: #cbd5e1; margin-bottom: 25px;">
+                    This exam requires using a single display. Please disconnect, unplug, or disable all secondary screens, monitors, or display mirroring to resume the exam.
+                </p>
+                <div style="font-size: 11px; color: #94a3b8; border-top: 1px solid rgba(255,255,255,0.1); padding-top: 15px;">
+                    Proctoring is active. This event has been logged.
+                </div>
+            </div>
+        `;
+        document.body.appendChild(dualScreenOverlay);
+    } else {
+        dualScreenOverlay = document.getElementById('dual-screen-blocker');
+    }
+
+    // Heuristics and API checks
+    async function evaluateScreens() {
         if (isExamCompleted) return;
-        violationCount++;
-        logProctorEvent(type, `${message} (Violation #${violationCount})`);
+        let isExtended = false;
         
-        if (examConfig.max_violations > 0 && violationCount >= examConfig.max_violations) {
-            bootStudent();
-        } else {
-            let msg = 'You have left the exam tab or lost focus of the window. This action has been logged and flagged for your instructor to review.';
-            if (examConfig.max_violations > 0) {
-                msg += ` Warning: You have ${violationCount} / ${examConfig.max_violations} focus violations. Exceeding this limit will automatically terminate your exam session.`;
+        // 1. Modern API: window.screen.isExtended
+        if (typeof window.screen.isExtended !== 'undefined') {
+            isExtended = window.screen.isExtended;
+        } else if (window.screen.isMultiScreen) {
+            isExtended = window.screen.isMultiScreen;
+        }
+
+        if (isExtended) {
+            if (dualScreenOverlay.style.display !== 'flex') {
+                dualScreenOverlay.style.display = 'flex';
+                handleViolation('display_violation', 'Multiple monitors/screens detected.');
             }
-            document.getElementById('focus-violation-overlay').querySelector('p').innerText = msg;
-            document.getElementById('focus-violation-overlay').style.display = 'flex';
+        } else {
+            if (dualScreenOverlay.style.display === 'flex') {
+                dualScreenOverlay.style.display = 'none';
+                logProctorEvent('display_resolved', 'Secondary display disconnected. Student returned to exam.');
+            }
         }
     }
 
+    evaluateScreens();
+
+    if (window.screen && window.screen.addEventListener) {
+        window.screen.addEventListener('change', evaluateScreens);
+    }
+    
+    setInterval(evaluateScreens, 2000);
+}
+
+function setupFocusTracking() {
     document.addEventListener('visibilitychange', () => {
         if (isExamCompleted) return;
         if (document.visibilityState === 'hidden') {
