@@ -1696,7 +1696,8 @@ window.addEventListener('message', async (event) => {
 window.addEventListener('beforeunload', (event) => {
     if (sessionInfo && sessionInfo.id) {
         const url = `/api/session/end?token=${encodeURIComponent(sessionToken)}`;
-        const data = JSON.stringify({ exam_session_id: sessionInfo.id, exit_type: 'unexpected', total_chunks: chunkIndex });
+        const exitType = isExamCompleted ? 'completed' : 'unexpected';
+        const data = JSON.stringify({ exam_session_id: sessionInfo.id, exit_type: exitType, total_chunks: chunkIndex });
         const blob = new Blob([data], { type: 'application/json' });
         navigator.sendBeacon(url, blob);
     }

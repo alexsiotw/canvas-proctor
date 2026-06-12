@@ -1858,8 +1858,14 @@ io.on('connection', (socket) => {
                 try {
                     const sessionQuery = await pool.query('SELECT status FROM exam_sessions WHERE id = $1', [exam_session_id]);
                     if (sessionQuery.rows.length > 0 && (sessionQuery.rows[0].status === 'started' || sessionQuery.rows[0].status === 'unexpected')) {
-                        console.log(`Session ${exam_session_id} abandoned by disconnect. Auto-finalizing...`);
-                        await pool.query("UPDATE exam_sessions SET status = 'abandoned' WHERE id = $1", [exam_session_id]);
+                        // Check if the student completed the exam before disconnect
+                        const endedQuery = await pool.query(
+                            "SELECT id FROM proctor_logs WHERE exam_session_id = $1 AND event_type = 'exam_ended' LIMIT 1",
+                            [exam_session_id]
+                        );
+                        const finalStatus = endedQuery.rows.length > 0 ? 'completed' : 'abandoned';
+                        console.log(`Session ${exam_session_id} disconnected. Setting status to: ${finalStatus}. Auto-finalizing...`);
+                        await pool.query("UPDATE exam_sessions SET status = $1 WHERE id = $2", [finalStatus, exam_session_id]);
                         assembleAndUploadSessionVideo(exam_session_id);
                     }
                 } catch (e) {
