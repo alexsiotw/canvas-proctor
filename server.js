@@ -1872,7 +1872,15 @@ io.on('connection', (socket) => {
     });
 });
 
-app.use(express.static(path.join(__dirname, 'public')));
+app.use(express.static(path.join(__dirname, 'public'), {
+    setHeaders: (res, filepath) => {
+        if (filepath.endsWith('.html')) {
+            res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+            res.setHeader('Pragma', 'no-cache');
+            res.setHeader('Expires', '0');
+        }
+    }
+}));
 // Fallback protection for static entries
 app.get('/', (req, res) => {
     if (req.session.lti && req.session.lti.role === 'student') return res.redirect('/student.html');
