@@ -464,13 +464,23 @@ function startWebcam5sRecord() {
     }
     
     // Combine webcam video tracks with the already active microphone tracks to record both audio and video
-    const tracks = [
-        ...localCamStream.getVideoTracks()
-    ];
-    if (localMicStream) {
-        localMicStream.getAudioTracks().forEach(t => tracks.push(t));
+    let combinedStream;
+    if (isIOS()) {
+        combinedStream = localCamStream;
+        if (localMicStream) {
+            localMicStream.getAudioTracks().forEach(t => {
+                try { combinedStream.addTrack(t); } catch(e){}
+            });
+        }
+    } else {
+        const tracks = [
+            ...localCamStream.getVideoTracks()
+        ];
+        if (localMicStream) {
+            localMicStream.getAudioTracks().forEach(t => tracks.push(t));
+        }
+        combinedStream = new MediaStream(tracks);
     }
-    const combinedStream = new MediaStream(tracks);
     
     try {
         webcamRecorder = new MediaRecorder(combinedStream, options);
@@ -729,16 +739,14 @@ async function startProctoring() {
         const ios = isIOS();
         if (ios) {
             console.log("[Media] iOS/Safari detected: recording raw webcam and mic directly for maximum stability.");
-            if (localCamStream && localCamStream.getVideoTracks().length > 0) {
-                localCamStream.getVideoTracks().forEach(t => {
-                    tracks.push(t);
-                    addedTrackIds.add(t.id);
-                });
-            }
-            if (localMicStream) {
+            finalStream = localCamStream;
+            if (localMicStream && finalStream) {
                 localMicStream.getAudioTracks().forEach(t => {
-                    tracks.push(t);
-                    addedTrackIds.add(t.id);
+                    try {
+                        finalStream.addTrack(t);
+                    } catch(e) {
+                        console.warn("Failed to add mic track to finalStream:", e);
+                    }
                 });
             }
         } else {
@@ -761,10 +769,9 @@ async function startProctoring() {
                     }
                 });
             }
+            finalStream = new MediaStream(tracks);
         }
-
-        finalStream = new MediaStream(tracks);
-        console.log(`[Media] Final stream created with ${finalStream.getVideoTracks().length} video and ${finalStream.getAudioTracks().length} audio tracks.`);
+        console.log(`[Media] Final stream ready with ${finalStream ? finalStream.getVideoTracks().length : 0} video and ${finalStream ? finalStream.getAudioTracks().length : 0} audio tracks.`);
 
         // local-video srcObject assignment removed to avoid redundant decoding/rendering
 
