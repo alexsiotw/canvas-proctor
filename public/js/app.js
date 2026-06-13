@@ -160,6 +160,7 @@ async function loadExams() {
         const res = await apiFetch('/api/canvas-quizzes');
         if (res.ok) {
             canvasQuizzes = await res.json();
+            if (!Array.isArray(canvasQuizzes)) canvasQuizzes = [];
         } else {
             console.warn("Canvas quizzes fetch failed, falling back to mock quizzes");
             canvasQuizzes = [];
@@ -169,7 +170,43 @@ async function loadExams() {
         canvasQuizzes = [];
     }
     
+    // Safety check: if exams is not an array, it means authentication failed
+    if (!Array.isArray(exams)) {
+        const content = document.getElementById('content');
+        if (content) {
+            content.innerHTML = `
+                <div style="padding: 40px; text-align: center; max-width: 600px; margin: 0 auto; margin-top: 50px; background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius-lg); box-shadow: var(--shadow-lg);">
+                    <div style="font-size: 40px; margin-bottom: 20px;">⚠️</div>
+                    <h2 style="font-family: 'Outfit', sans-serif; color: var(--text-primary); margin-bottom: 15px;">Session Authentication Required</h2>
+                    <p style="color: var(--text-secondary); line-height: 1.6; margin-bottom: 20px;">Your instructor session could not be verified.</p>
+                    <p style="color: var(--text-secondary); line-height: 1.6;">Please launch the Secure Exam Proctor via the Canvas Course Navigation menu or click the dashboard links from within Canvas to establish a secure session.</p>
+                </div>
+            `;
+        }
+        return;
+    }
+
     renderExams();
+
+    // Auto-load exam dashboard if quiz_id is in URL
+    const targetQuizId = urlParams.get('quiz_id');
+    if (targetQuizId && exams.length > 0) {
+        const linkedExam = exams.find(ex => ex.canvas_quiz_url && ex.canvas_quiz_url.includes('/quizzes/' + targetQuizId));
+        if (linkedExam) {
+            loadExamDashboard(linkedExam.id);
+            if (urlParams.get('view') === 'live') {
+                setTimeout(() => {
+                    const grid = document.getElementById('live-grid');
+                    if (grid) grid.scrollIntoView({ behavior: 'smooth' });
+                }, 500);
+            } else {
+                setTimeout(() => {
+                    const reports = document.getElementById('report-content');
+                    if (reports) reports.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                }, 500);
+            }
+        }
+    }
 }
 
 function getCourseQuizzes() {

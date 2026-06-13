@@ -608,6 +608,90 @@ app.patch('/api/exams/:id/status', requireInstructor, async (req, res) => {
     }
 });
 
+// API: Canvas Native Integration - Get Exam by Quiz ID
+app.get('/api/canvas-native/exam/:quiz_id', async (req, res) => {
+    try {
+        if (req.headers['x-shared-secret'] !== 'canvas-proctor-shared-secret-key-998877') {
+            return res.status(403).json({ error: 'Unauthorized' });
+        }
+        const { quiz_id } = req.params;
+        const result = await pool.query("SELECT * FROM exams WHERE canvas_quiz_url LIKE $1 LIMIT 1", [`%/quizzes/${quiz_id}%`]);
+        if (result.rows.length === 0) return res.status(404).json({ error: 'Not configured yet' });
+        res.json(result.rows[0]);
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// API: Canvas Native Integration - Save Exam Settings
+app.post('/api/canvas-native/exam/:quiz_id', async (req, res) => {
+    try {
+        if (req.headers['x-shared-secret'] !== 'canvas-proctor-shared-secret-key-998877') {
+            return res.status(403).json({ error: 'Unauthorized' });
+        }
+        const { quiz_id } = req.params;
+        const body = req.body;
+        const existsResult = await pool.query("SELECT id FROM exams WHERE canvas_quiz_url LIKE $1 LIMIT 1", [`%/quizzes/${quiz_id}%`]);
+        if (existsResult.rows.length > 0) {
+            const id = existsResult.rows[0].id;
+            await pool.query(`
+                UPDATE exams SET 
+                    title = $1, canvas_quiz_url = $2, exam_code = $3, max_attempts = $4,
+                    require_camera = $5, require_mic = $6, require_screen = $7,
+                    disable_right_click = $8, require_fullscreen = $9, require_seb = $10,
+                    max_violations = $11, canvas_quiz_password = $12, disable_clipboard = $13,
+                    disable_printing = $14, only_one_screen = $15, block_downloads = $16, prevent_reentry = $17
+                WHERE id = $18
+            `, [
+                body.title || 'Canvas Native Exam', body.canvas_quiz_url, body.exam_code, body.max_attempts || 1,
+                body.require_camera, body.require_mic, body.require_screen,
+                body.disable_right_click, body.require_fullscreen, body.require_seb,
+                body.max_violations || 0, body.canvas_quiz_password || '', body.disable_clipboard,
+                body.disable_printing, body.only_one_screen, body.block_downloads, body.prevent_reentry,
+                id
+            ]);
+            res.json({ success: true, id: id });
+        } else {
+            const result = await pool.query(`
+                INSERT INTO exams (
+                    title, canvas_course_id, canvas_quiz_url, exam_code, max_attempts,
+                    require_camera, require_mic, require_screen, disable_right_click, require_fullscreen, require_seb,
+                    max_violations, canvas_quiz_password, disable_clipboard, disable_printing,
+                    only_one_screen, block_downloads, prevent_reentry,
+                    is_open, created_at
+                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, true, CURRENT_TIMESTAMP)
+                RETURNING id
+            `, [
+                body.title || 'Canvas Native Exam', body.canvas_course_id || 'canvas_native', body.canvas_quiz_url, body.exam_code, body.max_attempts || 1,
+                body.require_camera, body.require_mic, body.require_screen,
+                body.disable_right_click, body.require_fullscreen, body.require_seb,
+                body.max_violations || 0, body.canvas_quiz_password || '', body.disable_clipboard,
+                body.disable_printing, body.only_one_screen, body.block_downloads, body.prevent_reentry
+            ]);
+            res.json({ success: true, id: result.rows[0].id });
+        }
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// API: Canvas Native Integration - Auto Login Redirect
+app.get('/api/canvas-native/auto-login', (req, res) => {
+    if (req.query.token !== 'canvas-proctor-shared-secret-key-998877') {
+        return res.status(403).send("Unauthorized");
+    }
+    const { course_id, quiz_id, view } = req.query;
+    req.session.lti = {
+        userId: 'canvas_native_instructor',
+        canvasCourseId: course_id,
+        alternativeCourseId: '',
+        userName: 'Canvas Instructor',
+        role: 'instructor'
+    };
+    req.session.passcodeVerified = true;
+    res.redirect(`/index.html?course_id=${course_id}&quiz_id=${quiz_id}&view=${view || ''}`);
+});
+
 // API: Update Exam Settings
 app.patch('/api/exams/:id', requireInstructor, async (req, res) => {
     try {
