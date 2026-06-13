@@ -676,15 +676,27 @@ app.post('/api/canvas-native/exam/:quiz_id', async (req, res) => {
 });
 
 // API: Canvas Native Integration - Auto Login Redirect
-app.get('/api/canvas-native/auto-login', (req, res) => {
+app.get('/api/canvas-native/auto-login', async (req, res) => {
     if (req.query.token !== 'canvas-proctor-shared-secret-key-998877') {
         return res.status(403).send("Unauthorized");
     }
     const { course_id, quiz_id, view } = req.query;
+    
+    // Lookup the correct LTI course hash from the database based on the course URL
+    let actualCourseId = course_id;
+    try {
+        const result = await pool.query('SELECT canvas_course_id FROM exams WHERE canvas_quiz_url LIKE $1 LIMIT 1', [`%/courses/${course_id}/%`]);
+        if (result.rows.length > 0) {
+            actualCourseId = result.rows[0].canvas_course_id;
+        }
+    } catch (err) {
+        console.error('Auto-login course lookup failed', err);
+    }
+
     req.session.lti = {
         userId: 'canvas_native_instructor',
-        canvasCourseId: course_id,
-        alternativeCourseId: '',
+        canvasCourseId: actualCourseId,
+        alternativeCourseId: course_id,
         userName: 'Canvas Instructor',
         role: 'instructor'
     };
