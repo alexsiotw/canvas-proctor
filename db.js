@@ -94,6 +94,21 @@ async function initDatabase() {
       ALTER TABLE exams ADD COLUMN IF NOT EXISTS only_one_screen BOOLEAN DEFAULT false;
       ALTER TABLE exams ADD COLUMN IF NOT EXISTS block_downloads BOOLEAN DEFAULT false;
       ALTER TABLE exams ADD COLUMN IF NOT EXISTS prevent_reentry BOOLEAN DEFAULT false;
+      
+      -- Advanced extension-required columns
+      ALTER TABLE exams ADD COLUMN IF NOT EXISTS record_web_traffic BOOLEAN DEFAULT false;
+      ALTER TABLE exams ADD COLUMN IF NOT EXISTS disable_new_tabs BOOLEAN DEFAULT false;
+      ALTER TABLE exams ADD COLUMN IF NOT EXISTS close_open_tabs BOOLEAN DEFAULT false;
+      ALTER TABLE exams ADD COLUMN IF NOT EXISTS disable_extensions BOOLEAN DEFAULT false;
+      ALTER TABLE exams ADD COLUMN IF NOT EXISTS prevent_incognito BOOLEAN DEFAULT false;
+      ALTER TABLE exams ADD COLUMN IF NOT EXISTS clear_cache BOOLEAN DEFAULT false;
+      ALTER TABLE exams ADD COLUMN IF NOT EXISTS advanced_program_detection BOOLEAN DEFAULT false;
+      ALTER TABLE exams ADD COLUMN IF NOT EXISTS advanced_vm_detection BOOLEAN DEFAULT false;
+      ALTER TABLE exams ADD COLUMN IF NOT EXISTS advanced_hardware_detection BOOLEAN DEFAULT false;
+      ALTER TABLE exams ADD COLUMN IF NOT EXISTS allow_apps BOOLEAN DEFAULT false;
+      ALTER TABLE exams ADD COLUMN IF NOT EXISTS block_mobile BOOLEAN DEFAULT false;
+      ALTER TABLE exams ADD COLUMN IF NOT EXISTS require_extension BOOLEAN DEFAULT false;
+
       ALTER TABLE exam_sessions ADD COLUMN IF NOT EXISTS video_archived BOOLEAN DEFAULT false;
       ALTER TABLE exam_sessions ADD COLUMN IF NOT EXISTS mime_type VARCHAR(255) DEFAULT 'video/webm';
       ALTER TABLE exam_sessions ADD COLUMN IF NOT EXISTS drive_file_id VARCHAR(255);

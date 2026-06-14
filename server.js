@@ -527,14 +527,43 @@ app.post('/api/exams', requireInstructor, async (req, res) => {
         const { canvasCourseId } = req.session.lti;
         const { title, canvas_quiz_url, require_mic, require_camera, require_screen, disable_right_click, require_fullscreen, require_seb, max_attempts, exam_code, max_violations, canvas_quiz_password, disable_clipboard, disable_printing, only_one_screen, block_downloads, prevent_reentry } = req.body;
         
+        const record_web_traffic = req.body.record_web_traffic || false;
+        const disable_new_tabs = req.body.disable_new_tabs || false;
+        const close_open_tabs = req.body.close_open_tabs || false;
+        const disable_extensions = req.body.disable_extensions || false;
+        const prevent_incognito = req.body.prevent_incognito || false;
+        const clear_cache = req.body.clear_cache || false;
+        const advanced_program_detection = req.body.advanced_program_detection || false;
+        const advanced_vm_detection = req.body.advanced_vm_detection || false;
+        const advanced_hardware_detection = req.body.advanced_hardware_detection || false;
+        const allow_apps = req.body.allow_apps || false;
+        const block_mobile = req.body.block_mobile || false;
+        
+        const require_extension = !!(
+            record_web_traffic || disable_new_tabs || close_open_tabs || 
+            disable_extensions || prevent_incognito || clear_cache || 
+            advanced_program_detection || advanced_vm_detection || 
+            advanced_hardware_detection || allow_apps || block_mobile
+        );
+
         const result = await pool.query(`
-            INSERT INTO exams (canvas_course_id, title, canvas_quiz_url, require_mic, require_camera, require_screen, disable_right_click, require_fullscreen, require_seb, max_attempts, exam_code, max_violations, canvas_quiz_password, disable_clipboard, disable_printing, only_one_screen, block_downloads, prevent_reentry, is_open)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, false) RETURNING *
+            INSERT INTO exams (
+                canvas_course_id, title, canvas_quiz_url, require_mic, require_camera, require_screen, 
+                disable_right_click, require_fullscreen, require_seb, max_attempts, exam_code, max_violations, 
+                canvas_quiz_password, disable_clipboard, disable_printing, only_one_screen, block_downloads, prevent_reentry,
+                record_web_traffic, disable_new_tabs, close_open_tabs, disable_extensions, prevent_incognito, clear_cache,
+                advanced_program_detection, advanced_vm_detection, advanced_hardware_detection, allow_apps, block_mobile,
+                require_extension, is_open
+            )
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, false) RETURNING *
         `, [
             canvasCourseId, title, canvas_quiz_url, require_mic, require_camera, require_screen, 
             disable_right_click, require_fullscreen, require_seb || false, max_attempts || 1, exam_code, max_violations || 0, 
             canvas_quiz_password || '', disable_clipboard || false, disable_printing || false,
-            only_one_screen || false, block_downloads || false, prevent_reentry || false
+            only_one_screen || false, block_downloads || false, prevent_reentry || false,
+            record_web_traffic, disable_new_tabs, close_open_tabs, disable_extensions, prevent_incognito, clear_cache,
+            advanced_program_detection, advanced_vm_detection, advanced_hardware_detection, allow_apps, block_mobile,
+            require_extension
         ]);
         
         // Enable proctor mode requirements on the Canvas quiz itself (results lockdown stays off)
@@ -631,6 +660,26 @@ app.post('/api/canvas-native/exam/:quiz_id', async (req, res) => {
         }
         const { quiz_id } = req.params;
         const body = req.body;
+        
+        const record_web_traffic = body.record_web_traffic || false;
+        const disable_new_tabs = body.disable_new_tabs || false;
+        const close_open_tabs = body.close_open_tabs || false;
+        const disable_extensions = body.disable_extensions || false;
+        const prevent_incognito = body.prevent_incognito || false;
+        const clear_cache = body.clear_cache || false;
+        const advanced_program_detection = body.advanced_program_detection || false;
+        const advanced_vm_detection = body.advanced_vm_detection || false;
+        const advanced_hardware_detection = body.advanced_hardware_detection || false;
+        const allow_apps = body.allow_apps || false;
+        const block_mobile = body.block_mobile || false;
+        
+        const require_extension = !!(
+            record_web_traffic || disable_new_tabs || close_open_tabs || 
+            disable_extensions || prevent_incognito || clear_cache || 
+            advanced_program_detection || advanced_vm_detection || 
+            advanced_hardware_detection || allow_apps || block_mobile
+        );
+
         const existsResult = await pool.query("SELECT id FROM exams WHERE canvas_quiz_url LIKE $1 LIMIT 1", [`%/quizzes/${quiz_id}%`]);
         if (existsResult.rows.length > 0) {
             const id = existsResult.rows[0].id;
@@ -640,15 +689,24 @@ app.post('/api/canvas-native/exam/:quiz_id', async (req, res) => {
                     require_camera = $5, require_mic = $6, require_screen = $7,
                     disable_right_click = $8, require_fullscreen = $9, require_seb = $10,
                     max_violations = $11, canvas_quiz_password = $12, disable_clipboard = $13,
-                    disable_printing = $14, only_one_screen = $15, block_downloads = $16, prevent_reentry = $17
-                WHERE id = $18
+                    disable_printing = $14, only_one_screen = $15, block_downloads = $16, prevent_reentry = $17,
+                    record_web_traffic = $18, disable_new_tabs = $19, close_open_tabs = $20,
+                    disable_extensions = $21, prevent_incognito = $22, clear_cache = $23,
+                    advanced_program_detection = $24, advanced_vm_detection = $25,
+                    advanced_hardware_detection = $26, allow_apps = $27, block_mobile = $28,
+                    require_extension = $29
+                WHERE id = $30
             `, [
                 body.title || 'Canvas Native Exam', body.canvas_quiz_url, body.exam_code, body.max_attempts || 1,
                 body.require_camera, body.require_mic, body.require_screen,
                 body.disable_right_click, body.require_fullscreen, body.require_seb,
                 body.max_violations || 0, body.canvas_quiz_password || '', body.disable_clipboard,
                 body.disable_printing, body.only_one_screen, body.block_downloads, body.prevent_reentry,
-                id
+                record_web_traffic, disable_new_tabs, close_open_tabs,
+                disable_extensions, prevent_incognito, clear_cache,
+                advanced_program_detection, advanced_vm_detection,
+                advanced_hardware_detection, allow_apps, block_mobile,
+                require_extension, id
             ]);
             res.json({ success: true, id: id });
         } else {
@@ -658,15 +716,27 @@ app.post('/api/canvas-native/exam/:quiz_id', async (req, res) => {
                     require_camera, require_mic, require_screen, disable_right_click, require_fullscreen, require_seb,
                     max_violations, canvas_quiz_password, disable_clipboard, disable_printing,
                     only_one_screen, block_downloads, prevent_reentry,
-                    is_open, created_at
-                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, true, CURRENT_TIMESTAMP)
+                    record_web_traffic, disable_new_tabs, close_open_tabs,
+                    disable_extensions, prevent_incognito, clear_cache,
+                    advanced_program_detection, advanced_vm_detection,
+                    advanced_hardware_detection, allow_apps, block_mobile,
+                    require_extension, is_open, created_at
+                ) VALUES (
+                    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18,
+                    $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, true, CURRENT_TIMESTAMP
+                )
                 RETURNING id
             `, [
                 body.title || 'Canvas Native Exam', body.canvas_course_id || 'canvas_native', body.canvas_quiz_url, body.exam_code, body.max_attempts || 1,
                 body.require_camera, body.require_mic, body.require_screen,
                 body.disable_right_click, body.require_fullscreen, body.require_seb,
                 body.max_violations || 0, body.canvas_quiz_password || '', body.disable_clipboard,
-                body.disable_printing, body.only_one_screen, body.block_downloads, body.prevent_reentry
+                body.disable_printing, body.only_one_screen, body.block_downloads, body.prevent_reentry,
+                record_web_traffic, disable_new_tabs, close_open_tabs,
+                disable_extensions, prevent_incognito, clear_cache,
+                advanced_program_detection, advanced_vm_detection,
+                advanced_hardware_detection, allow_apps, block_mobile,
+                require_extension
             ]);
             res.json({ success: true, id: result.rows[0].id });
         }
@@ -717,6 +787,25 @@ app.patch('/api/exams/:id', requireInstructor, async (req, res) => {
             only_one_screen, block_downloads, prevent_reentry
         } = req.body;
 
+        const record_web_traffic = req.body.record_web_traffic || false;
+        const disable_new_tabs = req.body.disable_new_tabs || false;
+        const close_open_tabs = req.body.close_open_tabs || false;
+        const disable_extensions = req.body.disable_extensions || false;
+        const prevent_incognito = req.body.prevent_incognito || false;
+        const clear_cache = req.body.clear_cache || false;
+        const advanced_program_detection = req.body.advanced_program_detection || false;
+        const advanced_vm_detection = req.body.advanced_vm_detection || false;
+        const advanced_hardware_detection = req.body.advanced_hardware_detection || false;
+        const allow_apps = req.body.allow_apps || false;
+        const block_mobile = req.body.block_mobile || false;
+        
+        const require_extension = !!(
+            record_web_traffic || disable_new_tabs || close_open_tabs || 
+            disable_extensions || prevent_incognito || clear_cache || 
+            advanced_program_detection || advanced_vm_detection || 
+            advanced_hardware_detection || allow_apps || block_mobile
+        );
+
         // Retrieve old quiz URL to handle changes
         const oldResult = await pool.query(
             'SELECT canvas_quiz_url FROM exams WHERE id = $1 AND (canvas_course_id = $2 OR canvas_course_id = $3)',
@@ -731,8 +820,12 @@ app.patch('/api/exams/:id', requireInstructor, async (req, res) => {
                 max_violations = $11, canvas_quiz_password = $12, 
                 disable_clipboard = $13, disable_printing = $14,
                 only_one_screen = $15, block_downloads = $16, prevent_reentry = $17,
-                updated_at = NOW()
-            WHERE id = $18 AND (canvas_course_id = $19 OR canvas_course_id = $20)
+                record_web_traffic = $18, disable_new_tabs = $19, close_open_tabs = $20,
+                disable_extensions = $21, prevent_incognito = $22, clear_cache = $23,
+                advanced_program_detection = $24, advanced_vm_detection = $25,
+                advanced_hardware_detection = $26, allow_apps = $27, block_mobile = $28,
+                require_extension = $29, updated_at = NOW()
+            WHERE id = $30 AND (canvas_course_id = $31 OR canvas_course_id = $32)
             RETURNING *
         `, [
             title, canvas_quiz_url, exam_code, max_attempts,
@@ -741,7 +834,11 @@ app.patch('/api/exams/:id', requireInstructor, async (req, res) => {
             max_violations || 0, canvas_quiz_password || '', 
             disable_clipboard || false, disable_printing || false,
             only_one_screen || false, block_downloads || false, prevent_reentry || false,
-            id, canvasCourseId, alternativeCourseId || ''
+            record_web_traffic, disable_new_tabs, close_open_tabs,
+            disable_extensions, prevent_incognito, clear_cache,
+            advanced_program_detection, advanced_vm_detection,
+            advanced_hardware_detection, allow_apps, block_mobile,
+            require_extension, id, canvasCourseId, alternativeCourseId || ''
         ]);
 
         if (result.rows.length === 0) return res.status(404).json({ error: 'Exam not found' });
@@ -1163,6 +1260,88 @@ app.post('/api/session/log', requireAuth, async (req, res) => {
                 exam_session_id, event_type, event_message, timestamp: new Date()
             });
         }
+        res.json({ success: true });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// API: Log Event from Extension (bypasses LTI iframe parameters restriction)
+app.post('/api/session/log-event-ext', requireAuth, async (req, res) => {
+    try {
+        const { event_type, event_message } = req.body;
+        const userId = req.session.lti.userId;
+        
+        // Find active session
+        const sessionRes = await pool.query(
+            `SELECT id, exam_id FROM exam_sessions 
+             WHERE student_canvas_id = $1 AND status = 'started' 
+             ORDER BY id DESC LIMIT 1`, 
+            [userId]
+        );
+        
+        if (sessionRes.rows.length === 0) {
+            return res.status(404).json({ error: 'No active session found' });
+        }
+        
+        const exam_session_id = sessionRes.rows[0].id;
+        const exam_id = sessionRes.rows[0].exam_id;
+        
+        await pool.query(`
+            INSERT INTO proctor_logs (exam_session_id, event_type, event_message)
+            VALUES ($1, $2, $3)
+        `, [exam_session_id, event_type, event_message]);
+        
+        // Notify teacher via IO
+        io.to('teacher_' + exam_id).emit('proctor_log', {
+            exam_session_id, event_type, event_message, timestamp: new Date()
+        });
+        
+        res.json({ success: true });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// API: Log Web Traffic from Extension
+app.post('/api/session/log-traffic', requireAuth, async (req, res) => {
+    try {
+        const { url } = req.body;
+        const userId = req.session.lti.userId;
+        
+        // Find active session
+        const sessionRes = await pool.query(
+            `SELECT id, exam_id FROM exam_sessions 
+             WHERE student_canvas_id = $1 AND status = 'started' 
+             ORDER BY id DESC LIMIT 1`, 
+            [userId]
+        );
+        
+        if (sessionRes.rows.length === 0) {
+            return res.status(404).json({ error: 'No active session found' });
+        }
+        
+        const exam_session_id = sessionRes.rows[0].id;
+        const exam_id = sessionRes.rows[0].exam_id;
+        
+        let domain = url;
+        try {
+            domain = new URL(url).hostname;
+        } catch (e) {}
+        
+        const event_type = "Web Navigation";
+        const event_message = `Visited website: ${domain} (Full URL: ${url})`;
+        
+        await pool.query(`
+            INSERT INTO proctor_logs (exam_session_id, event_type, event_message)
+            VALUES ($1, $2, $3)
+        `, [exam_session_id, event_type, event_message]);
+        
+        // Notify teacher via IO
+        io.to('teacher_' + exam_id).emit('proctor_log', {
+            exam_session_id, event_type, event_message, timestamp: new Date()
+        });
+        
         res.json({ success: true });
     } catch (err) {
         res.status(500).json({ error: err.message });

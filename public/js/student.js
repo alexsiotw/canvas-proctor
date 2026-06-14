@@ -88,6 +88,11 @@ async function verifyExamCode() {
         }
         
         examConfig = data;
+        if (examConfig.require_extension && document.documentElement.dataset.proctorExtensionInstalled !== "true") {
+            document.getElementById('code-container').style.display = 'none';
+            document.getElementById('extension-required-overlay').style.display = 'flex';
+            return;
+        }
         document.getElementById('code-container').style.display = 'none';
         document.getElementById('setup-container').style.display = 'flex';
         initStepWizard();
@@ -122,6 +127,11 @@ async function verifyPlacement(pId, eId = null) {
         }
         
         examConfig = data;
+        if (examConfig.require_extension && document.documentElement.dataset.proctorExtensionInstalled !== "true") {
+            document.getElementById('code-container').style.display = 'none';
+            document.getElementById('extension-required-overlay').style.display = 'flex';
+            return;
+        }
         document.getElementById('code-container').style.display = 'none';
         document.getElementById('setup-container').style.display = 'flex';
         initStepWizard();
@@ -704,6 +714,29 @@ async function startMainExamSession() {
         document.getElementById('setup-container').style.display = 'none';
         document.getElementById('active-exam-container').style.display = 'flex';
 
+        if (document.documentElement.dataset.proctorExtensionInstalled === "true") {
+            console.log("[Proctor] Extension detected. Sending START_EXAM_LOCKDOWN message.");
+            window.postMessage({
+                type: 'START_EXAM_LOCKDOWN',
+                examId: examConfig.id,
+                token: sessionToken,
+                settings: {
+                    close_open_tabs: !!examConfig.close_open_tabs,
+                    disable_new_tabs: !!examConfig.disable_new_tabs,
+                    prevent_incognito: !!examConfig.prevent_incognito,
+                    record_web_traffic: !!examConfig.record_web_traffic,
+                    advanced_hardware_detection: !!examConfig.advanced_hardware_detection,
+                    only_one_screen: !!examConfig.only_one_screen,
+                    disable_extensions: !!examConfig.disable_extensions,
+                    clear_cache: !!examConfig.clear_cache,
+                    advanced_program_detection: !!examConfig.advanced_program_detection,
+                    advanced_vm_detection: !!examConfig.advanced_vm_detection,
+                    allow_apps: !!examConfig.allow_apps,
+                    block_mobile: !!examConfig.block_mobile
+                }
+            }, '*');
+        }
+
     } catch(err) {
         isStartingExam = false;
         const btn = document.getElementById('btn-begin-exam');
@@ -1241,11 +1274,14 @@ function handleViolation(type, message) {
 
 let dualScreenOverlay = null;
 
-function initDisplayMonitoring() {
-    if (!examConfig.only_one_screen) return;
+function showDualScreenBlocker(show, source = 'system') {
+    if (isExamCompleted) return;
 
-    // Create the overlay DOM element dynamically if it doesn't exist
-    if (!document.getElementById('dual-screen-blocker')) {
+    if (!dualScreenOverlay) {
+        dualScreenOverlay = document.getElementById('dual-screen-blocker');
+    }
+    
+    if (!dualScreenOverlay) {
         dualScreenOverlay = document.createElement('div');
         dualScreenOverlay.id = 'dual-screen-blocker';
         dualScreenOverlay.style.cssText = `
@@ -1279,9 +1315,23 @@ function initDisplayMonitoring() {
             </div>
         `;
         document.body.appendChild(dualScreenOverlay);
-    } else {
-        dualScreenOverlay = document.getElementById('dual-screen-blocker');
     }
+
+    if (show) {
+        if (dualScreenOverlay.style.display !== 'flex') {
+            dualScreenOverlay.style.display = 'flex';
+            handleViolation('display_violation', `Multiple monitors/screens detected via ${source}.`);
+        }
+    } else {
+        if (dualScreenOverlay.style.display === 'flex') {
+            dualScreenOverlay.style.display = 'none';
+            logProctorEvent('display_resolved', `Secondary display disconnected. Student returned to exam (${source}).`);
+        }
+    }
+}
+
+function initDisplayMonitoring() {
+    if (!examConfig.only_one_screen) return;
 
     // Heuristics and API checks
     async function evaluateScreens() {
@@ -1295,17 +1345,7 @@ function initDisplayMonitoring() {
             isExtended = window.screen.isMultiScreen;
         }
 
-        if (isExtended) {
-            if (dualScreenOverlay.style.display !== 'flex') {
-                dualScreenOverlay.style.display = 'flex';
-                handleViolation('display_violation', 'Multiple monitors/screens detected.');
-            }
-        } else {
-            if (dualScreenOverlay.style.display === 'flex') {
-                dualScreenOverlay.style.display = 'none';
-                logProctorEvent('display_resolved', 'Secondary display disconnected. Student returned to exam.');
-            }
-        }
+        showDualScreenBlocker(isExtended, 'browser api');
     }
 
     evaluateScreens();
@@ -1347,6 +1387,7 @@ function setupFocusTracking() {
 
 async function bootStudent() {
     isExamCompleted = true; // Stop tracking violations
+    window.postMessage({ type: 'END_EXAM_LOCKDOWN' }, '*');
     
     if (document.fullscreenElement) {
         document.exitFullscreen().catch(err => console.log('Exit fullscreen failed:', err));
@@ -1499,6 +1540,7 @@ async function stopRecordingAndAwaitUploads() {
 
 async function endExam() {
     isExamCompleted = true; // Instantly disable focus tracking
+    window.postMessage({ type: 'END_EXAM_LOCKDOWN' }, '*');
     
     if (speechRecognition) {
         try {
@@ -1592,6 +1634,7 @@ async function endExam() {
 async function autoEndExamSession() {
     if (isExamCompleted) return;
     isExamCompleted = true;
+    window.postMessage({ type: 'END_EXAM_LOCKDOWN' }, '*');
     
     if (speechRecognition) {
         try {
@@ -1696,6 +1739,15 @@ window.addEventListener('message', async (event) => {
     } else if (event.data && event.data.type === 'canvas_quiz_started') {
         console.log("[Integration] Canvas quiz start detected via message. Starting proctoring...");
         startProctoring();
+    } else if (event.data && event.data.type === 'EXTENSION_WARNING') {
+        console.log("[Extension Warning] Received warning from extension:", event.data.message);
+        showToast(event.data.message);
+    } else if (event.data && event.data.type === 'EXTENSION_DISPLAY_VIOLATION') {
+        console.warn("[Extension Display Violation] Displays:", event.data.displayCount);
+        showDualScreenBlocker(true, 'chrome extension');
+    } else if (event.data && event.data.type === 'EXTENSION_DISPLAY_RESOLVED') {
+        console.log("[Extension Display Resolved] Single display mode restored.");
+        showDualScreenBlocker(false, 'chrome extension');
     }
 });
 
