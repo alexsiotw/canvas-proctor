@@ -858,9 +858,13 @@ function injectProctorGuardTab(tabNav, quizId) {
     </div>
   `;
 
-  const quizTabsEl = document.getElementById('quiz_tabs');
-  if (quizTabsEl && quizTabsEl.parentNode) {
-    quizTabsEl.parentNode.insertBefore(panel, quizTabsEl.nextSibling);
+  // --- Insert Panel ---
+  // Find a good container to append the panel to (the wrapper around the tabs)
+  const tabContainer = tabNav.closest('#quiz_tabs, .quiz-edit-header-tabs, [data-component="QuizTabs"], .quiz-edit-header, [role="tablist"]')?.parentElement || tabNav.parentElement;
+  
+  if (tabContainer) {
+    // Append it at the end of the tab container so it acts as a tab panel
+    tabContainer.appendChild(panel);
   } else {
     document.body.appendChild(panel);
   }
@@ -881,26 +885,43 @@ function injectProctorGuardTab(tabNav, quizId) {
   // Tab click handler — show our panel, hide Canvas panels
   const tabLink = document.getElementById('proctorguard_tab_link');
   const tabLiEl = document.getElementById('proctorguard_tab_li');
+  
   tabLink.addEventListener('click', (e) => {
     e.preventDefault(); e.stopPropagation();
-    // Hide all Canvas quiz tab panels
-    if (quizTabsEl) {
-      quizTabsEl.querySelectorAll('[role="tabpanel"], > div').forEach(p => {
-        if (p.id !== 'proctorguard_tab_panel') { p.style.display = 'none'; }
+    
+    // Hide all other Canvas quiz tab panels
+    if (tabContainer) {
+      // Find anything that looks like a tab panel in this container
+      const panels = tabContainer.querySelectorAll('[role="tabpanel"], .tab-pane, :scope > div');
+      panels.forEach(p => {
+        // Don't hide our own panel, and don't hide the nav bar itself!
+        if (p.id !== 'proctorguard_tab_panel' && !p.contains(tabNav)) { 
+          p.style.display = 'none'; 
+        }
       });
-      quizTabsEl.querySelectorAll('.ui-tabs-nav li, > ul > li').forEach(l => l.classList.remove('ui-tabs-active','ui-state-active'));
+      // Remove active states from other tabs
+      tabNav.querySelectorAll('li, a').forEach(l => {
+        l.classList.remove('ui-tabs-active','ui-state-active','active','active-tab');
+        l.setAttribute('aria-selected', 'false');
+      });
     }
+    
     panel.style.display = 'block';
-    tabLiEl.classList.add('ui-tabs-active','ui-state-active');
+    tabLiEl.classList.add('ui-tabs-active','ui-state-active','active');
+    tabLink.classList.add('active');
+    tabLink.setAttribute('aria-selected', 'true');
+    
     if (quizId) loadPGSettings(quizId);
   });
 
   // When other Canvas tabs are clicked, hide our panel
-  tabNav.querySelectorAll('li > a').forEach(link => {
-    if (link.id === 'proctorguard_tab_link') return;
-    link.addEventListener('click', () => {
+  tabNav.querySelectorAll('li > a, li, button[role="tab"]').forEach(btn => {
+    if (btn.id === 'proctorguard_tab_link' || btn.id === 'proctorguard_tab_li') return;
+    btn.addEventListener('click', () => {
       panel.style.display = 'none';
-      tabLiEl.classList.remove('ui-tabs-active','ui-state-active');
+      tabLiEl.classList.remove('ui-tabs-active','ui-state-active','active');
+      tabLink.classList.remove('active');
+      tabLink.setAttribute('aria-selected', 'false');
     });
   });
 
