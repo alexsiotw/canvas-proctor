@@ -698,6 +698,71 @@ function findQuizTabNav() {
   return null;
 }
 
+let detailsModified = false;
+function initDetailsTabModifications() {
+  const checkbox = document.getElementById('quiz_require_lockdown_browser');
+  if (!checkbox) return;
+  if (detailsModified) return;
+  detailsModified = true;
+
+  console.log('[ProctorGuard] Modifying Canvas Details tab for ProctorGuard...');
+
+  // 1. Change label text from "Require Secure Proctor Mode" to "Require ProctorGuard"
+  const label = checkbox.parentElement;
+  if (label && label.tagName === 'LABEL') {
+    for (const node of label.childNodes) {
+      if (node.nodeType === Node.TEXT_NODE && node.textContent.includes('Require Secure Proctor Mode')) {
+        node.textContent = ' Require ProctorGuard';
+      }
+    }
+  }
+
+  // 2. Hide old lockdown browser suboptions completely
+  const suboptions = document.getElementById('lockdown_browser_suboptions');
+  if (suboptions) {
+    suboptions.style.display = 'none';
+    // Use MutationObserver to keep it hidden even if Canvas scripts try to show it
+    const subObs = new MutationObserver(() => {
+      if (suboptions.style.display !== 'none') {
+        suboptions.style.display = 'none';
+      }
+    });
+    subObs.observe(suboptions, { attributes: true, attributeFilter: ['style'] });
+  }
+
+  // 3. Setup the link next to it to navigate to our settings tab
+  let toggle = document.getElementById('proctor_settings_toggle');
+  if (!toggle) {
+    toggle = document.createElement('a');
+    toggle.id = 'proctor_settings_toggle';
+    toggle.href = '#';
+    toggle.style.color = '#0374B5';
+    toggle.style.fontSize = '13px';
+    toggle.style.marginLeft = '8px';
+    toggle.style.fontWeight = 'bold';
+    toggle.style.textDecoration = 'none';
+    if (label) {
+      label.parentNode.insertBefore(toggle, label.nextSibling);
+    }
+  }
+  
+  toggle.textContent = '(see settings)';
+  
+  const updateToggleVisibility = () => {
+    toggle.style.display = checkbox.checked ? 'inline-block' : 'none';
+  };
+  checkbox.addEventListener('change', updateToggleVisibility);
+  updateToggleVisibility();
+
+  toggle.addEventListener('click', (e) => {
+    e.preventDefault();
+    const tabLink = document.getElementById('proctorguard_tab_link');
+    if (tabLink) {
+      tabLink.click();
+    }
+  });
+}
+
 function initQuizEditorIntegration() {
   const url = window.location.href;
   const isEdit = /\/courses\/\d+\/quizzes\/\d+\/edit/.test(url);
@@ -711,6 +776,9 @@ function initQuizEditorIntegration() {
   console.log('[ProctorGuard] Quiz ID:', quizId);
 
   const tryInject = () => {
+    // Run Details tab modifications if they haven't been run yet
+    initDetailsTabModifications();
+
     if (injected) return;
     if (document.getElementById('proctorguard_tab_li')) { injected = true; return; }
     const tabNav = findQuizTabNav();
@@ -830,25 +898,26 @@ function injectProctorGuardTab(tabNav, quizId) {
         <div class="pg-grid">
           ${card('pg_cam','cam','Record Video')}${card('pg_mic','mic','Record Audio')}${card('pg_screen','screen','Record Screen')}${card('pg_traffic','traffic','Record Web Traffic')}${card('pg_desk','desk','Record Desk')}
         </div>
-        <p class="pg-note">Record Desk will require the candidate to show their entire exam environment at intervals based on the option selected.</p>
+        <p class="pg-note" data-pg-desc="rec">Record Desk will require the candidate to show their entire exam environment at intervals based on the option selected.</p>
       </div>
       <div class="pg-sub-title" data-pg-body="pg-lock"><span class="pg-arrow">&#9660;</span>&nbsp;Lock Down Options</div>
       <div id="pg-lock">
         <div class="pg-grid">
           ${card('pg_fs','fs','Force Full Screen')}${card('pg_one','one','Only One Screen')}${card('pg_ntab','ntab','Disable New Tabs')}${card('pg_ctab','ctab','Close Open Tabs')}${card('pg_print','print','Disable Printing')}${card('pg_clip','clip','Disable Clipboard')}${card('pg_dl','dl','Block Downloads')}${card('pg_cache','cache','Clear Cache')}${card('pg_rc','rc','Disable Right Click')}${card('pg_reen','reen','Prevent Re-entry')}
         </div>
-        <p class="pg-note">Close Open Tabs prevents access to unauthorized material by requiring any other webpages to be closed before starting the exam.</p>
+        <p class="pg-note" data-pg-desc="lock">Close Open Tabs prevents access to unauthorized material by requiring any other webpages to be closed before starting the exam.</p>
       </div>
       <div class="pg-sub-title" data-pg-body="pg-verify"><span class="pg-arrow">&#9660;</span>&nbsp;Verification Options</div>
       <div id="pg-verify">
         <div class="pg-grid">
           ${card('pg_vvid','vvid','Verify Video')}${card('pg_vaud','vaud','Verify Audio')}${card('pg_vdesk','vdesk','Verify Desktop')}${card('pg_vid','vid','Verify ID')}${card('pg_vsig','vsig','Verify Signature')}
         </div>
-        <p class="pg-note">These options determine what will be verified prior to the exam.</p>
+        <p class="pg-note" data-pg-desc="verify">These options determine what will be verified prior to the exam.</p>
       </div>
       <div class="pg-sub-title" data-pg-body="pg-tools"><span class="pg-arrow">&#9660;</span>&nbsp;In-Quiz Tools</div>
       <div id="pg-tools">
         <div class="pg-grid">${card('pg_calc','calc','Calculator')}${card('pg_wb','wb','Whiteboard')}</div>
+        <p class="pg-note" data-pg-desc="tools">These options enable helper tools inside the quiz player interface.</p>
       </div>
       <div class="pg-savebar">
         <span id="pg-save-err"></span>
@@ -925,6 +994,59 @@ function injectProctorGuardTab(tabNav, quizId) {
     });
   });
 
+  // Card descriptions dynamically updating the note paragraph
+  const descriptions = {
+    pg_cam: "Record Video will record the candidate's webcam feed during the exam.",
+    pg_mic: "Record Audio will record the candidate's microphone audio during the exam.",
+    pg_screen: "Record Screen will record the candidate's desktop screen during the exam.",
+    pg_traffic: "Record Web Traffic will capture all network requests and URLs visited by the candidate during the exam.",
+    pg_desk: "Record Desk will require the candidate to show their entire exam environment at intervals based on the option selected.",
+    pg_fs: "Force Full Screen requires the exam to be taken in full screen mode, preventing access to other apps.",
+    pg_one: "Only One Screen prevents candidates from using dual or multiple monitor setups.",
+    pg_ntab: "Disable New Tabs prevents candidates from opening new browser tabs or windows during the exam.",
+    pg_ctab: "Close Open Tabs prevents access to unauthorized material by requiring any other webpages to be closed before starting the exam.",
+    pg_print: "Disable Printing disables the browser printing function to prevent exam content leaks.",
+    pg_clip: "Disable Clipboard prevents copying, pasting, and cutting text during the exam.",
+    pg_dl: "Block Downloads blocks any file downloads during the exam session.",
+    pg_cache: "Clear Cache clears browser cache and history upon completing the exam.",
+    pg_rc: "Disable Right Click disables right-clicking to prevent context menus from being opened.",
+    pg_reen: "Prevent Re-entry prevents candidates from re-entering the exam if they exit before submitting.",
+    pg_vvid: "Verify Video ensures the webcam is working and a face is clearly visible before starting.",
+    pg_vaud: "Verify Audio checks the microphone volume level and functionality before starting.",
+    pg_vdesk: "Verify Desktop requires checking the screen sharing permission and desktop state before starting.",
+    pg_vid: "Verify ID requires the candidate to show a valid photo identification card to the webcam.",
+    pg_vsig: "Verify Signature requires the candidate to sign a digital agreement before entering the exam.",
+    pg_calc: "Calculator enables a basic or scientific calculator inside the exam player.",
+    pg_wb: "Whiteboard enables a digital scratchpad/whiteboard tool for notes during the exam."
+  };
+
+  const defaults = {
+    rec: "Record Desk will require the candidate to show their entire exam environment at intervals based on the option selected.",
+    lock: "Close Open Tabs prevents access to unauthorized material by requiring any other webpages to be closed before starting the exam.",
+    verify: "These options determine what will be verified prior to the exam.",
+    tools: "These options enable helper tools inside the quiz player interface."
+  };
+
+  panel.querySelectorAll('.pg-lbl').forEach(label => {
+    const checkbox = label.querySelector('input[type="checkbox"]');
+    if (!checkbox) return;
+    const id = checkbox.id;
+    const section = label.closest('#pg-rec, #pg-lock, #pg-verify, #pg-tools');
+    if (!section) return;
+    const note = section.querySelector('.pg-note');
+    if (!note) return;
+    const sectionKey = note.getAttribute('data-pg-desc');
+    
+    label.addEventListener('mouseenter', () => {
+      if (descriptions[id]) {
+        note.textContent = descriptions[id];
+      }
+    });
+    label.addEventListener('mouseleave', () => {
+      note.textContent = defaults[sectionKey] || '';
+    });
+  });
+
   // Save button
   document.getElementById('pg-save-btn').addEventListener('click', async () => {
     const btn = document.getElementById('pg-save-btn');
@@ -932,6 +1054,14 @@ function injectProctorGuardTab(tabNav, quizId) {
     const err = document.getElementById('pg-save-err');
     if (!quizId) { err.textContent = 'Cannot save: Quiz ID not found. Save the quiz in Canvas first.'; err.style.display='inline'; return; }
     btn.disabled=true; btn.textContent='Saving...'; ok.style.display='none'; err.style.display='none';
+
+    // Auto-check and trigger native checkbox on the Details tab
+    const nativeCheckbox = document.getElementById('quiz_require_lockdown_browser');
+    if (nativeCheckbox) {
+      nativeCheckbox.checked = true;
+      nativeCheckbox.dispatchEvent(new Event('change'));
+    }
+
     const chk = id => { const el=document.getElementById(id); return el ? el.checked : false; };
     let maxAttempts = 1;
     const maCb = document.getElementById('multiple_attempts_option');
