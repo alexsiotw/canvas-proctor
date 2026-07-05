@@ -1,13 +1,14 @@
 {
   "manifest_version": 3,
-  "name": "Secure Exam Proctor Extension",
-  "version": "1.0.0",
+  "name": "ProctorGuard Extension",
+  "version": "1.2.0",
   "description": "Enforces advanced browser lockdown and monitoring during proctored Canvas exams.",
   "permissions": [
     "tabs",
     "webNavigation",
     "storage",
-    "system.display"
+    "system.display",
+    "browsingData"
   ],
   "host_permissions": [
     "*://proctor.siotw.net/*",
@@ -20,7 +21,10 @@
     {
       "matches": [
         "*://proctor.siotw.net/student.html*",
-        "*://canvas.siotw.net/courses/*/quizzes/*"
+        "*://canvas.siotw.net/courses/*/quizzes/*",
+        "*://canvas.siotw.net/courses/*/quizzes/*/edit",
+        "*://canvas.siotw.net/courses/*/quizzes/new",
+        "*://canvas.siotw.net/courses/*/gradebook/speed_grader*"
       ],
       "js": ["content.js"],
       "run_at": "document_start"
@@ -28,6 +32,6 @@
   ],
   "action": {
     "default_icon": "icon.png",
-    "default_title": "Secure Exam Proctor"
+    "default_title": "ProctorGuard"
   }
 }
