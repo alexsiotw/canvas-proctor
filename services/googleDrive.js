@@ -82,12 +82,13 @@ async function getFolderId(folderName = 'Canvas Proctor Videos') {
  * @param {string} filePath - Absolute path to the local file.
  * @param {string} fileName - Destination name in Google Drive.
  * @param {string} mimeType - MIME type of the file.
+ * @param {string} [parentFolderId] - Optional Google Drive folder ID to place the file in.
  * @returns {Promise<string>} The uploaded Google Drive file ID.
  */
-async function uploadVideoToDrive(filePath, fileName, mimeType) {
+async function uploadVideoToDrive(filePath, fileName, mimeType, parentFolderId) {
     if (!drive) throw new Error("Google Drive client is not initialized.");
 
-    const folderId = await getFolderId();
+    const folderId = parentFolderId || await getFolderId();
 
     const fileMetadata = {
         name: fileName,
@@ -129,12 +130,13 @@ async function downloadVideoFromDrive(fileId) {
  * Uploads log content as a Google Doc to Google Drive.
  * @param {string} content - Log HTML content.
  * @param {string} fileName - Destination name in Google Drive.
+ * @param {string} [parentFolderId] - Optional Google Drive folder ID to place the document in.
  * @returns {Promise<string>} The uploaded Google Drive file ID.
  */
-async function uploadLogsToDriveDoc(content, fileName) {
+async function uploadLogsToDriveDoc(content, fileName, parentFolderId) {
     if (!drive) throw new Error("Google Drive client is not initialized.");
 
-    const folderId = await getFolderId();
+    const folderId = parentFolderId || await getFolderId();
 
     const fileMetadata = {
         name: fileName,
@@ -161,9 +163,34 @@ async function uploadLogsToDriveDoc(content, fileName) {
     return response.data.id;
 }
 
+/**
+ * Creates a folder inside a parent folder on Google Drive.
+ * @param {string} folderName 
+ * @param {string} parentFolderId 
+ * @returns {Promise<string>} The created Google Drive folder ID.
+ */
+async function createFolder(folderName, parentFolderId) {
+    if (!drive) throw new Error("Google Drive client is not initialized.");
+
+    const fileMetadata = {
+        name: folderName,
+        mimeType: 'application/vnd.google-apps.folder',
+        parents: [parentFolderId]
+    };
+
+    const response = await drive.files.create({
+        resource: fileMetadata,
+        fields: 'id',
+        supportsAllDrives: true
+    });
+
+    return response.data.id;
+}
+
 module.exports = {
     uploadVideoToDrive,
     downloadVideoFromDrive,
     uploadLogsToDriveDoc,
+    createFolder,
     getFolderId
 };

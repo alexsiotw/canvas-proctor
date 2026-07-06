@@ -13,7 +13,7 @@ const { pool, initDatabase } = require('./db');
 const archiver = require('archiver');
 const fs = require('fs');
 const os = require('os');
-const { uploadVideoToDrive, downloadVideoFromDrive, uploadLogsToDriveDoc, getFolderId } = require('./services/googleDrive');
+const { uploadVideoToDrive, downloadVideoFromDrive, uploadLogsToDriveDoc, createFolder, getFolderId } = require('./services/googleDrive');
 const webmDurationFix = require('webm-duration-fix').default;
 const ffmpeg = require('fluent-ffmpeg');
 const ffmpegPath = require('ffmpeg-static');
@@ -46,6 +46,7 @@ const server = http.createServer(app);
 const io = new Server(server, { cors: { origin: '*' } });
 const PORT = process.env.PORT || 3000;
 const activeAssemblies = new Set();
+const mobileUploadStatus = new Map(); // exam_session_id -> { total: number, finished: boolean }
 
 app.set('trust proxy', 1);
 
@@ -82,7 +83,7 @@ app.get('/lti/config.xml', (req, res) => {
     xmlns:lticm="http://www.imsglobal.org/xsd/imslticm_v1p0"
     xmlns:lticp="http://www.imsglobal.org/xsd/imslticp_v1p0"
     xmlns:canvas="http://canvas.instructure.com/lti/course_navigation">
-  <blti:title>Secure Exam Proctor</blti:title>
+  <blti:title>ProctorGuard</blti:title>
   <blti:description>Secure Proctoring environment for LMS Quizzes.</blti:description>
   <blti:launch_url>${baseUrl}/lti/launch</blti:launch_url>
   <blti:extensions platform="canvas.instructure.com">
@@ -90,14 +91,14 @@ app.get('/lti/config.xml', (req, res) => {
     <lticm:property name="domain">${new URL(baseUrl).host}</lticm:property>
     <lticm:options name="course_navigation">
       <lticm:property name="enabled">true</lticm:property>
-      <lticm:property name="text">Secure Exam Proctor</lticm:property>
+      <lticm:property name="text">ProctorGuard</lticm:property>
       <lticm:property name="visibility">admins</lticm:property>
       <lticm:property name="default">enabled</lticm:property>
       <lticm:property name="windowTarget">_self</lticm:property>
     </lticm:options>
     <lticm:options name="assignment_selection">
       <lticm:property name="enabled">true</lticm:property>
-      <lticm:property name="text">Secure Exam Proctor Assignment</lticm:property>
+      <lticm:property name="text">ProctorGuard Assignment</lticm:property>
       <lticm:property name="message_type">ContentItemSelectionRequest</lticm:property>
       <lticm:property name="url">${baseUrl}/lti/launch</lticm:property>
       <lticm:property name="selection_width">1000</lticm:property>
@@ -105,7 +106,7 @@ app.get('/lti/config.xml', (req, res) => {
     </lticm:options>
     <lticm:options name="link_selection">
       <lticm:property name="enabled">true</lticm:property>
-      <lticm:property name="text">Secure Exam Proctor Module Item</lticm:property>
+      <lticm:property name="text">ProctorGuard Module Item</lticm:property>
       <lticm:property name="message_type">ContentItemSelectionRequest</lticm:property>
       <lticm:property name="url">${baseUrl}/lti/launch</lticm:property>
       <lticm:property name="selection_width">1000</lticm:property>
@@ -115,6 +116,15 @@ app.get('/lti/config.xml', (req, res) => {
 </cartridge_basiclti_link>`;
     res.set('Content-Type', 'application/xml');
     res.send(xml);
+});
+
+app.use('/api/canvas-native', (req, res, next) => {
+    const originalSend = res.send;
+    res.send = function(body) {
+        console.log(`[CANVAS-NATIVE-API] ${req.method} ${req.originalUrl} - Status: ${res.statusCode} - Body: ${body}`);
+        return originalSend.apply(this, arguments);
+    };
+    next();
 });
 
 // LTI Launch
@@ -344,6 +354,14 @@ function requireInstructor(req, res, next) {
     next();
 }
 
+function requireInstructorOrExtensionSecret(req, res, next) {
+    const token = req.query.token || req.body.token || req.headers['x-shared-secret'] || (req.session.lti && req.session.lti.sessionToken);
+    if (token === 'canvas-proctor-shared-secret-key-998877') {
+        return next();
+    }
+    return requireInstructor(req, res, next);
+}
+
 app.post('/api/verify-passcode', (req, res) => {
     if (!req.session.lti || req.session.lti.role !== 'instructor') {
         return res.status(403).json({ error: 'Instructor session required.' });
@@ -457,18 +475,31 @@ app.get('/api/canvas-quizzes', requireInstructor, async (req, res) => {
         }
         
         const courseId = ltiSession.alternativeCourseId || '1';
-        const url = `${credentials.canvas_api_url}/courses/${courseId}/quizzes`;
+        let url = `${credentials.canvas_api_url}/courses/${courseId}/quizzes?per_page=100`;
+        let quizzes = [];
         
-        const fetchRes = await fetch(url, {
-            headers: { Authorization: `Bearer ${credentials.canvas_api_token}` }
-        });
-        
-        if (!fetchRes.ok) {
-            const errText = await fetchRes.text();
-            throw new Error(`Canvas API responded with status ${fetchRes.status}: ${errText}`);
+        while (url) {
+            const fetchRes = await fetch(url, {
+                headers: { Authorization: `Bearer ${credentials.canvas_api_token}` }
+            });
+            
+            if (!fetchRes.ok) {
+                const errText = await fetchRes.text();
+                throw new Error(`Canvas API responded with status ${fetchRes.status}: ${errText}`);
+            }
+            
+            const pageQuizzes = await fetchRes.json();
+            quizzes = quizzes.concat(pageQuizzes);
+            
+            const linkHeader = fetchRes.headers.get('link');
+            url = null;
+            if (linkHeader) {
+                const nextMatch = linkHeader.match(/<([^>]+)>;\s*rel="next"/);
+                if (nextMatch) {
+                    url = nextMatch[1];
+                }
+            }
         }
-        
-        const quizzes = await fetchRes.json();
         
         const formatted = quizzes.map(q => {
             let typeLabel = "Classic Quiz";
@@ -525,7 +556,7 @@ app.get('/api/exams', requireInstructor, async (req, res) => {
 app.post('/api/exams', requireInstructor, async (req, res) => {
     try {
         const { canvasCourseId } = req.session.lti;
-        const { title, canvas_quiz_url, require_mic, require_camera, require_screen, disable_right_click, require_fullscreen, require_seb, max_attempts, exam_code, max_violations, canvas_quiz_password, disable_clipboard, disable_printing, only_one_screen, block_downloads, prevent_reentry } = req.body;
+        const { title, canvas_quiz_url, require_mic, require_camera, require_screen, disable_right_click, require_fullscreen, require_seb, max_attempts, exam_code, max_violations, canvas_quiz_password, disable_clipboard, disable_printing, only_one_screen, block_downloads, prevent_reentry, require_room_scan, additional_instructions, require_mobile_camera } = req.body;
         
         const record_web_traffic = req.body.record_web_traffic || false;
         const disable_new_tabs = req.body.disable_new_tabs || false;
@@ -539,11 +570,32 @@ app.post('/api/exams', requireInstructor, async (req, res) => {
         const allow_apps = req.body.allow_apps || false;
         const block_mobile = req.body.block_mobile || false;
         
-        const require_extension = !!(
+        const require_companion_app = req.body.require_companion_app || false;
+        const allowed_apps = req.body.allowed_apps || null;
+        const blocked_apps = req.body.blocked_apps || null;
+        const allowed_urls = req.body.allowed_urls || null;
+
+        // Proctorio makeover specific parameters
+        const verify_video = req.body.verify_video || false;
+        const verify_audio = req.body.verify_audio || false;
+        const verify_desktop = req.body.verify_desktop || false;
+        const verify_id = req.body.verify_id || false;
+        const verify_signature = req.body.verify_signature || false;
+        const allow_calculator = req.body.allow_calculator || false;
+        const allow_whiteboard = req.body.allow_whiteboard || false;
+        const behavior_preset = req.body.behavior_preset || 'Recommended';
+        const weight_navigating_away = req.body.weight_navigating_away !== undefined ? parseInt(req.body.weight_navigating_away) : 1;
+        const weight_keystrokes = req.body.weight_keystrokes !== undefined ? parseInt(req.body.weight_keystrokes) : 1;
+        const weight_copy_paste = req.body.weight_copy_paste !== undefined ? parseInt(req.body.weight_copy_paste) : 1;
+        const weight_browser_resize = req.body.weight_browser_resize !== undefined ? parseInt(req.body.weight_browser_resize) : 1;
+        const weight_head_movement = req.body.weight_head_movement !== undefined ? parseInt(req.body.weight_head_movement) : 1;
+        const weight_multi_face = req.body.weight_multi_face !== undefined ? parseInt(req.body.weight_multi_face) : 1;
+        const weight_leaving_room = req.body.weight_leaving_room !== undefined ? parseInt(req.body.weight_leaving_room) : 1;
+        
+        const require_extension = req.body.require_extension !== undefined ? !!req.body.require_extension : !!(
             record_web_traffic || disable_new_tabs || close_open_tabs || 
             disable_extensions || prevent_incognito || clear_cache || 
-            advanced_program_detection || advanced_vm_detection || 
-            advanced_hardware_detection || allow_apps || block_mobile
+            block_mobile
         );
 
         const result = await pool.query(`
@@ -553,9 +605,14 @@ app.post('/api/exams', requireInstructor, async (req, res) => {
                 canvas_quiz_password, disable_clipboard, disable_printing, only_one_screen, block_downloads, prevent_reentry,
                 record_web_traffic, disable_new_tabs, close_open_tabs, disable_extensions, prevent_incognito, clear_cache,
                 advanced_program_detection, advanced_vm_detection, advanced_hardware_detection, allow_apps, block_mobile,
-                require_extension, is_open
+                require_extension, require_companion_app, allowed_apps, blocked_apps, allowed_urls,
+                require_room_scan, additional_instructions, require_mobile_camera, is_open,
+                verify_video, verify_audio, verify_desktop, verify_id, verify_signature,
+                allow_calculator, allow_whiteboard, behavior_preset,
+                weight_navigating_away, weight_keystrokes, weight_copy_paste, weight_browser_resize,
+                weight_head_movement, weight_multi_face, weight_leaving_room
             )
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, false) RETURNING *
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, false, $38, $39, $40, $41, $42, $43, $44, $45, $46, $47, $48, $49, $50, $51, $52) RETURNING *
         `, [
             canvasCourseId, title, canvas_quiz_url, require_mic, require_camera, require_screen, 
             disable_right_click, require_fullscreen, require_seb || false, max_attempts || 1, exam_code, max_violations || 0, 
@@ -563,7 +620,12 @@ app.post('/api/exams', requireInstructor, async (req, res) => {
             only_one_screen || false, block_downloads || false, prevent_reentry || false,
             record_web_traffic, disable_new_tabs, close_open_tabs, disable_extensions, prevent_incognito, clear_cache,
             advanced_program_detection, advanced_vm_detection, advanced_hardware_detection, allow_apps, block_mobile,
-            require_extension
+            require_extension, require_companion_app, allowed_apps, blocked_apps, allowed_urls,
+            require_room_scan || false, additional_instructions, require_mobile_camera || false,
+            verify_video, verify_audio, verify_desktop, verify_id, verify_signature,
+            allow_calculator, allow_whiteboard, behavior_preset,
+            weight_navigating_away, weight_keystrokes, weight_copy_paste, weight_browser_resize,
+            weight_head_movement, weight_multi_face, weight_leaving_room
         ]);
         
         // Enable proctor mode requirements on the Canvas quiz itself (results lockdown stays off)
@@ -652,6 +714,79 @@ app.get('/api/canvas-native/exam/:quiz_id', async (req, res) => {
     }
 });
 
+// API: Canvas Native Integration - Get Session Report by Quiz ID and Student ID (For Extension)
+app.get('/api/canvas-native/session-report', async (req, res) => {
+    try {
+        const token = req.query.token || req.headers['x-shared-secret'];
+        if (token !== 'canvas-proctor-shared-secret-key-998877') {
+            return res.status(403).json({ error: 'Unauthorized' });
+        }
+
+        const { quiz_id, student_id } = req.query;
+        if (!quiz_id) {
+            return res.status(400).json({ error: 'quiz_id is required' });
+        }
+
+        const examResult = await pool.query("SELECT id FROM exams WHERE canvas_quiz_url LIKE $1 LIMIT 1", [`%/quizzes/${quiz_id}%`]);
+        if (examResult.rows.length === 0) {
+            return res.status(404).json({ error: 'Exam not found for this quiz ID' });
+        }
+        const exam_id = examResult.rows[0].id;
+
+        let sessionsResult;
+        if (student_id) {
+            sessionsResult = await pool.query(
+                'SELECT id, student_canvas_id, student_name, status, attempt_number, started_at, end_time, drive_file_id, mobile_drive_file_id, room_scan_drive_file_id, video_archived, mime_type FROM exam_sessions WHERE exam_id = $1 AND student_canvas_id = $2 ORDER BY attempt_number DESC',
+                [exam_id, String(student_id)]
+            );
+        } else {
+            sessionsResult = await pool.query(
+                'SELECT id, student_canvas_id, student_name, status, attempt_number, started_at, end_time, drive_file_id, mobile_drive_file_id, room_scan_drive_file_id, video_archived, mime_type FROM exam_sessions WHERE exam_id = $1 ORDER BY started_at DESC',
+                [exam_id]
+            );
+        }
+
+        const sessions = [];
+        for (const session of sessionsResult.rows) {
+            const logsResult = await pool.query(
+                'SELECT event_type, event_message, event_timestamp FROM proctor_logs WHERE exam_session_id = $1 ORDER BY event_timestamp ASC',
+                [session.id]
+            );
+            
+            let riskScore = 0;
+            const logs = logsResult.rows;
+            
+            for (const log of logs) {
+                if (log.event_type === 'phone_detected') riskScore += 50;
+                else if (log.event_type === 'multiple_faces') riskScore += 30;
+                else if (log.event_type === 'tab_switched' || log.event_type === 'tab_blurred') riskScore += 15;
+                else if (log.event_type === 'audio_threshold_exceeded') riskScore += 10;
+                else if (log.event_type === 'no_face' || log.event_type === 'AI_PEOPLE') riskScore += 10;
+                else if (log.event_type === 'gaze_off_screen') riskScore += 10;
+            }
+            
+            let riskTier = 'Low';
+            if (riskScore >= 70) riskTier = 'High';
+            else if (riskScore >= 30) riskTier = 'Medium';
+
+            sessions.push({
+                ...session,
+                logs: logs,
+                riskScore: riskScore,
+                riskTier: riskTier
+            });
+        }
+
+        res.json({
+            exam_id,
+            sessions
+        });
+    } catch (err) {
+        console.error('Error fetching session report:', err);
+        res.status(500).json({ error: err.message });
+    }
+});
+
 // API: Canvas Native Integration - Save Exam Settings
 app.post('/api/canvas-native/exam/:quiz_id', async (req, res) => {
     try {
@@ -673,16 +808,32 @@ app.post('/api/canvas-native/exam/:quiz_id', async (req, res) => {
         const allow_apps = body.allow_apps || false;
         const block_mobile = body.block_mobile || false;
         
-        const require_extension = !!(
+        const require_room_scan = body.require_room_scan || false;
+        const require_companion_app = body.require_companion_app || false;
+        const allowed_apps = body.allowed_apps || null;
+        const blocked_apps = body.blocked_apps || null;
+        const allowed_urls = body.allowed_urls || null;
+        const additional_instructions = body.additional_instructions || null;
+        const require_mobile_camera = body.require_mobile_camera || false;
+        
+        const require_extension = body.require_extension !== undefined ? !!body.require_extension : !!(
             record_web_traffic || disable_new_tabs || close_open_tabs || 
             disable_extensions || prevent_incognito || clear_cache || 
-            advanced_program_detection || advanced_vm_detection || 
-            advanced_hardware_detection || allow_apps || block_mobile
+            block_mobile
         );
 
-        const existsResult = await pool.query("SELECT id FROM exams WHERE canvas_quiz_url LIKE $1 LIMIT 1", [`%/quizzes/${quiz_id}%`]);
+        const verify_video = body.verify_video || false;
+        const verify_audio = body.verify_audio || false;
+        const verify_desktop = body.verify_desktop || false;
+        const verify_id = body.verify_id || false;
+        const verify_signature = body.verify_signature || false;
+        const allow_calculator = body.allow_calculator || false;
+        const allow_whiteboard = body.allow_whiteboard || false;
+
+        const existsResult = await pool.query("SELECT id, exam_code FROM exams WHERE canvas_quiz_url LIKE $1 LIMIT 1", [`%/quizzes/${quiz_id}%`]);
         if (existsResult.rows.length > 0) {
             const id = existsResult.rows[0].id;
+            const existingCode = existsResult.rows[0].exam_code || body.exam_code;
             await pool.query(`
                 UPDATE exams SET 
                     title = $1, canvas_quiz_url = $2, exam_code = $3, max_attempts = $4,
@@ -694,10 +845,13 @@ app.post('/api/canvas-native/exam/:quiz_id', async (req, res) => {
                     disable_extensions = $21, prevent_incognito = $22, clear_cache = $23,
                     advanced_program_detection = $24, advanced_vm_detection = $25,
                     advanced_hardware_detection = $26, allow_apps = $27, block_mobile = $28,
-                    require_extension = $29
-                WHERE id = $30
+                    require_extension = $29, require_companion_app = $30, allowed_apps = $31, blocked_apps = $32,
+                    allowed_urls = $33, canvas_course_id = $34, require_room_scan = $35, additional_instructions = $36,
+                    require_mobile_camera = $37, verify_video = $38, verify_audio = $39, verify_desktop = $40,
+                    verify_id = $41, verify_signature = $42, allow_calculator = $43, allow_whiteboard = $44
+                WHERE id = $45
             `, [
-                body.title || 'Canvas Native Exam', body.canvas_quiz_url, body.exam_code, body.max_attempts || 1,
+                body.title || 'Canvas Native Exam', body.canvas_quiz_url, existingCode, body.max_attempts || 1,
                 body.require_camera, body.require_mic, body.require_screen,
                 body.disable_right_click, body.require_fullscreen, body.require_seb,
                 body.max_violations || 0, body.canvas_quiz_password || '', body.disable_clipboard,
@@ -706,7 +860,9 @@ app.post('/api/canvas-native/exam/:quiz_id', async (req, res) => {
                 disable_extensions, prevent_incognito, clear_cache,
                 advanced_program_detection, advanced_vm_detection,
                 advanced_hardware_detection, allow_apps, block_mobile,
-                require_extension, id
+                require_extension, require_companion_app, allowed_apps, blocked_apps, allowed_urls,
+                body.canvas_course_id || 'canvas_native', require_room_scan, additional_instructions, require_mobile_camera || false,
+                verify_video, verify_audio, verify_desktop, verify_id, verify_signature, allow_calculator, allow_whiteboard, id
             ]);
             res.json({ success: true, id: id });
         } else {
@@ -720,10 +876,15 @@ app.post('/api/canvas-native/exam/:quiz_id', async (req, res) => {
                     disable_extensions, prevent_incognito, clear_cache,
                     advanced_program_detection, advanced_vm_detection,
                     advanced_hardware_detection, allow_apps, block_mobile,
-                    require_extension, is_open, created_at
+                    require_extension, require_companion_app, allowed_apps, blocked_apps, allowed_urls, 
+                    require_room_scan, additional_instructions, require_mobile_camera,
+                    verify_video, verify_audio, verify_desktop, verify_id, verify_signature, allow_calculator, allow_whiteboard,
+                    is_open, created_at
                 ) VALUES (
                     $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18,
-                    $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, true, CURRENT_TIMESTAMP
+                    $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37,
+                    $38, $39, $40, $41, $42, $43, $44,
+                    true, CURRENT_TIMESTAMP
                 )
                 RETURNING id
             `, [
@@ -736,7 +897,9 @@ app.post('/api/canvas-native/exam/:quiz_id', async (req, res) => {
                 disable_extensions, prevent_incognito, clear_cache,
                 advanced_program_detection, advanced_vm_detection,
                 advanced_hardware_detection, allow_apps, block_mobile,
-                require_extension
+                require_extension, require_companion_app, allowed_apps, blocked_apps, allowed_urls,
+                require_room_scan, additional_instructions, require_mobile_camera || false,
+                verify_video, verify_audio, verify_desktop, verify_id, verify_signature, allow_calculator, allow_whiteboard
             ]);
             res.json({ success: true, id: result.rows[0].id });
         }
@@ -784,7 +947,7 @@ app.patch('/api/exams/:id', requireInstructor, async (req, res) => {
             require_camera, require_mic, require_screen,
             disable_right_click, require_fullscreen, require_seb,
             max_violations, canvas_quiz_password, disable_clipboard, disable_printing,
-            only_one_screen, block_downloads, prevent_reentry
+            only_one_screen, block_downloads, prevent_reentry, require_room_scan, additional_instructions, require_mobile_camera
         } = req.body;
 
         const record_web_traffic = req.body.record_web_traffic || false;
@@ -799,11 +962,32 @@ app.patch('/api/exams/:id', requireInstructor, async (req, res) => {
         const allow_apps = req.body.allow_apps || false;
         const block_mobile = req.body.block_mobile || false;
         
-        const require_extension = !!(
+        const require_companion_app = req.body.require_companion_app || false;
+        const allowed_apps = req.body.allowed_apps || null;
+        const blocked_apps = req.body.blocked_apps || null;
+        const allowed_urls = req.body.allowed_urls || null;
+
+        // Proctorio makeover specific parameters
+        const verify_video = req.body.verify_video || false;
+        const verify_audio = req.body.verify_audio || false;
+        const verify_desktop = req.body.verify_desktop || false;
+        const verify_id = req.body.verify_id || false;
+        const verify_signature = req.body.verify_signature || false;
+        const allow_calculator = req.body.allow_calculator || false;
+        const allow_whiteboard = req.body.allow_whiteboard || false;
+        const behavior_preset = req.body.behavior_preset || 'Recommended';
+        const weight_navigating_away = req.body.weight_navigating_away !== undefined ? parseInt(req.body.weight_navigating_away) : 1;
+        const weight_keystrokes = req.body.weight_keystrokes !== undefined ? parseInt(req.body.weight_keystrokes) : 1;
+        const weight_copy_paste = req.body.weight_copy_paste !== undefined ? parseInt(req.body.weight_copy_paste) : 1;
+        const weight_browser_resize = req.body.weight_browser_resize !== undefined ? parseInt(req.body.weight_browser_resize) : 1;
+        const weight_head_movement = req.body.weight_head_movement !== undefined ? parseInt(req.body.weight_head_movement) : 1;
+        const weight_multi_face = req.body.weight_multi_face !== undefined ? parseInt(req.body.weight_multi_face) : 1;
+        const weight_leaving_room = req.body.weight_leaving_room !== undefined ? parseInt(req.body.weight_leaving_room) : 1;
+        
+        const require_extension = req.body.require_extension !== undefined ? !!req.body.require_extension : !!(
             record_web_traffic || disable_new_tabs || close_open_tabs || 
             disable_extensions || prevent_incognito || clear_cache || 
-            advanced_program_detection || advanced_vm_detection || 
-            advanced_hardware_detection || allow_apps || block_mobile
+            block_mobile
         );
 
         // Retrieve old quiz URL to handle changes
@@ -824,8 +1008,15 @@ app.patch('/api/exams/:id', requireInstructor, async (req, res) => {
                 disable_extensions = $21, prevent_incognito = $22, clear_cache = $23,
                 advanced_program_detection = $24, advanced_vm_detection = $25,
                 advanced_hardware_detection = $26, allow_apps = $27, block_mobile = $28,
-                require_extension = $29, updated_at = NOW()
-            WHERE id = $30 AND (canvas_course_id = $31 OR canvas_course_id = $32)
+                require_extension = $29, require_companion_app = $30, allowed_apps = $31, blocked_apps = $32,
+                allowed_urls = $33, require_room_scan = $34, additional_instructions = $35, 
+                require_mobile_camera = $36,
+                verify_video = $37, verify_audio = $38, verify_desktop = $39, verify_id = $40, verify_signature = $41,
+                allow_calculator = $42, allow_whiteboard = $43, behavior_preset = $44,
+                weight_navigating_away = $45, weight_keystrokes = $46, weight_copy_paste = $47, weight_browser_resize = $48,
+                weight_head_movement = $49, weight_multi_face = $50, weight_leaving_room = $51,
+                updated_at = NOW()
+            WHERE id = $52 AND (canvas_course_id = $53 OR canvas_course_id = $54)
             RETURNING *
         `, [
             title, canvas_quiz_url, exam_code, max_attempts,
@@ -838,7 +1029,13 @@ app.patch('/api/exams/:id', requireInstructor, async (req, res) => {
             disable_extensions, prevent_incognito, clear_cache,
             advanced_program_detection, advanced_vm_detection,
             advanced_hardware_detection, allow_apps, block_mobile,
-            require_extension, id, canvasCourseId, alternativeCourseId || ''
+            require_extension, require_companion_app, allowed_apps, blocked_apps, allowed_urls, 
+            require_room_scan || false, additional_instructions, require_mobile_camera || false,
+            verify_video, verify_audio, verify_desktop, verify_id, verify_signature,
+            allow_calculator, allow_whiteboard, behavior_preset,
+            weight_navigating_away, weight_keystrokes, weight_copy_paste, weight_browser_resize,
+            weight_head_movement, weight_multi_face, weight_leaving_room,
+            id, canvasCourseId, alternativeCourseId || ''
         ]);
 
         if (result.rows.length === 0) return res.status(404).json({ error: 'Exam not found' });
@@ -860,7 +1057,7 @@ app.patch('/api/exams/:id', requireInstructor, async (req, res) => {
 });
 
 // API: Helper to verify student exam access & handle resumption / prevent_reentry
-async function verifyStudentExamAccess(exam, userId) {
+async function verifyStudentExamAccess(exam, userId, ltiSession) {
     if (!exam.is_open) {
         throw new Error('This exam is currently closed by the instructor.');
     }
@@ -887,6 +1084,35 @@ async function verifyStudentExamAccess(exam, userId) {
         }
     }
 
+    // Sync allowed_attempts count from Canvas API if token is available
+    let canvasMaxAttempts = exam.max_attempts;
+    if (ltiSession) {
+        try {
+            const credentials = await getCanvasCredentials(ltiSession);
+            if (credentials && credentials.canvas_api_token) {
+                const match = exam.canvas_quiz_url ? exam.canvas_quiz_url.match(/\/quizzes\/(\d+)/) : null;
+                const canvasQuizId = match ? match[1] : null;
+                if (canvasQuizId) {
+                    const courseId = ltiSession.alternativeCourseId || ltiSession.canvasCourseId || '1';
+                    const fetchRes = await fetch(`${credentials.canvas_api_url}/courses/${courseId}/quizzes/${canvasQuizId}`, {
+                        headers: { Authorization: `Bearer ${credentials.canvas_api_token}` }
+                    });
+                    if (fetchRes.ok) {
+                        const quizData = await fetchRes.json();
+                        if (quizData && typeof quizData.allowed_attempts !== 'undefined') {
+                            canvasMaxAttempts = quizData.allowed_attempts;
+                            // update DB to stay in sync
+                            await pool.query('UPDATE exams SET max_attempts = $1 WHERE id = $2', [canvasMaxAttempts, exam.id]);
+                            console.log(`[Sync Attempts] Successfully synced max_attempts = ${canvasMaxAttempts} for exam ID ${exam.id}`);
+                        }
+                    }
+                }
+            }
+        } catch (syncErr) {
+            console.warn('[Sync Attempts] Failed to sync quiz attempts from Canvas API:', syncErr.message);
+        }
+    }
+
     const sessionCountQuery = await pool.query(
         'SELECT COUNT(*) as attempt_count FROM exam_sessions WHERE exam_id = $1 AND student_canvas_id = $2', 
         [exam.id, userId]
@@ -899,11 +1125,11 @@ async function verifyStudentExamAccess(exam, userId) {
     );
     const extraAttempts = overrideQuery.rows.length > 0 ? parseInt(overrideQuery.rows[0].extra_attempts, 10) : 0;
     
-    const totalAllowed = (exam.max_attempts || 1) + extraAttempts;
+    const totalAllowed = (canvasMaxAttempts === -1 || canvasMaxAttempts === null) ? Infinity : ((canvasMaxAttempts || 1) + extraAttempts);
     
     if (attemptCount >= totalAllowed && !isResuming) {
         const isCompleted = latestSession && (latestSession.status === 'completed' || latestSession.status === 'booted' || latestSession.status === 'abandoned');
-        const err = new Error(`You have reached the maximum allowable attempts (${totalAllowed}) for this exam.`);
+        const err = new Error(`You have reached the maximum allowable attempts (${totalAllowed === Infinity ? 'Unlimited' : totalAllowed}) for this exam.`);
         err.already_completed = isCompleted;
         throw err;
     }
@@ -933,7 +1159,7 @@ app.post('/api/exams/verify-code', requireAuth, async (req, res) => {
         if (examResult.rows.length === 0) return res.status(404).json({ error: 'Invalid exam code' });
         
         const exam = examResult.rows[0];
-        const result = await verifyStudentExamAccess(exam, userId);
+        const result = await verifyStudentExamAccess(exam, userId, req.session.lti);
         res.json(result);
     } catch (err) {
         let canvas_quiz_url = '';
@@ -976,7 +1202,7 @@ app.post('/api/exams/verify-placement', requireAuth, async (req, res) => {
         if (examResult.rows.length === 0) return res.status(404).json({ error: 'Linked exam not found' });
         
         const exam = examResult.rows[0];
-        const result = await verifyStudentExamAccess(exam, userId);
+        const result = await verifyStudentExamAccess(exam, userId, req.session.lti);
         res.json(result);
     } catch (err) {
         let canvas_quiz_url = '';
@@ -1139,17 +1365,11 @@ app.get('/api/session/status', requireAuth, async (req, res) => {
         const lti = ltiResult.rows[0];
 
         const examId = req.query.exam_id;
-        let sessionQuery = 'SELECT * FROM exam_sessions WHERE student_canvas_id = $1';
-        let queryParams = [lti.canvas_user_id];
-
-        if (examId) {
-            sessionQuery += ' AND exam_id = $2';
-            queryParams.push(examId);
+        let sessionResult = { rows: [] };
+        if (lti.exam_session_id) {
+            sessionResult = await pool.query('SELECT * FROM exam_sessions WHERE id = $1', [lti.exam_session_id]);
         }
-        sessionQuery += ' ORDER BY id DESC LIMIT 1';
 
-        const sessionResult = await pool.query(sessionQuery, queryParams);
-        
         let quizUrl = '';
         const targetExamId = examId || (sessionResult.rows.length > 0 ? sessionResult.rows[0].exam_id : null);
         if (targetExamId) {
@@ -1170,7 +1390,7 @@ app.get('/api/session/status', requireAuth, async (req, res) => {
 // API: Start Exam Session (Student)
 app.post('/api/session/start', requireAuth, async (req, res) => {
     try {
-        const { exam_id } = req.body;
+        const { exam_id, verify_id_image, verify_signature_image, verify_signature_name } = req.body;
         const { userId, userName } = req.session.lti;
 
         // Check if there is an active/resumable session
@@ -1218,11 +1438,23 @@ app.post('/api/session/start', requireAuth, async (req, res) => {
             const countQuery = await pool.query('SELECT COUNT(*) as attempts FROM exam_sessions WHERE exam_id = $1 AND student_canvas_id = $2', [exam_id, userId]);
             const currentAttempts = parseInt(countQuery.rows[0].attempts, 10);
             const sessionResult = await pool.query(`
-                INSERT INTO exam_sessions (exam_id, student_canvas_id, student_name, attempt_number)
-                VALUES ($1, $2, $3, $4) RETURNING *
-            `, [exam_id, userId, userName, currentAttempts + 1]);
+                INSERT INTO exam_sessions (exam_id, student_canvas_id, student_name, attempt_number, verify_id_image, verify_signature_image, verify_signature_name)
+                VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *
+            `, [exam_id, userId, userName, currentAttempts + 1, verify_id_image || null, verify_signature_image || null, verify_signature_name || null]);
             session = sessionResult.rows[0];
             console.log(`[New Session] Student ${userName} starting new session ${session.id}`);
+        }
+
+        if (session && req.session.lti && req.session.lti.sessionToken) {
+            try {
+                await pool.query(
+                    'UPDATE lti_sessions SET exam_session_id = $1 WHERE session_token = $2',
+                    [session.id, req.session.lti.sessionToken]
+                );
+                console.log(`[Link Session] Linked exam session ${session.id} to LTI session token ${req.session.lti.sessionToken}`);
+            } catch (linkErr) {
+                console.error('Failed to link exam session to LTI session:', linkErr);
+            }
         }
 
         const crypto = require('crypto');
@@ -1392,7 +1624,7 @@ async function assembleAndUploadSessionVideo(exam_session_id, total_chunks) {
 
         // Get student/exam info for nice filename and mime type
         const sessionInfo = await pool.query(`
-            SELECT es.student_name, es.attempt_number, es.started_at, es.mime_type, e.title 
+            SELECT es.student_name, es.attempt_number, es.started_at, es.mime_type, e.title, e.require_mobile_camera 
             FROM exam_sessions es
             JOIN exams e ON es.exam_id = e.id
             WHERE es.id = $1
@@ -1460,19 +1692,32 @@ async function assembleAndUploadSessionVideo(exam_session_id, total_chunks) {
             const mp4OutFile = path.join(os.tmpdir(), `session-${exam_session_id}.mp4`);
             try {
                 await new Promise((resolve, reject) => {
-                    ffmpeg(rawWebmPath)
+                    const command = ffmpeg(rawWebmPath)
                         .outputOptions('-c:v libx264')
                         .outputOptions('-pix_fmt yuv420p')
                         .outputOptions('-preset ultrafast') // Use ultrafast preset to minimize CPU/RAM usage
                         .outputOptions('-crf 30')          // Lower quality/high compression to speed up transcoding
                         .outputOptions('-threads 2')        // Limit CPU threads to protect Canvas LMS resources
+                        .outputOptions('-vsync vfr')
                         .outputOptions('-c:a aac')
                         .on('start', (commandLine) => {
                             console.log(`Spawned FFmpeg with command: ${commandLine}`);
                         })
-                        .on('end', resolve)
-                        .on('error', reject)
-                        .save(mp4OutFile);
+                        .on('end', () => {
+                            clearTimeout(timeoutId);
+                            resolve();
+                        })
+                        .on('error', (err) => {
+                            clearTimeout(timeoutId);
+                            reject(err);
+                        });
+
+                    const timeoutId = setTimeout(() => {
+                        console.error(`Transcoding for session ${exam_session_id} timed out. Killing FFmpeg process.`);
+                        command.kill('SIGKILL');
+                    }, 120000); // 2 minutes
+
+                    command.save(mp4OutFile);
                 });
                 console.log(`Successfully transcoded to MP4 for session ${exam_session_id}`);
                 if (fs.existsSync(rawWebmPath)) fs.unlinkSync(rawWebmPath);
@@ -1491,15 +1736,135 @@ async function assembleAndUploadSessionVideo(exam_session_id, total_chunks) {
             fs.renameSync(rawWebmPath, tempOutFile);
         }
 
+        // Create dedicated attempt folder on Google Drive
+        let attemptFolderId = null;
+        try {
+            const parentFolderId = await getFolderId();
+            const folderName = `Proctor Report - ${examTitleRaw} - ${studentNameRaw} - Attempt #${attempt}`;
+            console.log(`[Assemble] Creating Google Drive folder: "${folderName}"...`);
+            attemptFolderId = await createFolder(folderName, parentFolderId);
+            console.log(`[Assemble] Created folder successfully. Folder ID: ${attemptFolderId}`);
+        } catch (folderErr) {
+            console.error("[Assemble] Failed to create Google Drive folder, falling back to parent folder:", folderErr.message);
+        }
+
         const finalTempFile = tempOutFile;
         const driveFileName = `${studentName}_${examTitle}_Session_${exam_session_id}_Attempt_${attempt}.${finalExt}`;
 
         console.log(`Uploading ${driveFileName} to Google Drive...`);
-        const driveFileId = await uploadVideoToDrive(finalTempFile, driveFileName, finalMimeType);
+        const driveFileId = await uploadVideoToDrive(finalTempFile, driveFileName, finalMimeType, attemptFolderId);
         console.log(`Uploaded to Google Drive. File ID: ${driveFileId}`);
 
+        // Check if there is an environment room scan video on disk and upload it
+        let roomScanDriveFileId = null;
+        const scanPath = path.join(os.tmpdir(), `roomscans`, `scan-${exam_session_id}.webm`);
+        if (fs.existsSync(scanPath)) {
+            const roomScanFileName = `${studentName}_${examTitle}_Session_${exam_session_id}_Attempt_${attempt}_RoomScan.webm`;
+            console.log(`[Assemble] Found room scan on disk. Uploading ${roomScanFileName} to Google Drive...`);
+            try {
+                roomScanDriveFileId = await uploadVideoToDrive(scanPath, roomScanFileName, 'video/webm', attemptFolderId);
+                console.log(`[Assemble] Uploaded room scan to Google Drive. File ID: ${roomScanDriveFileId}`);
+                
+                // Clean up the local room scan video file from /tmp
+                fs.unlinkSync(scanPath);
+            } catch (scanUpErr) {
+                console.error("[Assemble] Failed to upload room scan to Google Drive:", scanUpErr.message);
+            }
+        }
+
         // Update database with Google Drive file ID and format
-        await pool.query('UPDATE exam_sessions SET drive_file_id = $1, mime_type = $2 WHERE id = $3', [driveFileId, finalMimeType, exam_session_id]);
+        let mobileDriveFileId = null;
+        if (sessionInfo.rows.length > 0 && sessionInfo.rows[0].require_mobile_camera) {
+            console.log(`[Assemble] Session requires mobile camera. Checking upload status...`);
+            const startWait = Date.now();
+            while (Date.now() - startWait < 90000) { // 90s timeout
+                const status = mobileUploadStatus.get(exam_session_id);
+                if (status && status.finished) {
+                    console.log(`[Assemble] Mobile upload complete! Total chunks to compile: ${status.total}`);
+                    break;
+                }
+                await new Promise(r => setTimeout(r, 1000));
+            }
+
+            const mobileChunkDir = path.join(os.tmpdir(), `chunks-mobile-${exam_session_id}`);
+            if (fs.existsSync(mobileChunkDir)) {
+                console.log(`[Assemble] Assembling mobile video for session ${exam_session_id}...`);
+                const mobileFiles = fs.readdirSync(mobileChunkDir).sort();
+                if (mobileFiles.length > 0) {
+                    const rawMobilePath = path.join(os.tmpdir(), `session-${exam_session_id}-mobile-raw.${rawExt}`);
+                    const mobileWriteStream = fs.createWriteStream(rawMobilePath);
+                    for (const file of mobileFiles) {
+                        const filePath = path.join(mobileChunkDir, file);
+                        const data = fs.readFileSync(filePath);
+                        mobileWriteStream.write(data);
+                    }
+                    mobileWriteStream.end();
+                    await new Promise((resolve) => mobileWriteStream.on('finish', resolve));
+
+                    let tempMobileOutFile = path.join(os.tmpdir(), `session-${exam_session_id}-mobile.${finalExt}`);
+                    
+                    if (isWebm && process.env.TRANSCODE_TO_MP4 === 'true') {
+                        console.log(`[Assemble] Transcoding WebM to MP4 for secondary mobile video...`);
+                        const mp4MobileOut = path.join(os.tmpdir(), `session-${exam_session_id}-mobile.mp4`);
+                        try {
+                            await new Promise((resolve, reject) => {
+                                const command = ffmpeg(rawMobilePath)
+                                    .outputOptions('-c:v libx264')
+                                    .outputOptions('-pix_fmt yuv420p')
+                                    .outputOptions('-preset ultrafast')
+                                    .outputOptions('-crf 30')
+                                    .outputOptions('-threads 2')
+                                    .outputOptions('-vsync vfr')
+                                    .outputOptions('-c:a aac')
+                                    .on('end', () => {
+                                        clearTimeout(timeoutId);
+                                        resolve();
+                                    })
+                                    .on('error', (err) => {
+                                        clearTimeout(timeoutId);
+                                        reject(err);
+                                    });
+                                const timeoutId = setTimeout(() => {
+                                    command.kill('SIGKILL');
+                                    reject(new Error("Transcode timeout"));
+                                }, 120000);
+                                command.save(mp4MobileOut);
+                            });
+                            tempMobileOutFile = mp4MobileOut;
+                            if (fs.existsSync(rawMobilePath)) fs.unlinkSync(rawMobilePath);
+                        } catch(transErr) {
+                            console.error("Mobile transcode failed, falling back:", transErr);
+                            tempMobileOutFile = path.join(os.tmpdir(), `session-${exam_session_id}-mobile.webm`);
+                            fs.renameSync(rawMobilePath, tempMobileOutFile);
+                        }
+                    } else {
+                        fs.renameSync(rawMobilePath, tempMobileOutFile);
+                    }
+
+                    const driveMobileFileName = `${studentName}_${examTitle}_Session_${exam_session_id}_Attempt_${attempt}_Secondary.${finalExt}`;
+                    console.log(`Uploading secondary mobile video ${driveMobileFileName} to Google Drive...`);
+                    try {
+                        mobileDriveFileId = await uploadVideoToDrive(tempMobileOutFile, driveMobileFileName, finalMimeType, attemptFolderId);
+                        console.log(`Uploaded secondary mobile video. File ID: ${mobileDriveFileId}`);
+                    } catch(upErr) {
+                        console.error("Failed to upload secondary mobile video:", upErr);
+                    }
+
+                    // Clean up temp mobile out file and dir
+                    try { if (fs.existsSync(tempMobileOutFile)) fs.unlinkSync(tempMobileOutFile); } catch(e){}
+                    try {
+                        const files = fs.readdirSync(mobileChunkDir);
+                        for (const file of files) {
+                            fs.unlinkSync(path.join(mobileChunkDir, file));
+                        }
+                        fs.rmdirSync(mobileChunkDir);
+                    } catch(e){}
+                }
+            }
+        }
+
+        // Update database with Google Drive file ID and format
+        await pool.query('UPDATE exam_sessions SET drive_file_id = $1, mime_type = $2, mobile_drive_file_id = $3, room_scan_drive_file_id = $4 WHERE id = $5', [driveFileId, finalMimeType, mobileDriveFileId, roomScanDriveFileId, exam_session_id]);
 
         // Upload Security logs to Google Drive as a Google Doc
         try {
@@ -1604,7 +1969,7 @@ async function assembleAndUploadSessionVideo(exam_session_id, total_chunks) {
 </html>`;
 
             const driveDocName = `${studentName}_${examTitle}_Session_${exam_session_id}_Attempt_${attempt}_Logs`;
-            const docFileId = await uploadLogsToDriveDoc(logsDocHtml, driveDocName);
+            const docFileId = await uploadLogsToDriveDoc(logsDocHtml, driveDocName, attemptFolderId);
             console.log(`Logs Google Doc uploaded successfully. File ID: ${docFileId}`);
         } catch (docErr) {
             console.error(`Failed to upload logs Google Doc for session ${exam_session_id}:`, docErr.message);
@@ -1635,6 +2000,7 @@ async function assembleAndUploadSessionVideo(exam_session_id, total_chunks) {
         }
     } finally {
         activeAssemblies.delete(exam_session_id);
+        mobileUploadStatus.delete(exam_session_id);
     }
 }
 
@@ -1666,6 +2032,12 @@ app.post('/api/session/end', requireAuth, async (req, res) => {
             });
         }
 
+        // Notify mobile phone to stop recording
+        const sessionLtiQuery = await pool.query('SELECT session_token FROM lti_sessions WHERE exam_session_id = $1', [exam_session_id]);
+        if (sessionLtiQuery.rows.length > 0) {
+            io.to('lti_' + sessionLtiQuery.rows[0].session_token).emit('mobile_stop_record');
+        }
+
         // Trigger assembly and upload in background
         console.log(`[End Session] Triggering assembleAndUploadSessionVideo for session ${exam_session_id} with total_chunks: ${total_chunks}`);
         assembleAndUploadSessionVideo(exam_session_id, total_chunks);
@@ -1673,6 +2045,86 @@ app.post('/api/session/end', requireAuth, async (req, res) => {
         res.json({ success: true });
     } catch(err) {
         console.error('[End Session] Error ending session:', err);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// API: External Submit notification from Canvas page (e.g. for iPad/iPhone fallback tab)
+app.post('/api/session/external-submit', async (req, res) => {
+    try {
+        const { token } = req.body;
+        if (!token) return res.status(400).json({ error: 'Missing token' });
+
+        const ltiResult = await pool.query('SELECT canvas_user_id FROM lti_sessions WHERE session_token = $1', [token]);
+        if (ltiResult.rows.length > 0) {
+            const userId = ltiResult.rows[0].canvas_user_id;
+            
+            const sessionQuery = await pool.query(
+                "UPDATE exam_sessions SET status = 'completed' WHERE student_canvas_id = $1 AND (status = 'started' OR status = 'unexpected') RETURNING id, exam_id",
+                [userId]
+            );
+            
+            if (sessionQuery.rows.length > 0) {
+                const session = sessionQuery.rows[0];
+                console.log(`[External Submit] Session ${session.id} finalized successfully via external ping.`);
+                
+                io.to('teacher_' + session.exam_id).emit('student_status', { 
+                    session_id: session.id, status: 'completed' 
+                });
+                
+                assembleAndUploadSessionVideo(session.id);
+            }
+        }
+        res.json({ success: true });
+    } catch(err) {
+        console.error('[External Submit] Error:', err);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// API: Upload Mobile Video Chunk
+app.post('/api/session/upload-mobile-chunk', async (req, res) => {
+    const { chunk_index, token, base64_video } = req.body;
+    try {
+        if (!base64_video) throw new Error("Video payload was empty");
+        
+        const ltiResult = await pool.query('SELECT exam_session_id FROM lti_sessions WHERE session_token = $1', [token]);
+        if (ltiResult.rows.length === 0 || !ltiResult.rows[0].exam_session_id) {
+            throw new Error("No active exam session found for this token");
+        }
+        const exam_session_id = ltiResult.rows[0].exam_session_id;
+        
+        console.log(`[Upload Mobile Chunk] Received mobile chunk #${chunk_index} for session ${exam_session_id}`);
+        
+        const chunkDir = path.join(os.tmpdir(), `chunks-mobile-${exam_session_id}`);
+        if (!fs.existsSync(chunkDir)) {
+            fs.mkdirSync(chunkDir, { recursive: true });
+        }
+        
+        const chunkPath = path.join(chunkDir, `chunk-${String(chunk_index).padStart(5, '0')}.dat`);
+        const pureB64 = base64_video.replace(/^data:[^,]+,/, '').replace(/\s/g, '');
+        fs.writeFileSync(chunkPath, pureB64, 'base64');
+        
+        res.json({ success: true });
+    } catch (err) {
+        console.error('[Upload Mobile Chunk] Error:', err);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// API: Receive Mobile Upload Complete Notification
+app.post('/api/session/mobile-upload-complete', async (req, res) => {
+    const { token, total_chunks } = req.body;
+    try {
+        const ltiResult = await pool.query('SELECT exam_session_id FROM lti_sessions WHERE session_token = $1', [token]);
+        if (ltiResult.rows.length > 0 && ltiResult.rows[0].exam_session_id) {
+            const exam_session_id = ltiResult.rows[0].exam_session_id;
+            console.log(`[Mobile Complete] Mobile upload completed for session ${exam_session_id}. Total chunks: ${total_chunks}`);
+            mobileUploadStatus.set(exam_session_id, { total: total_chunks, finished: true });
+        }
+        res.json({ success: true });
+    } catch(err) {
+        console.error('[Mobile Complete] Error:', err);
         res.status(500).json({ error: err.message });
     }
 });
@@ -1716,7 +2168,7 @@ app.patch('/api/session/:id/format', requireAuth, async (req, res) => {
 });
 
 // API: Get Video Chunks for Playback (Binary Stream)
-app.get('/api/session/video-playback/:session_id', requireInstructor, async (req, res) => {
+app.get('/api/session/video-playback/:session_id', requireInstructorOrExtensionSecret, async (req, res) => {
     try {
         const { session_id } = req.params;
         const sessionInfo = (await pool.query('SELECT mime_type, drive_file_id FROM exam_sessions WHERE id = $1', [session_id])).rows[0];
@@ -1783,6 +2235,52 @@ app.get('/api/session/video-playback/:session_id', requireInstructor, async (req
     }
 });
 
+// API: Get Mobile Video for Playback (Binary Stream)
+app.get('/api/session/mobile-video-playback/:session_id', requireInstructorOrExtensionSecret, async (req, res) => {
+    try {
+        const { session_id } = req.params;
+        const sessionInfo = (await pool.query('SELECT mime_type, mobile_drive_file_id FROM exam_sessions WHERE id = $1', [session_id])).rows[0];
+        
+        if (!sessionInfo || !sessionInfo.mobile_drive_file_id) {
+            return res.status(404).json({ error: 'No mobile video found for this session' });
+        }
+        
+        const mimeToUse = sessionInfo.mime_type || 'video/webm';
+        console.log(`Streaming mobile video from Google Drive file: ${sessionInfo.mobile_drive_file_id}`);
+        const driveStream = await downloadVideoFromDrive(sessionInfo.mobile_drive_file_id);
+        const chunks = [];
+        for await (const chunk of driveStream) {
+            chunks.push(chunk);
+        }
+        const masterBuffer = Buffer.concat(chunks);
+        const cleanMime = mimeToUse.split(';')[0];
+        
+        const range = req.headers.range;
+        if (range) {
+            const parts = range.replace(/bytes=/, "").split("-");
+            const start = parseInt(parts[0], 10);
+            const end = parts[1] ? parseInt(parts[1], 10) : masterBuffer.length - 1;
+            const chunksize = (end - start) + 1;
+            const file = masterBuffer.slice(start, end + 1);
+            res.writeHead(206, {
+                'Content-Range': `bytes ${start}-${end}/${masterBuffer.length}`,
+                'Accept-Ranges': 'bytes',
+                'Content-Length': chunksize,
+                'Content-Type': cleanMime,
+            });
+            res.end(file);
+        } else {
+            res.setHeader('Content-Type', cleanMime);
+            res.setHeader('Content-Length', masterBuffer.length);
+            res.setHeader('Accept-Ranges', 'bytes');
+            res.send(masterBuffer);
+        }
+    } catch (err) {
+        console.error('Mobile Playback Error', err);
+        res.status(500).json({ error: err.message });
+    }
+});
+
 // API: Database Status / Capacity Check
 app.get('/api/db-status', requireInstructor, async (req, res) => {
     try {
@@ -1822,7 +2320,7 @@ app.get('/api/exams/:exam_id/reports', requireInstructor, async (req, res) => {
         const { exam_id } = req.params;
         const { canvasCourseId } = req.session.lti;
         
-        const sessions = await pool.query('SELECT id, exam_id, student_canvas_id, student_name, status, started_at, attempt_number, video_archived, drive_file_id FROM exam_sessions WHERE exam_id = $1', [exam_id]);
+        const sessions = await pool.query('SELECT id, exam_id, student_canvas_id, student_name, status, started_at, attempt_number, video_archived, drive_file_id, mobile_drive_file_id FROM exam_sessions WHERE exam_id = $1', [exam_id]);
         const logs = await pool.query(`
             SELECT pl.* FROM proctor_logs pl 
             JOIN exam_sessions es ON pl.exam_session_id = es.id 
@@ -1848,10 +2346,13 @@ app.get('/api/exams/:exam_id/reports', requireInstructor, async (req, res) => {
             attemptedCount
         );
         
+        const reportResult = await pool.query('SELECT * FROM session_annotations WHERE exam_session_id IN (SELECT id FROM exam_sessions WHERE exam_id = $1)', [exam_id]);
+        
         const report = sessions.rows.map(s => {
             return {
                 ...s,
-                logs: logs.rows.filter(l => l.exam_session_id === s.id)
+                logs: logs.rows.filter(l => l.exam_session_id === s.id),
+                annotations: reportResult.rows.filter(a => a.exam_session_id === s.id)
             };
         });
         
@@ -1859,6 +2360,43 @@ app.get('/api/exams/:exam_id/reports', requireInstructor, async (req, res) => {
             sessions: report,
             enrolled_count: enrolledCount
         });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// API: Get Session Annotations
+app.get('/api/session/:session_id/annotations', requireInstructor, async (req, res) => {
+    try {
+        const { session_id } = req.params;
+        const result = await pool.query('SELECT * FROM session_annotations WHERE exam_session_id = $1 ORDER BY timestamp_seconds ASC', [session_id]);
+        res.json({ annotations: result.rows });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// API: Add Session Annotation
+app.post('/api/session/:session_id/annotations', requireInstructor, async (req, res) => {
+    try {
+        const { session_id } = req.params;
+        const { timestamp_seconds, note } = req.body;
+        const result = await pool.query(
+            'INSERT INTO session_annotations (exam_session_id, timestamp_seconds, note) VALUES ($1, $2, $3) RETURNING *',
+            [session_id, parseInt(timestamp_seconds, 10) || 0, note || '']
+        );
+        res.json({ success: true, annotation: result.rows[0] });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// API: Delete Session Annotation
+app.delete('/api/session/:session_id/annotations/:annotation_id', requireInstructor, async (req, res) => {
+    try {
+        const { annotation_id } = req.params;
+        await pool.query('DELETE FROM session_annotations WHERE id = $1', [annotation_id]);
+        res.json({ success: true });
     } catch (err) {
         res.status(500).json({ error: err.message });
     }
@@ -2078,6 +2616,60 @@ io.on('connection', (socket) => {
         socket.join('teacher_' + exam_id);
     });
 
+    socket.on('join_lti', (data) => { // { token }
+        socket.join('lti_' + data.token);
+    });
+
+    socket.on('mobile_pair', async (data) => { // { token, exam_id }
+        try {
+            const { token, exam_id } = data;
+            const ltiResult = await pool.query('SELECT canvas_user_id FROM lti_sessions WHERE session_token = $1', [token]);
+            if (ltiResult.rows.length > 0) {
+                socket.join('lti_' + token);
+                socket.mobileData = { token, exam_id };
+                console.log(`[Socket Mobile] Mobile linked successfully for LTI token ${token}`);
+                io.to('lti_' + token).emit('mobile_paired', { success: true });
+            } else {
+                socket.emit('mobile_pair_error', { error: 'Invalid token' });
+            }
+        } catch (err) {
+            console.error('[Socket Mobile] Pair error:', err);
+            socket.emit('mobile_pair_error', { error: err.message });
+        }
+    });
+
+    socket.on('laptop_begin_exam', (data) => { // { token }
+        io.to('lti_' + data.token).emit('mobile_start_record');
+    });
+
+    socket.on('laptop_end_exam', (data) => { // { token }
+        io.to('lti_' + data.token).emit('mobile_stop_record');
+    });
+
+    socket.on('mobile_violation', async (data) => {
+        try {
+            const { token, event_type, event_message } = data;
+            const ltiResult = await pool.query('SELECT exam_session_id FROM lti_sessions WHERE session_token = $1', [token]);
+            if (ltiResult.rows.length > 0 && ltiResult.rows[0].exam_session_id) {
+                const sessionId = ltiResult.rows[0].exam_session_id;
+                await pool.query(
+                    'INSERT INTO proctor_logs (exam_session_id, event_type, event_message) VALUES ($1, $2, $3)',
+                    [sessionId, event_type, event_message]
+                );
+                const sessionQuery = await pool.query('SELECT exam_id FROM exam_sessions WHERE id = $1', [sessionId]);
+                if (sessionQuery.rows.length > 0) {
+                    io.to('teacher_' + sessionQuery.rows[0].exam_id).emit('suspicious_activity', {
+                        session_id: sessionId,
+                        event_type: event_type,
+                        event_message: event_message
+                    });
+                }
+            }
+        } catch(e){
+            console.error('[Socket Mobile] Violation logging error:', e);
+        }
+    });
+
     socket.on('join_student', (data) => { // { exam_id, exam_session_id, student_name }
         socket.join('student_' + data.exam_session_id);
         socket.join('exam_' + data.exam_id);
@@ -2118,7 +2710,23 @@ io.on('connection', (socket) => {
         io.to('exam_' + data.exam_id).emit('instructor_warning', { message: data.message });
     });
 
-    socket.on('disconnect', () => {
+    socket.on('disconnect', async () => {
+        if (socket.mobileData) {
+            const { token } = socket.mobileData;
+            console.log(`[Socket Mobile] Mobile disconnected for LTI token ${token}`);
+            io.to('lti_' + token).emit('mobile_disconnected');
+            try {
+                const ltiResult = await pool.query('SELECT exam_session_id FROM lti_sessions WHERE session_token = $1', [token]);
+                if (ltiResult.rows.length > 0 && ltiResult.rows[0].exam_session_id) {
+                    const sessionId = ltiResult.rows[0].exam_session_id;
+                    await pool.query(
+                        'INSERT INTO proctor_logs (exam_session_id, event_type, event_message) VALUES ($1, $2, $3)',
+                        [sessionId, 'mobile_camera_lost', 'Secondary mobile camera connection was lost.']
+                    );
+                }
+            } catch(e){}
+        }
+
         if(socket.studentData) {
             const { exam_session_id, exam_id, student_name } = socket.studentData;
             io.to('teacher_' + exam_id).emit('student_status', { 
@@ -2168,8 +2776,175 @@ app.get('/', (req, res) => {
     res.redirect('/index.html');
 });
 
+app.post('/api/client-error', (req, res) => {
+    console.log('--- CLIENT ERROR LOGGED ---', JSON.stringify(req.body, null, 2));
+    res.json({ success: true });
+});
+
+
 initDatabase().then(() => {
     server.listen(PORT, () => {
         console.log(`Secure Exam Proctor running on port ${PORT}`);
     });
 }).catch(console.error);
+
+// API: Upload Room Scan Video
+app.post('/api/session/room-scan', requireAuth, async (req, res) => {
+    const { exam_session_id, base64_video } = req.body;
+    try {
+        if (!base64_video) throw new Error("Video payload was empty");
+        console.log(`[Upload Room Scan] Received room scan for session ${exam_session_id}`);
+
+        const scanDir = path.join(os.tmpdir(), `roomscans`);
+        if (!fs.existsSync(scanDir)) {
+            fs.mkdirSync(scanDir, { recursive: true });
+        }
+
+        const scanPath = path.join(scanDir, `scan-${exam_session_id}.webm`);
+        const pureB64 = base64_video.replace(/^data:[^,]+,/, '').replace(/\s/g, '');
+        fs.writeFileSync(scanPath, pureB64, 'base64');
+        
+        // In a real app we'd upload to Drive, but for now we store locally and provide a route
+        const roomScanUrl = `/api/session/room-scan-playback/${exam_session_id}`;
+        
+        // Update database with room scan URL (you would need to add a column for this if it doesn't exist, but we can just use the endpoint pattern)
+        // Or store it in proctor_logs so the speedgrader can fetch it.
+        await pool.query("INSERT INTO proctor_logs (exam_session_id, event_type, event_message, event_timestamp) VALUES ($1, $2, $3, CURRENT_TIMESTAMP)", [exam_session_id, 'room_scan_video', roomScanUrl]);
+
+        res.json({ success: true, url: roomScanUrl });
+    } catch (err) {
+        console.error('Room Scan Upload Error', err);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// API: Room Scan Playback
+app.get('/api/session/room-scan-playback/:session_id', requireInstructorOrExtensionSecret, async (req, res) => {
+    try {
+        const { session_id } = req.params;
+        const scanPath = path.join(os.tmpdir(), `roomscans`, `scan-${session_id}.webm`);
+        
+        if (fs.existsSync(scanPath)) {
+            res.setHeader('Content-Type', 'video/webm');
+            fs.createReadStream(scanPath).pipe(res);
+        } else {
+            // Check if there is a room_scan_drive_file_id in database!
+            const dbQuery = await pool.query('SELECT room_scan_drive_file_id FROM exam_sessions WHERE id = $1', [session_id]);
+            if (dbQuery.rows.length > 0 && dbQuery.rows[0].room_scan_drive_file_id) {
+                const driveFileId = dbQuery.rows[0].room_scan_drive_file_id;
+                console.log(`[Playback] Streaming room scan from Google Drive. File ID: ${driveFileId}`);
+                res.setHeader('Content-Type', 'video/webm');
+                const stream = await downloadVideoFromDrive(driveFileId);
+                stream.pipe(res);
+            } else {
+                res.status(404).send('Room scan not found');
+            }
+        }
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// API: Upload Student ID Image
+app.post('/api/session/upload-id', requireAuth, async (req, res) => {
+    const { exam_session_id, base64_image } = req.body;
+    try {
+        if (!base64_image) throw new Error("Image payload was empty");
+        console.log(`[Upload ID] Received ID verification image for session ${exam_session_id}`);
+
+        const idDir = path.join(os.tmpdir(), `id_images`);
+        if (!fs.existsSync(idDir)) {
+            fs.mkdirSync(idDir, { recursive: true });
+        }
+
+        const idPath = path.join(idDir, `id-${exam_session_id}.png`);
+        const pureB64 = base64_image.replace(/^data:[^,]+,/, '').replace(/\s/g, '');
+        fs.writeFileSync(idPath, pureB64, 'base64');
+        
+        const idViewUrl = `/api/session/view-id/${exam_session_id}`;
+        
+        // Log ID image in proctor_logs so the speedgrader can fetch it.
+        await pool.query(
+            "INSERT INTO proctor_logs (exam_session_id, event_type, event_message, event_timestamp) VALUES ($1, $2, $3, CURRENT_TIMESTAMP)", 
+            [exam_session_id, 'verify_id_image', idViewUrl]
+        );
+
+        res.json({ success: true, url: idViewUrl });
+    } catch (err) {
+        console.error('ID Image Upload Error', err);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// API: View ID Verification Image
+app.get('/api/session/view-id/:session_id', requireInstructorOrExtensionSecret, async (req, res) => {
+    try {
+        const { session_id } = req.params;
+        const idPath = path.join(os.tmpdir(), `id_images`, `id-${session_id}.png`);
+        
+        if (fs.existsSync(idPath)) {
+            res.setHeader('Content-Type', 'image/png');
+            fs.createReadStream(idPath).pipe(res);
+        } else {
+            res.status(404).send('ID verification image not found');
+        }
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// API: Upload Student Signature Image
+app.post('/api/session/upload-signature', requireAuth, async (req, res) => {
+    const { exam_session_id, base64_image, full_name } = req.body;
+    try {
+        if (!base64_image) throw new Error("Image payload was empty");
+        console.log(`[Upload Signature] Received signature image for session ${exam_session_id}`);
+
+        const sigDir = path.join(os.tmpdir(), `signatures`);
+        if (!fs.existsSync(sigDir)) {
+            fs.mkdirSync(sigDir, { recursive: true });
+        }
+
+        const sigPath = path.join(sigDir, `sig-${exam_session_id}.png`);
+        const pureB64 = base64_image.replace(/^data:[^,]+,/, '').replace(/\s/g, '');
+        fs.writeFileSync(sigPath, pureB64, 'base64');
+        
+        const sigViewUrl = `/api/session/view-signature/${exam_session_id}`;
+        
+        // Log Signature in proctor_logs
+        await pool.query(
+            "INSERT INTO proctor_logs (exam_session_id, event_type, event_message, event_timestamp) VALUES ($1, $2, $3, CURRENT_TIMESTAMP)", 
+            [exam_session_id, 'verify_signature_image', sigViewUrl]
+        );
+
+        // Also create a regular log indicating academic integrity agreement signed
+        await pool.query(
+            "INSERT INTO proctor_logs (exam_session_id, event_type, event_message, event_timestamp) VALUES ($1, $2, $3, CURRENT_TIMESTAMP)", 
+            [exam_session_id, 'academic_integrity_agreement', `Student signed academic honesty agreement as "${full_name}".`]
+        );
+
+        res.json({ success: true, url: sigViewUrl });
+    } catch (err) {
+        console.error('Signature Upload Error', err);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// API: View Signature Image
+app.get('/api/session/view-signature/:session_id', requireInstructorOrExtensionSecret, async (req, res) => {
+    try {
+        const { session_id } = req.params;
+        const sigPath = path.join(os.tmpdir(), `signatures`, `sig-${session_id}.png`);
+        
+        if (fs.existsSync(sigPath)) {
+            res.setHeader('Content-Type', 'image/png');
+            fs.createReadStream(sigPath).pipe(res);
+        } else {
+            res.status(404).send('Signature image not found');
+        }
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+

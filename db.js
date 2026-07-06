@@ -108,17 +108,54 @@ async function initDatabase() {
       ALTER TABLE exams ADD COLUMN IF NOT EXISTS allow_apps BOOLEAN DEFAULT false;
       ALTER TABLE exams ADD COLUMN IF NOT EXISTS block_mobile BOOLEAN DEFAULT false;
       ALTER TABLE exams ADD COLUMN IF NOT EXISTS require_extension BOOLEAN DEFAULT false;
+      ALTER TABLE exams ADD COLUMN IF NOT EXISTS require_companion_app BOOLEAN DEFAULT false;
+      ALTER TABLE exams ADD COLUMN IF NOT EXISTS allowed_apps TEXT DEFAULT null;
+      ALTER TABLE exams ADD COLUMN IF NOT EXISTS blocked_apps TEXT DEFAULT null;
+      ALTER TABLE exams ADD COLUMN IF NOT EXISTS allowed_urls TEXT DEFAULT null;
+
 
       ALTER TABLE exam_sessions ADD COLUMN IF NOT EXISTS video_archived BOOLEAN DEFAULT false;
       ALTER TABLE exam_sessions ADD COLUMN IF NOT EXISTS mime_type VARCHAR(255) DEFAULT 'video/webm';
       ALTER TABLE exam_sessions ADD COLUMN IF NOT EXISTS drive_file_id VARCHAR(255);
+      ALTER TABLE exams ADD COLUMN IF NOT EXISTS require_mobile_camera BOOLEAN DEFAULT false;
+      
+      -- New Proctorio UI alignment columns
+      ALTER TABLE exams ADD COLUMN IF NOT EXISTS verify_video BOOLEAN DEFAULT false;
+      ALTER TABLE exams ADD COLUMN IF NOT EXISTS verify_audio BOOLEAN DEFAULT false;
+      ALTER TABLE exams ADD COLUMN IF NOT EXISTS verify_desktop BOOLEAN DEFAULT false;
+      ALTER TABLE exams ADD COLUMN IF NOT EXISTS verify_id BOOLEAN DEFAULT false;
+      ALTER TABLE exams ADD COLUMN IF NOT EXISTS verify_signature BOOLEAN DEFAULT false;
+      ALTER TABLE exams ADD COLUMN IF NOT EXISTS allow_calculator BOOLEAN DEFAULT false;
+      ALTER TABLE exams ADD COLUMN IF NOT EXISTS allow_whiteboard BOOLEAN DEFAULT false;
+      ALTER TABLE exams ADD COLUMN IF NOT EXISTS behavior_preset VARCHAR(100) DEFAULT 'Recommended';
+      ALTER TABLE exams ADD COLUMN IF NOT EXISTS weight_navigating_away INTEGER DEFAULT 1;
+      ALTER TABLE exams ADD COLUMN IF NOT EXISTS weight_keystrokes INTEGER DEFAULT 1;
+      ALTER TABLE exams ADD COLUMN IF NOT EXISTS weight_copy_paste INTEGER DEFAULT 1;
+      ALTER TABLE exams ADD COLUMN IF NOT EXISTS weight_browser_resize INTEGER DEFAULT 1;
+      ALTER TABLE exams ADD COLUMN IF NOT EXISTS weight_head_movement INTEGER DEFAULT 1;
+      ALTER TABLE exams ADD COLUMN IF NOT EXISTS weight_multi_face INTEGER DEFAULT 1;
+      ALTER TABLE exams ADD COLUMN IF NOT EXISTS weight_leaving_room INTEGER DEFAULT 1;
+      ALTER TABLE exam_sessions ADD COLUMN IF NOT EXISTS mobile_drive_file_id VARCHAR(255);
+      ALTER TABLE exam_sessions ADD COLUMN IF NOT EXISTS room_scan_drive_file_id VARCHAR(255);
+      ALTER TABLE exam_sessions ADD COLUMN IF NOT EXISTS verify_id_image TEXT;
+      ALTER TABLE exam_sessions ADD COLUMN IF NOT EXISTS verify_signature_image TEXT;
+      ALTER TABLE exam_sessions ADD COLUMN IF NOT EXISTS verify_signature_name VARCHAR(500);
       ALTER TABLE lti_sessions ADD COLUMN IF NOT EXISTS alternative_canvas_course_id VARCHAR(255);
       ALTER TABLE lti_sessions ADD COLUMN IF NOT EXISTS debug_info TEXT;
+      ALTER TABLE lti_sessions ADD COLUMN IF NOT EXISTS exam_session_id INTEGER;
 
       CREATE TABLE IF NOT EXISTS exam_placements (
         id SERIAL PRIMARY KEY,
         resource_link_id VARCHAR(255) UNIQUE NOT NULL,
         exam_id INTEGER REFERENCES exams(id) ON DELETE CASCADE,
+        created_at TIMESTAMP DEFAULT NOW()
+      );
+
+      CREATE TABLE IF NOT EXISTS session_annotations (
+        id SERIAL PRIMARY KEY,
+        exam_session_id INTEGER REFERENCES exam_sessions(id) ON DELETE CASCADE,
+        timestamp_seconds INTEGER NOT NULL,
+        note TEXT NOT NULL,
         created_at TIMESTAMP DEFAULT NOW()
       );
 
