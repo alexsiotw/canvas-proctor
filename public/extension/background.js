@@ -1,4 +1,5 @@
 let activeExamSession = null;
+let heartbeatInterval = null;
 
 // Listen for messages from content scripts
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
@@ -6,9 +7,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     activeExamSession = {
       examId: message.examId,
       sessionToken: message.token,
-      settings: message.settings || {}
+      settings: message.settings || {},
+      startTabId: sender.tab ? sender.tab.id : null
     };
     console.log("[Extension] Exam lockdown started:", activeExamSession);
+    
+    // Notify all matching content scripts of the new settings
+    broadcastToExamTabs({ type: "EXAM_SETTINGS_UPDATE", settings: activeExamSession.settings });
     
     // Close other tabs if configured
     if (activeExamSession.settings.close_open_tabs) {
@@ -19,13 +24,32 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (activeExamSession.settings.advanced_hardware_detection || activeExamSession.settings.only_one_screen) {
       checkDisplays(sender.tab ? sender.tab.id : null);
     }
+
+    // Start heartbeat log every 30s
+    if (heartbeatInterval) clearInterval(heartbeatInterval);
+    heartbeatInterval = setInterval(() => {
+      if (activeExamSession) {
+        logProctorEvent("heartbeat", "Extension lockdown active.");
+      }
+    }, 30000);
     
     sendResponse({ success: true });
   } 
   
   else if (message.type === "END_EXAM") {
     console.log("[Extension] Exam lockdown ended");
+    if (heartbeatInterval) { clearInterval(heartbeatInterval); heartbeatInterval = null; }
+    
+    // Clear browser cache if configured
+    if (activeExamSession && activeExamSession.settings.clear_cache) {
+      chrome.browsingData.removeCache({ since: 0 }, () => {
+        console.log("[Extension] Cache cleared on exam end.");
+      });
+    }
+    
     activeExamSession = null;
+    // Notify content scripts exam ended
+    broadcastToExamTabs({ type: "EXAM_ENDED" });
     sendResponse({ success: true });
   }
   
@@ -33,9 +57,31 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     sendResponse({ 
       installed: true, 
       active: !!activeExamSession,
-      activeExamId: activeExamSession ? activeExamSession.examId : null
+      activeExamId: activeExamSession ? activeExamSession.examId : null,
+      settings: activeExamSession ? activeExamSession.settings : null
     });
   }
+
+  else if (message.type === "GET_SETTINGS") {
+    sendResponse({
+      active: !!activeExamSession,
+      settings: activeExamSession ? activeExamSession.settings : null
+    });
+  }
+
+  else if (message.type === "FETCH_URL") {
+    // Proxy cross-origin fetch requests from content scripts through the service worker
+    fetch(message.url, message.options || {})
+      .then(async res => {
+        const text = await res.text();
+        sendResponse({ ok: res.ok, status: res.status, body: text });
+      })
+      .catch(err => {
+        sendResponse({ ok: false, status: 0, error: err.message });
+      });
+    return true; // keep message channel open for async response
+  }
+
   return true;
 });
 
@@ -80,6 +126,21 @@ chrome.webNavigation.onCommitted.addListener((details) => {
     logTraffic(url);
   }
 });
+
+// Helper: Broadcast a message to all relevant exam/proctor tabs
+function broadcastToExamTabs(msg) {
+  const patterns = [
+    "*://proctor.siotw.net/student.html*",
+    "*://canvas.siotw.net/courses/*/quizzes/*"
+  ];
+  chrome.tabs.query({}, (tabs) => {
+    tabs.forEach(tab => {
+      if (tab.url && (tab.url.includes("proctor.siotw.net") || tab.url.includes("canvas.siotw.net"))) {
+        chrome.tabs.sendMessage(tab.id, msg).catch(() => {});
+      }
+    });
+  });
+}
 
 // Helper: Close all other tabs except the active exam tab
 function closeOtherTabs(examTabId) {

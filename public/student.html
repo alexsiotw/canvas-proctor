@@ -5,58 +5,78 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Proctored Exam Session</title>
+  <script>
+    window.onerror = function(message, source, lineno, colno, error) {
+      fetch('/api/client-error', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message, source, lineno, colno, error: error ? error.stack : '' })
+      }).catch(err => {});
+    };
+    window.addEventListener('unhandledrejection', function(event) {
+      fetch('/api/client-error', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message: 'Unhandled Promise Rejection: ' + event.reason, stack: event.reason ? event.reason.stack : '' })
+      }).catch(err => {});
+    });
+  </script>
   <link rel="stylesheet" href="/css/styles.css?v=1.0.7">
   <script src="/socket.io/socket.io.js"></script>
   <style>
-    body, html { margin: 0; padding: 0; min-height: 100%; overflow: auto; background: #f5f6f7; }
+    body, html { margin: 0; padding: 0; min-height: 100%; overflow: auto; background: #f3f4f6; } /* Light gray background */
+    
     #setup-container {
         display: none;
         flex-direction: column;
         width: 100%;
         max-width: 900px;
-        margin: 20px auto;
-        background: white;
-        border-radius: 8px;
-        box-shadow: 0 4px 20px rgba(0,0,0,0.15);
+        margin: 40px auto;
+        background: #ffffff; /* Clean white card */
+        border: 1px solid #e5e7eb;
+        border-radius: 12px;
+        box-shadow: 0 10px 15px -3px rgba(0,0,0,0.05), 0 4px 6px -2px rgba(0,0,0,0.02);
         overflow: hidden;
-        border: 1px solid #cbd5e1;
+        color: #1f2937;
+        font-family: 'Inter', sans-serif;
     }
     .setup-header {
-        background: #1e3a8a;
-        color: white;
-        padding: 15px 20px;
+        background: #f9fafb;
+        color: #111827;
+        padding: 18px 24px;
         font-size: 16px;
-        font-weight: bold;
+        font-weight: 700;
         display: flex;
         align-items: center;
-        gap: 10px;
-        border-bottom: 2px solid #1d4ed8;
+        gap: 12px;
+        border-bottom: 1px solid #e5e7eb;
     }
     .setup-body {
         display: flex;
-        min-height: 480px;
+        min-height: 520px;
     }
     .setup-sidebar {
         width: 250px;
-        background: #f1f5f9;
-        border-right: 1px solid #e2e8f0;
+        background: #f9fafb;
+        border-right: 1px solid #e5e7eb;
         display: flex;
         flex-direction: column;
     }
     .sidebar-step {
-        padding: 15px 20px;
-        font-size: 12px;
+        padding: 18px 20px;
+        font-size: 13px;
         font-weight: 600;
-        color: #64748b;
-        border-bottom: 1px solid #e2e8f0;
+        color: #4b5563;
+        border-bottom: 1px solid #f3f4f6;
         display: flex;
         align-items: center;
-        gap: 8px;
+        gap: 10px;
         position: relative;
+        transition: all 0.3s ease;
     }
     .sidebar-step.active {
-        background: white;
-        color: #1e293b;
+        background: #eff6ff; /* Soft academic blue */
+        color: #1d4ed8; /* Royal blue */
     }
     .sidebar-step.active::before {
         content: '';
@@ -65,55 +85,60 @@
         top: 0;
         bottom: 0;
         width: 4px;
-        background: #f97316;
+        background: #1d4ed8;
+        border-top-right-radius: 4px;
+        border-bottom-right-radius: 4px;
     }
     .sidebar-step.completed {
-        color: #059669;
+        color: #059669; /* Success green */
     }
     .setup-content {
         flex: 1;
-        padding: 30px;
+        padding: 40px;
         display: flex;
         flex-direction: column;
         justify-content: space-between;
+        background: transparent;
     }
     .step-title {
-        font-size: 20px;
+        font-size: 24px;
         font-weight: 700;
-        color: #0f172a;
+        color: #111827;
         margin-bottom: 15px;
+        letter-spacing: -0.5px;
     }
     .step-description {
-        font-size: 14px;
+        font-size: 15px;
         line-height: 1.6;
-        color: #475569;
-        margin-bottom: 20px;
+        color: #4b5563;
+        margin-bottom: 25px;
     }
     .volume-meter {
         width: 100%;
-        height: 15px;
-        background: #e2e8f0;
-        border-radius: 8px;
+        height: 12px;
+        background: #f3f4f6;
+        border-radius: 6px;
         overflow: hidden;
-        margin: 15px 0;
-        border: 1px solid #cbd5e1;
+        margin: 20px 0;
+        border: 1px solid #e5e7eb;
     }
     .volume-fill {
         height: 100%;
         width: 0%;
-        background: #22c55e;
+        background: linear-gradient(90deg, #10b981, #3b82f6);
         transition: width 0.1s ease;
     }
     .video-preview-box {
         width: 100%;
-        max-width: 400px;
+        max-width: 440px;
         aspect-ratio: 4/3;
-        background: black;
-        border-radius: 6px;
+        background: #0f172a;
+        border-radius: 12px;
         overflow: hidden;
         position: relative;
-        margin: 15px 0;
-        border: 2px solid #cbd5e1;
+        margin: 20px 0;
+        border: 1px solid rgba(255,255,255,0.1);
+        box-shadow: 0 10px 25px rgba(0,0,0,0.3);
     }
     #setup-container video {
         width: 100% !important;
@@ -202,12 +227,25 @@
             padding: 15px 20px;
         }
     }
+    @keyframes spin {
+        0% { transform: rotate(0deg); }
+        100% { transform: rotate(360deg); }
+    }
+    .spinner {
+        border: 3px solid #e2e8f0;
+        border-top: 3px solid #2563eb;
+        border-radius: 50%;
+        width: 16px;
+        height: 16px;
+        animation: spin 1s linear infinite;
+        display: inline-block;
+    }
   </style>
 </head>
 
 <body>
   
-  <div id="code-container" style="display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100%; padding: 20px;">
+  <div id="code-container" style="display: flex; flex-direction: column; align-items: center; justify-content: center; min-height: 100vh; padding: 20px;">
       <div class="check-card">
           <h1>Exam Access Code</h1>
           <p style="color: var(--text-secondary); margin-bottom: 20px;">
@@ -221,7 +259,7 @@
 
   <div id="setup-container">
       <div class="setup-header">
-          <span>🔒 Secure Exam Proctor Browser Check</span>
+          <span><img src="icons/block-navigation.svg" style="width:16px; height:16px; vertical-align:middle; margin-right:5px; filter: brightness(0) invert(1);" /> ProctorGuard Browser Check</span>
       </div>
       <!-- iOS third-party cookie check warning -->
       <div id="ios-cookie-warning" style="display: none; background: #fffbeb; border-bottom: 1px solid #fef3c7; padding: 15px 20px; color: #b45309; font-size: 13px; line-height: 1.5; font-family: sans-serif;">
@@ -237,11 +275,18 @@
       </div>
       <div class="setup-body">
           <div class="setup-sidebar" id="setup-sidebar">
-              <div class="sidebar-step active" id="step-nav-1">STEP 1: MICROPHONE CHECK</div>
-              <div class="sidebar-step" id="step-nav-2">STEP 2: WEBCAM CHECK</div>
-              <div class="sidebar-step" id="step-nav-3">STEP 3: SCREEN SHARE</div>
-              <div class="sidebar-step" id="step-nav-4">STEP 4: FULLSCREEN MODE</div>
-              <div class="sidebar-step" id="step-nav-5">STEP 5: BEGIN EXAM</div>
+              <div class="sidebar-step active" id="step-nav-1">STEP 1: NETWORK CHECK</div>
+              <div class="sidebar-step" id="step-nav-2">STEP 2: MICROPHONE CHECK</div>
+              <div class="sidebar-step" id="step-nav-3">STEP 3: WEBCAM CHECK</div>
+              <div class="sidebar-step" id="step-nav-11">STEP 3.5: ID VERIFICATION</div>
+              <div class="sidebar-step" id="step-nav-12">STEP 3.6: SIGNATURE AGREEMENT</div>
+              <div class="sidebar-step" id="step-nav-4">STEP 4: ADDITIONAL INSTRUCTIONS</div>
+              <div class="sidebar-step" id="step-nav-5">STEP 5: GUIDELINES + TIPS</div>
+              <div class="sidebar-step" id="step-nav-6">STEP 6: ROOM SCAN</div>
+              <div class="sidebar-step" id="step-nav-10">STEP 6.5: SECONDARY MOBILE CAMERA</div>
+              <div class="sidebar-step" id="step-nav-7">STEP 7: SCREEN SHARE</div>
+              <div class="sidebar-step" id="step-nav-8">STEP 8: FULLSCREEN MODE</div>
+              <div class="sidebar-step" id="step-nav-9">STEP 9: BEGIN EXAM</div>
           </div>
           <div class="setup-content" id="setup-content">
               <!-- Dynamically populated step content -->
@@ -288,9 +333,9 @@
   <!-- Extension Required Overlay -->
   <div id="extension-required-overlay" style="display: none; position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; background: rgba(15, 23, 42, 0.95); z-index: 99999; justify-content: center; align-items: center; color: white; font-family: 'Inter', sans-serif;">
     <div style="background: white; color: #1e293b; padding: 40px; border-radius: 16px; width: 90%; max-width: 500px; text-align: center; box-shadow: 0 10px 25px rgba(0,0,0,0.3);">
-      <div style="font-size: 50px; margin-bottom: 20px;">🔒</div>
+      <div style="margin-bottom: 20px; display: flex; justify-content: center;"><img src="icons/disable-extensions.svg" style="width:50px; height:50px;" /></div>
       <h2 style="font-size: 22px; font-weight: 700; margin: 0 0 12px 0;">Chrome Extension Required</h2>
-      <p style="font-size: 14px; color: #64748b; line-height: 1.6; margin-bottom: 30px;">This exam is configured with advanced security settings. You must download and install the Secure Exam Proctor Chrome extension to continue.</p>
+      <p style="font-size: 14px; color: #64748b; line-height: 1.6; margin-bottom: 30px;">This exam is configured with advanced security settings. You must download and install the ProctorGuard Chrome Extension to continue.</p>
       
       <div style="background: #f1f5f9; padding: 15px; border-radius: 8px; text-align: left; font-size: 12px; color: #475569; margin-bottom: 30px; line-height: 1.5;">
         <strong style="color: #1e293b;">How to install:</strong>
@@ -307,6 +352,60 @@
       <br>
       <button onclick="window.location.reload()" style="background: none; border: none; color: #0374B5; font-size: 13px; font-weight: bold; text-decoration: underline; cursor: pointer;">I have installed it, check again</button>
     </div>
+  </div>
+  <!-- Companion App Required Overlay -->
+  <div id="companion-app-required-overlay" style="display: none; position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; background: rgba(15, 23, 42, 0.95); z-index: 99999; justify-content: center; align-items: center; color: white; font-family: 'Inter', sans-serif;">
+    <div style="background: white; color: #1e293b; padding: 40px; border-radius: 16px; width: 90%; max-width: 500px; text-align: center; box-shadow: 0 10px 25px rgba(0,0,0,0.3);">
+      <div style="margin-bottom: 20px; display: flex; justify-content: center;"><img src="icons/record-screen.svg" style="width:50px; height:50px;" /></div>
+      <h2 style="font-size: 22px; font-weight: 700; margin: 0 0 12px 0;">Desktop Secure Browser Required</h2>
+      <p style="font-size: 14px; color: #64748b; line-height: 1.6; margin-bottom: 30px;">This exam is locked down and requires the Secure Proctor Desktop application. You cannot access this exam from a standard web browser.</p>
+      
+      <div style="background: #f1f5f9; padding: 15px; border-radius: 8px; text-align: left; font-size: 12px; color: #475569; margin-bottom: 30px; line-height: 1.5;">
+        <strong style="color: #1e293b;">How to launch:</strong>
+        <ol style="margin: 8px 0 0 16px; padding: 0;">
+          <li>Download the ZIP file using the button below.</li>
+          <li>Extract (unzip) the downloaded file to a folder.</li>
+          <li>Open the folder and double-click <code style="background: #e2e8f0; padding: 2px 4px; border-radius: 4px; color: #0f766e; font-weight: bold;">CanvasProctor.exe</code> to launch.</li>
+          <li>Log in to your Canvas account inside the secure application.</li>
+          <li>Navigate back to this quiz to begin your exam.</li>
+        </ol>
+      </div>
+      
+      <a href="https://proctor.siotw.net/companion/CanvasProctorSetup.msi?v=1.0.2" class="banner-link" download style="display: inline-block; background: #0374B5; color: white; padding: 12px 24px; border-radius: 6px; text-decoration: none; font-weight: 600; font-size: 14px; margin-bottom: 16px; cursor: pointer;">Download Desktop Application (MSI)</a>
+      <br>
+      <a href="canvasproctor://launch" class="banner-link" style="display: inline-block; background: #ea580c; color: white; padding: 12px 24px; border-radius: 6px; text-decoration: none; font-weight: 600; font-size: 14px; cursor: pointer; border: none; outline: none; margin-top: 4px;">🚀 Launch CanvasProctor (Already Installed)</a>
+  </div>
+
+  <!-- Human Detection Blocker Overlay -->
+  <div id="ai-blocker-overlay" style="display: none; position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; background: rgba(15, 23, 42, 0.98); z-index: 999999; justify-content: center; align-items: center; flex-direction: column; color: white; font-family: 'Inter', sans-serif; text-align: center;">
+      <div style="background: #1e293b; border: 2px solid #ef4444; padding: 40px; border-radius: 16px; max-width: 550px; width: 90%; box-shadow: 0 20px 25px -5px rgba(0,0,0,0.5);">
+          <div style="margin-bottom: 20px; display: flex; justify-content: center; animation: pulse 1.5s infinite;"><img src="icons/record-video.svg" style="width:60px; height:60px;" /></div>
+          <h1 id="ai-blocker-title" style="color: #ef4444; font-size: 26px; font-weight: 800; margin: 0 0 15px 0;">Student Presence Required</h1>
+          <p id="ai-blocker-desc" style="color: #94a3b8; font-size: 16px; line-height: 1.6; margin-bottom: 25px;">
+              The AI proctoring system has detected that you are not in front of the camera, or your face is obscured.
+          </p>
+          <div id="ai-blocker-causes" style="background: rgba(239, 68, 68, 0.1); border: 1px solid rgba(239, 68, 68, 0.2); padding: 15px; border-radius: 8px; font-size: 14px; color: #fca5a5; margin-bottom: 20px; text-align: left;">
+              <strong>Possible causes:</strong>
+              <ul style="margin: 6px 0 0 20px; padding: 0;">
+                  <li>You left the camera view.</li>
+                  <li>Your room is too dark.</li>
+                  <li>An object (like a toy, picture, or screen) is blocking your face.</li>
+              </ul>
+          </div>
+          <p style="color: #38bdf8; font-weight: bold; font-size: 15px;">
+              Please return to your seat and look directly at the webcam to resume the exam.
+          </p>
+      </div>
+  <!-- Screen Share Blocker Overlay -->
+  <div id="screen-share-blocker-overlay" style="display: none; position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; background: rgba(15, 23, 42, 0.98); z-index: 999999; justify-content: center; align-items: center; flex-direction: column; color: white; font-family: 'Inter', sans-serif; text-align: center;">
+      <div style="background: #1e293b; border: 2px solid #ef4444; padding: 40px; border-radius: 16px; max-width: 550px; width: 90%; box-shadow: 0 20px 25px -5px rgba(0,0,0,0.5);">
+          <div style="margin-bottom: 20px; display: flex; justify-content: center;"><img src="icons/record-screen.svg" style="width:60px; height:60px;" /></div>
+          <h1 style="color: #ef4444; font-size: 26px; font-weight: 800; margin: 0 0 15px 0;">Screen Share Stopped</h1>
+          <p style="color: #94a3b8; font-size: 16px; line-height: 1.6; margin-bottom: 25px;">
+              Screen sharing is required to take this exam. You have stopped sharing your screen.
+          </p>
+          <button class="btn btn-primary" style="padding: 12px 30px; font-size: 16px; background-color: #3b82f6; border-color: #3b82f6;" onclick="reShareScreenFromBlocker()">Re-share Entire Screen</button>
+      </div>
   </div>
 
   <script src="/js/student.js?v=1.0.7"></script>

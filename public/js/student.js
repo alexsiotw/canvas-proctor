@@ -1,8 +1,9 @@
 let examConfig = null;
 let sessionInfo = null;
 let activeVisualFlags = [];
-let socket = io();
-socket.on('instructor_warning', (data) => {
+let socket = null;
+try { socket = io(); } catch(e) { console.warn('[Proctor] Socket.IO unavailable:', e.message); }
+if (socket) socket.on('instructor_warning', (data) => {
     const overlay = document.getElementById('focus-violation-overlay');
     if (overlay) {
         overlay.querySelector('h1').innerText = "💬 Message from Instructor";
@@ -12,16 +13,262 @@ socket.on('instructor_warning', (data) => {
         overlay.style.display = 'flex';
     }
 });
+if (!socket) { socket = { on: function(){}, emit: function(){} }; }
+
+if (socket) {
+    socket.on('mobile_paired', (data) => {
+        console.log("[Socket Mobile] Secondary camera successfully paired!");
+        window.isMobileCameraPaired = true;
+        if (currentStep === 10) {
+            const statusDiv = document.getElementById('mobile-pairing-status');
+            if (statusDiv) {
+                statusDiv.style.background = 'rgba(16, 185, 129, 0.1)';
+                statusDiv.style.borderColor = 'rgba(16, 185, 129, 0.3)';
+                statusDiv.style.color = '#10b981';
+                statusDiv.innerHTML = '✅ Phone Connected Successfully!';
+            }
+            const nextBtn = document.getElementById('btn-next-step');
+            if (nextBtn) {
+                nextBtn.disabled = false;
+                nextBtn.style.background = '#2563eb';
+                nextBtn.style.color = 'white';
+            }
+        }
+    });
+
+    socket.on('mobile_disconnected', () => {
+        console.warn("[Socket Mobile] Secondary camera disconnected!");
+        window.isMobileCameraPaired = false;
+        if (currentStep === 10) {
+            const statusDiv = document.getElementById('mobile-pairing-status');
+            if (statusDiv) {
+                statusDiv.style.background = 'rgba(239, 68, 68, 0.1)';
+                statusDiv.style.borderColor = 'rgba(239, 68, 68, 0.3)';
+                statusDiv.style.color = '#ef4444';
+                statusDiv.innerHTML = '❌ Connection lost. Re-scan the QR code.';
+            }
+            const nextBtn = document.getElementById('btn-next-step');
+            if (nextBtn) {
+                nextBtn.disabled = true;
+                nextBtn.style.background = '#e5e7eb';
+                nextBtn.style.color = '#9ca3af';
+            }
+        } else if (currentStep === 9) { // Inside active exam
+            const overlay = document.getElementById('focus-violation-overlay');
+            if (overlay) {
+                overlay.querySelector('h1').innerText = "⚠️ Mobile Camera Lost";
+                overlay.querySelector('h1').style.color = "var(--danger)";
+                overlay.querySelector('p').innerText = "Secondary mobile camera connection was lost. Please re-scan the QR code or reload the companion page to resume proctoring.";
+                overlay.querySelector('button').innerText = "Acknowledge";
+                overlay.style.display = 'flex';
+            }
+        }
+    });
+}
 let mediaRecorder = null;
 let chunkIndex = 0;
 let finalStream = null;
 let activeUploads = 0;
+let uploadQueue = [];
+let isProcessingQueue = false;
 let isStartingExam = false;
+let compositeVScreen = null;
+let compositeVCam = null;
+
+const DB_NAME = 'CanvasProctorDB';
+const STORE_NAME = 'chunks';
+
+let useMemoryStorage = false;
+const memoryChunks = {};
+
+try {
+    if (!window.indexedDB) {
+        console.warn("[DB] window.indexedDB not available. Using memory storage fallback.");
+        useMemoryStorage = true;
+    }
+} catch (e) {
+    console.warn("[DB] Failed to check window.indexedDB. Using memory storage fallback:", e.message);
+    useMemoryStorage = true;
+}
+
+function openDB() {
+    if (useMemoryStorage) return Promise.reject(new Error("IndexedDB disabled/blocked."));
+    return new Promise((resolve, reject) => {
+        try {
+            const request = indexedDB.open(DB_NAME, 1);
+            request.onupgradeneeded = (e) => {
+                const db = e.target.result;
+                if (!db.objectStoreNames.contains(STORE_NAME)) {
+                    db.createObjectStore(STORE_NAME, { keyPath: 'key' });
+                }
+            };
+            request.onsuccess = (e) => resolve(e.target.result);
+            request.onerror = (e) => {
+                console.warn("[DB] IndexedDB request error. Switching to memory storage.");
+                useMemoryStorage = true;
+                reject(e.target.error);
+            };
+        } catch (err) {
+            console.warn("[DB] Failed to open IndexedDB. Switching to memory storage:", err.message);
+            useMemoryStorage = true;
+            reject(err);
+        }
+    });
+}
+
+async function saveChunkToDB(sessionId, index, data) {
+    if (useMemoryStorage) {
+        const key = `${sessionId}_${index}`;
+        memoryChunks[key] = { key, session_id: sessionId, index, data, attempts: 0 };
+        return;
+    }
+    try {
+        const db = await openDB();
+        return new Promise((resolve, reject) => {
+            const tx = db.transaction(STORE_NAME, 'readwrite');
+            const store = tx.objectStore(STORE_NAME);
+            const key = `${sessionId}_${index}`;
+            store.put({ key, session_id: sessionId, index, data, attempts: 0 });
+            tx.oncomplete = () => resolve();
+            tx.onerror = () => reject(tx.error);
+        });
+    } catch (e) {
+        console.warn("[DB] Failed to save chunk to IndexedDB. Falling back to memory storage.", e);
+        useMemoryStorage = true;
+        const key = `${sessionId}_${index}`;
+        memoryChunks[key] = { key, session_id: sessionId, index, data, attempts: 0 };
+    }
+}
+
+async function getPendingChunksFromDB(sessionId) {
+    if (useMemoryStorage) {
+        const filtered = Object.values(memoryChunks)
+                            .filter(c => c.session_id === sessionId)
+                            .sort((a, b) => a.index - b.index);
+        return filtered;
+    }
+    try {
+        const db = await openDB();
+        return new Promise((resolve, reject) => {
+            const tx = db.transaction(STORE_NAME, 'readonly');
+            const store = tx.objectStore(STORE_NAME);
+            const request = store.getAll();
+            request.onsuccess = () => {
+                const all = request.result || [];
+                const filtered = all.filter(c => c.session_id === sessionId)
+                                    .sort((a, b) => a.index - b.index);
+                resolve(filtered);
+            };
+            request.onerror = () => reject(request.error);
+        });
+    } catch (e) {
+        console.warn("[DB] Failed to get chunks from IndexedDB. Falling back to memory storage.", e);
+        useMemoryStorage = true;
+        const filtered = Object.values(memoryChunks)
+                            .filter(c => c.session_id === sessionId)
+                            .sort((a, b) => a.index - b.index);
+        return filtered;
+    }
+}
+
+async function deleteChunkFromDB(sessionId, index) {
+    if (useMemoryStorage) {
+        const key = `${sessionId}_${index}`;
+        delete memoryChunks[key];
+        return;
+    }
+    try {
+        const db = await openDB();
+        return new Promise((resolve, reject) => {
+            const tx = db.transaction(STORE_NAME, 'readwrite');
+            const store = tx.objectStore(STORE_NAME);
+            const key = `${sessionId}_${index}`;
+            store.delete(key);
+            tx.oncomplete = () => resolve();
+            tx.onerror = () => reject(tx.error);
+        });
+    } catch (e) {
+        console.warn("[DB] Failed to delete chunk from IndexedDB. Falling back to memory storage.", e);
+        useMemoryStorage = true;
+        const key = `${sessionId}_${index}`;
+        delete memoryChunks[key];
+    }
+}
+
+async function updateChunkAttemptsInDB(sessionId, index, attempts) {
+    if (useMemoryStorage) {
+        const key = `${sessionId}_${index}`;
+        if (memoryChunks[key]) {
+            memoryChunks[key].attempts = attempts;
+        }
+        return;
+    }
+    try {
+        const db = await openDB();
+        return new Promise((resolve, reject) => {
+            const tx = db.transaction(STORE_NAME, 'readwrite');
+            const store = tx.objectStore(STORE_NAME);
+            const key = `${sessionId}_${index}`;
+            const req = store.get(key);
+            req.onsuccess = () => {
+                const item = req.result;
+                if (item) {
+                    item.attempts = attempts;
+                    store.put(item);
+                }
+                resolve();
+            };
+            req.onerror = () => reject(req.error);
+        });
+    } catch (e) {
+        console.warn("[DB] Failed to update attempts in IndexedDB. Falling back to memory storage.", e);
+        useMemoryStorage = true;
+        const key = `${sessionId}_${index}`;
+        if (memoryChunks[key]) {
+            memoryChunks[key].attempts = attempts;
+        }
+    }
+}
+
+async function cleanOldChunks(currentSessionId) {
+    if (useMemoryStorage) {
+        Object.keys(memoryChunks).forEach(key => {
+            if (memoryChunks[key].session_id !== currentSessionId) {
+                delete memoryChunks[key];
+            }
+        });
+        return;
+    }
+    try {
+        const db = await openDB();
+        const tx = db.transaction(STORE_NAME, 'readwrite');
+        const store = tx.objectStore(STORE_NAME);
+        const req = store.getAll();
+        req.onsuccess = () => {
+            const all = req.result || [];
+            all.forEach(item => {
+                if (item.session_id !== currentSessionId) {
+                    store.delete(item.key);
+                }
+            });
+        };
+    } catch(e) {
+        console.warn("[DB] Failed to clean up old chunks. Falling back to memory storage.", e);
+        useMemoryStorage = true;
+        Object.keys(memoryChunks).forEach(key => {
+            if (memoryChunks[key].session_id !== currentSessionId) {
+                delete memoryChunks[key];
+            }
+        });
+    }
+}
 
 let videoStream = null;
 let screenStream = null;
 let compositeAnimationId = null;
 let isExamCompleted = false;
+let examWatchdogInterval = null;
+let lastCameraActiveTime = 0;
 let talkingDetectionInterval = null;
 let talkingStartTimestamp = null;
 let isCurrentlyTalking = false;
@@ -32,7 +279,38 @@ let autoExamCode = urlParams.get('exam_code');
 let placementId = urlParams.get('placement_id');
 let directExamId = urlParams.get('exam_id');
 
+if (socket && sessionToken) {
+    socket.emit('join_lti', { token: sessionToken });
+}
+
+function initLtiFrameResize() {
+    const sendResize = () => {
+        if (window.parent && window.parent !== window) {
+            const height = document.body.scrollHeight || document.documentElement.scrollHeight;
+            window.parent.postMessage(JSON.stringify({
+                subject: "lti.frameResize",
+                height: height
+            }), "*");
+        }
+    };
+    
+    window.addEventListener('load', sendResize);
+    window.addEventListener('resize', sendResize);
+    
+    const observer = new MutationObserver(sendResize);
+    observer.observe(document.body, {
+        attributes: true,
+        childList: true,
+        subtree: true
+    });
+    
+    setTimeout(sendResize, 100);
+    setTimeout(sendResize, 500);
+    setTimeout(sendResize, 1000);
+}
+
 window.addEventListener('load', () => {
+    initLtiFrameResize();
     if ((placementId || directExamId) && sessionToken) {
         document.getElementById('code-container').style.display = 'none';
         verifyPlacement(placementId, directExamId);
@@ -42,7 +320,7 @@ window.addEventListener('load', () => {
     }
 
     document.addEventListener('fullscreenchange', () => {
-        if (currentStep === 4) {
+        if (currentStep === 8) {
             const nextBtn = document.getElementById('btn-next-step');
             const fsBtn = document.querySelector('button[onclick="requestFullscreenStep()"]');
             if (document.fullscreenElement) {
@@ -88,7 +366,12 @@ async function verifyExamCode() {
         }
         
         examConfig = data;
-        if (examConfig.require_extension && document.documentElement.dataset.proctorExtensionInstalled !== "true") {
+        if (examConfig.require_companion_app && !navigator.userAgent.includes('CanvasProctorCompanion')) {
+            document.getElementById('code-container').style.display = 'none';
+            document.getElementById('companion-app-required-overlay').style.display = 'flex';
+            return;
+        }
+        if (examConfig.require_extension && document.documentElement.dataset.proctorExtensionInstalled !== "true" && !navigator.userAgent.includes('CanvasProctorCompanion')) {
             document.getElementById('code-container').style.display = 'none';
             document.getElementById('extension-required-overlay').style.display = 'flex';
             return;
@@ -127,7 +410,12 @@ async function verifyPlacement(pId, eId = null) {
         }
         
         examConfig = data;
-        if (examConfig.require_extension && document.documentElement.dataset.proctorExtensionInstalled !== "true") {
+        if (examConfig.require_companion_app && !navigator.userAgent.includes('CanvasProctorCompanion')) {
+            document.getElementById('code-container').style.display = 'none';
+            document.getElementById('companion-app-required-overlay').style.display = 'flex';
+            return;
+        }
+        if (examConfig.require_extension && document.documentElement.dataset.proctorExtensionInstalled !== "true" && !navigator.userAgent.includes('CanvasProctorCompanion')) {
             document.getElementById('code-container').style.display = 'none';
             document.getElementById('extension-required-overlay').style.display = 'flex';
             return;
@@ -163,12 +451,22 @@ function isIOS() {
 
 function updateSidebarNav() {
     const stepsConfig = [
-        { id: 1, req: () => examConfig.require_mic },
-        { id: 2, req: () => examConfig.require_camera },
-        { id: 3, req: () => examConfig.require_screen && !isSEB() },
-        { id: 4, req: () => examConfig.require_fullscreen },
-        { id: 5, req: () => true }
+        { id: 1, req: () => true }, // NETWORK CHECK
+        { id: 2, req: () => examConfig.require_mic || examConfig.verify_audio },
+        { id: 3, req: () => examConfig.require_camera || examConfig.verify_video },
+        { id: 11, req: () => examConfig.verify_id },
+        { id: 12, req: () => examConfig.verify_signature },
+        { id: 4, req: () => true }, // ADDITIONAL INSTRUCTIONS
+        { id: 5, req: () => true }, // GUIDELINES + TIPS
+        { id: 6, req: () => examConfig.require_room_scan }, // ROOM SCAN
+        { id: 10, req: () => examConfig.require_mobile_camera }, // MOBILE CAMERA
+        { id: 7, req: () => (examConfig.require_screen || examConfig.verify_desktop) && !isSEB() },
+        { id: 8, req: () => examConfig.require_fullscreen },
+        { id: 9, req: () => true }
     ];
+
+    const activeSteps = stepsConfig.filter(s => s.req());
+    const currentActiveIndex = activeSteps.findIndex(s => s.id === currentStep);
 
     let visualIndex = 1;
     stepsConfig.forEach((stepItem) => {
@@ -180,10 +478,13 @@ function updateSidebarNav() {
         } else {
             navEl.style.display = 'block';
             navEl.className = 'sidebar-step';
+            
+            const itemActiveIndex = activeSteps.findIndex(s => s.id === stepItem.id);
+            
             if (stepItem.id === currentStep) {
                 navEl.classList.add('active');
                 navEl.innerHTML = `STEP ${visualIndex}: ${getStepName(stepItem.id)}`;
-            } else if (stepItem.id < currentStep) {
+            } else if (itemActiveIndex !== -1 && itemActiveIndex < currentActiveIndex) {
                 navEl.classList.add('completed');
                 navEl.innerHTML = `STEP ${visualIndex}: ${getStepName(stepItem.id)} ✓`;
             } else {
@@ -196,27 +497,52 @@ function updateSidebarNav() {
 
 function getNextStep(current) {
     const stepsConfig = [
-        { id: 1, req: () => examConfig.require_mic },
-        { id: 2, req: () => examConfig.require_camera },
-        { id: 3, req: () => examConfig.require_screen && !isSEB() },
-        { id: 4, req: () => examConfig.require_fullscreen },
-        { id: 5, req: () => true }
+        { id: 1, req: () => true },
+        { id: 2, req: () => examConfig.require_mic || examConfig.verify_audio },
+        { id: 3, req: () => examConfig.require_camera || examConfig.verify_video },
+        { id: 11, req: () => examConfig.verify_id },
+        { id: 12, req: () => examConfig.verify_signature },
+        { id: 4, req: () => true },
+        { id: 5, req: () => true },
+        { id: 6, req: () => examConfig.require_room_scan },
+        { id: 10, req: () => examConfig.require_mobile_camera },
+        { id: 7, req: () => (examConfig.require_screen || examConfig.verify_desktop) && !isSEB() },
+        { id: 8, req: () => examConfig.require_fullscreen },
+        { id: 9, req: () => true }
     ];
-    for (let i = current; i < stepsConfig.length; i++) {
+    
+    let startIndex = 0;
+    if (current !== 0) {
+        const currentIndex = stepsConfig.findIndex(s => s.id === current);
+        if (currentIndex !== -1) {
+            startIndex = currentIndex + 1;
+        } else {
+            return 9;
+        }
+    }
+    
+    for (let i = startIndex; i < stepsConfig.length; i++) {
         if (stepsConfig[i].req()) {
             return stepsConfig[i].id;
         }
     }
-    return 5;
+    return 9;
 }
 
 function getStepName(step) {
     switch(step) {
-        case 1: return 'MICROPHONE CHECK';
-        case 2: return 'WEBCAM CHECK';
-        case 3: return 'SCREEN SHARE';
-        case 4: return 'FULLSCREEN MODE';
-        case 5: return 'BEGIN EXAM';
+        case 1: return 'NETWORK CHECK';
+        case 2: return 'MICROPHONE CHECK';
+        case 3: return 'WEBCAM CHECK';
+        case 11: return 'ID VERIFICATION';
+        case 12: return 'SIGNATURE AGREEMENT';
+        case 4: return 'ADDITIONAL INSTRUCTIONS';
+        case 5: return 'GUIDELINES + TIPS';
+        case 6: return 'ROOM SCAN';
+        case 7: return 'SCREEN SHARE';
+        case 8: return 'FULLSCREEN MODE';
+        case 9: return 'BEGIN EXAM';
+        case 10: return 'SECONDARY MOBILE CAMERA';
     }
 }
 
@@ -229,6 +555,9 @@ function initStepWizard() {
         showSEBBlocker();
         startBlockerPolling();
         return;
+    }
+    if (examConfig.only_one_screen) {
+        initDisplayMonitoring();
     }
     const firstStep = getNextStep(0);
     goToStep(firstStep);
@@ -262,6 +591,17 @@ function goToStep(step) {
     currentStep = step;
     updateSidebarNav();
     
+    if (step !== 2) {
+        isCheckingWebcamAI = false;
+        if (trackerTask) {
+            try { trackerTask.stop(); } catch(e){}
+            trackerTask = null;
+        }
+        if (webcamWatchdogInterval) {
+            clearInterval(webcamWatchdogInterval);
+            webcamWatchdogInterval = null;
+        }
+    }
     if (step !== 1 && micVolInterval) {
         clearInterval(micVolInterval);
         micVolInterval = null;
@@ -277,6 +617,26 @@ function goToStep(step) {
         case 1:
             contentEl.innerHTML = `
                 <div>
+                    <h2 class="step-title">Network Check</h2>
+                    <p class="step-description">
+                        We are verifying your connection speed to ensure it can handle continuous proctoring uploads.
+                    </p>
+                    <div id="network-status-container" style="display: flex; align-items: center; gap: 10px; margin: 10px 0; padding: 15px; background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px;">
+                        <div class="spinner" id="network-spinner"></div>
+                        <span style="font-size: 14px; font-weight: 600; color: #9ca3af;" id="network-status-msg">Testing connection speed...</span>
+                    </div>
+                    <div id="step-error" style="color: var(--danger); font-size: 14px; margin-top: 10px; display: none;"></div>
+                </div>
+                <div style="display: flex; justify-content: flex-end; gap: 15px; margin-top: 20px;">
+                    <button id="btn-next-step" class="btn btn-primary" style="background:#2563eb; color:white; border:none;" onclick="goToStep(getNextStep(1))" disabled>Next Step</button>
+                </div>
+            `;
+            runNetworkCheck();
+            break;
+            
+        case 2:
+            contentEl.innerHTML = `
+                <div>
                     <h2 class="step-title">Microphone Check</h2>
                     <p class="step-description">
                         Speak into your microphone in a normal voice. The indicator below should move as you speak to confirm your microphone levels are good.
@@ -288,7 +648,7 @@ function goToStep(step) {
                 </div>
                 <div style="display: flex; justify-content: flex-end; gap: 15px; margin-top: 20px;">
                     <button class="btn btn-primary" onclick="startMicCheck()">Check Microphone</button>
-                    <button id="btn-next-step" class="btn btn-primary" style="background:#f97316; color:white; border:none;" onclick="goToStep(getNextStep(1))" disabled>Next Step</button>
+                    <button id="btn-next-step" class="btn btn-primary" style="background:#2563eb; color:white; border:none;" onclick="goToStep(getNextStep(2))" disabled>Next Step</button>
                 </div>
             `;
             if (localMicStream) {
@@ -296,7 +656,7 @@ function goToStep(step) {
             }
             break;
             
-        case 2:
+        case 3:
             contentEl.innerHTML = `
                 <div>
                     <h2 class="step-title">Webcam Check</h2>
@@ -307,31 +667,229 @@ function goToStep(step) {
                     <div class="video-preview-box">
                         <video id="webcam-check-preview" autoplay muted playsinline></video>
                     </div>
-                    <div id="webcam-timer" style="font-weight: bold; color: #1e3a8a; margin: 10px 0;"></div>
+                    <div id="ai-loading-container" style="display: flex; align-items: center; gap: 10px; margin: 10px 0; padding: 10px; background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 6px;">
+                        <div class="spinner"></div>
+                        <span style="font-size: 13px; font-weight: 600; color: #9ca3af;">Initializing secure human verification AI...</span>
+                    </div>
+                    <div id="ai-status-container" style="display: none; align-items: center; gap: 10px; margin: 10px 0; padding: 10px; background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 6px;">
+                        <span style="font-size: 13px; font-weight: bold;" id="ai-status-msg">Scanning...</span>
+                    </div>
+                    <div id="webcam-timer" style="font-weight: bold; color: #2563eb; margin: 10px 0;"></div>
                     <div id="step-error" style="color: var(--danger); font-size: 14px; margin-top: 10px; display: none;"></div>
                 </div>
                 <div style="display: flex; justify-content: flex-end; gap: 15px; margin-top: 20px;">
                     <button id="btn-record-webcam" class="btn btn-primary" onclick="startWebcam5sRecord()">Record Five Second Video</button>
-                    <button id="btn-next-step" class="btn btn-primary" style="background:#f97316; color:white; border:none;" onclick="goToStep(getNextStep(2))" ${localCamStream ? '' : 'disabled'}>Next Step</button>
+                    <button id="btn-next-step" class="btn btn-primary" style="background:#2563eb; color:white; border:none;" onclick="goToStep(getNextStep(3))" disabled>Next Step</button>
                 </div>
             `;
-            startWebcamCheck();
+            break;
+
+        case 11:
+            // ID VERIFICATION
+            contentEl.innerHTML = `
+                <div>
+                    <h2 class="step-title">ID Verification</h2>
+                    <p class="step-description">
+                        Please hold your government-issued ID or Student ID up to the camera so that it fits within the frame, then click <strong>Capture ID Photo</strong>.
+                    </p>
+                    <div style="position: relative; max-width: 480px; margin: 20px auto; border-radius: 8px; overflow: hidden; border: 2px dashed #cbd5e1; background: #000; aspect-ratio: 4/3;">
+                        <div id="id-video-container" style="width: 100%; height: 100%;">
+                            <video id="id-check-preview" autoplay muted playsinline style="width: 100%; height: 100%; object-fit: cover; transform: scaleX(-1);"></video>
+                            <div style="position: absolute; top: 10%; left: 10%; width: 80%; height: 80%; border: 3px solid rgba(255,255,255,0.7); border-radius: 6px; box-shadow: 0 0 0 9999px rgba(0,0,0,0.5); pointer-events: none; display: flex; align-items: center; justify-content: center;">
+                                <span style="color: white; font-size: 14px; font-weight: 500; text-shadow: 1px 1px 2px black; text-align: center;">Align ID card inside this box</span>
+                            </div>
+                        </div>
+                        <div id="id-capture-result" style="display: none; width: 100%; height: 100%;">
+                            <img id="id-captured-image" style="width: 100%; height: 100%; object-fit: cover;" alt="Captured ID" />
+                        </div>
+                    </div>
+                    <div id="step-error" style="color: var(--danger); font-size: 14px; margin-top: 10px; display: none;"></div>
+                </div>
+                <div style="display: flex; justify-content: space-between; gap: 15px; margin-top: 20px;">
+                    <button id="btn-capture-id" class="btn btn-secondary" onclick="captureIdPhoto()">Capture ID Photo</button>
+                    <button id="btn-next-step" class="btn btn-primary" style="background:#e5e7eb; color:#9ca3af; border:none;" onclick="goToStep(getNextStep(11))" disabled>Next Step</button>
+                </div>
+            `;
+            setupIdPreview();
+            break;
+
+        case 12:
+            // SIGNATURE AGREEMENT
+            contentEl.innerHTML = `
+                <div>
+                    <h2 class="step-title">Signature Agreement</h2>
+                    <p class="step-description">
+                        Please review the academic integrity agreement, type your full name, and sign in the pad below.
+                    </p>
+                    <div style="background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; padding: 15px; margin-bottom: 20px; font-size: 13.5px; line-height: 1.5; color: #475569;">
+                        By signing below, I certify that I am the student registered for this exam and that I will adhere to the academic honesty policy. I will complete this assessment independently without seeking unauthorized assistance.
+                    </div>
+                    
+                    <div style="margin-bottom: 15px;">
+                        <label style="display: block; font-size: 13px; font-weight: 600; color: #374151; margin-bottom: 5px;">Type Your Full Name:</label>
+                        <input type="text" id="sig-name-input" placeholder="e.g. John Doe" style="width: 100%; max-width: 400px; padding: 8px 12px; font-size: 14px; border: 1px solid #cbd5e1; border-radius: 6px;" oninput="checkSignatureValidity()" />
+                    </div>
+
+                    <div>
+                        <label style="display: block; font-size: 13px; font-weight: 600; color: #374151; margin-bottom: 5px;">Draw Your Signature:</label>
+                        <div style="position: relative; max-width: 400px; border: 1px solid #cbd5e1; border-radius: 6px; background: white; overflow: hidden; height: 150px;">
+                            <canvas id="signature-pad" style="width: 100%; height: 100%; cursor: crosshair; touch-action: none;"></canvas>
+                        </div>
+                        <button class="btn btn-link" style="padding: 0; font-size: 12px; margin-top: 5px; color: #2563eb; background: none; border: none; cursor: pointer;" onclick="clearSignaturePad()">Clear signature</button>
+                    </div>
+                    
+                    <div id="step-error" style="color: var(--danger); font-size: 14px; margin-top: 10px; display: none;"></div>
+                </div>
+                <div style="display: flex; justify-content: flex-end; gap: 15px; margin-top: 25px;">
+                    <button id="btn-next-step" class="btn btn-primary" style="background:#e5e7eb; color:#9ca3af; border:none;" onclick="goToStep(getNextStep(12))" disabled>Next Step</button>
+                </div>
+            `;
+            setTimeout(setupSignaturePad, 50);
+            break;
+
+        case 4:
+            const customInstr = examConfig.additional_instructions && examConfig.additional_instructions.trim() !== "" 
+                ? examConfig.additional_instructions.trim() 
+                : "Please review the general instructions. Ensure you are alone in your workspace, your face is fully visible, and you do not speak or navigate away from the test window during the quiz.";
+            
+            contentEl.innerHTML = `
+                <div>
+                    <h2 class="step-title">Additional Instructions</h2>
+                    <div style="background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; padding: 20px; font-size: 14px; line-height: 1.6; color: #374151; white-space: pre-wrap;">${customInstr}</div>
+                </div>
+                <div style="display: flex; justify-content: flex-end; gap: 15px; margin-top: 30px;">
+                    <button id="btn-next-step" class="btn btn-primary" style="background:#2563eb; color:white; border:none;" onclick="goToStep(getNextStep(4))">I Understand, Next Step</button>
+                </div>
+            `;
+            break;
+
+        case 5:
+            // GUIDELINES + TIPS
+            contentEl.innerHTML = `
+                <div>
+                    <h2 class="step-title">Guidelines & Tips</h2>
+                    <p class="step-description">Please ensure your testing environment adheres to the following guidelines before starting:</p>
+                    <div style="display: flex; flex-direction: column; gap: 12px; margin-top: 15px;">
+                        <div style="display: flex; align-items: flex-start; gap: 10px; font-size: 14px; color: #374151;">
+                            <span style="font-size: 18px;">🤫</span>
+                            <div><strong>Quiet Location:</strong> Find a quiet, private, and well-lit workspace. Keep background noise to a minimum.</div>
+                        </div>
+                        <div style="display: flex; align-items: flex-start; gap: 10px; font-size: 14px; color: #374151;">
+                            <span style="font-size: 18px;">📱</span>
+                            <div><strong>No Mobile Devices:</strong> Keep all cell phones, tablets, smartwatches, or other gadgets out of reach.</div>
+                        </div>
+                        <div style="display: flex; align-items: flex-start; gap: 10px; font-size: 14px; color: #374151;">
+                            <span style="font-size: 18px;">🧑‍💻</span>
+                            <div><strong>Work Independently:</strong> You must complete the exam entirely on your own without external help or materials.</div>
+                        </div>
+                        <div style="display: flex; align-items: flex-start; gap: 10px; font-size: 14px; color: #374151;">
+                            <span style="font-size: 18px;">👀</span>
+                            <div><strong>Stay Focused:</strong> Stay directly in front of the camera and keep your eyes on the screen. Avoid looking around excessively.</div>
+                        </div>
+                        <div style="display: flex; align-items: flex-start; gap: 10px; font-size: 14px; color: #374151;">
+                            <span style="font-size: 18px;">🎧</span>
+                            <div><strong>No Headwear / Headphones:</strong> Ensure your ears and face are clearly visible. Headsets or headphones are prohibited unless authorized.</div>
+                        </div>
+                    </div>
+                </div>
+                <div style="display: flex; justify-content: flex-end; gap: 15px; margin-top: 30px;">
+                    <button id="btn-next-step" class="btn btn-primary" style="background:#2563eb; color:white; border:none;" onclick="goToStep(getNextStep(5))">Next Step</button>
+                </div>
+            `;
+            break;
+
+        case 6:
+            // ROOM SCAN
+            contentEl.innerHTML = `
+                <div>
+                    <h2 class="step-title">Room Scan</h2>
+                    <p class="step-description">
+                        Please pick up your device or webcam and slowly pan it around your room and desk area for 10 seconds. Click "Start Room Scan" when ready.
+                    </p>
+                    <div class="video-preview-box">
+                        <video id="room-scan-preview" autoplay muted playsinline></video>
+                    </div>
+                    <div id="room-scan-timer" style="font-weight: bold; color: #2563eb; margin: 10px 0;"></div>
+                    <div id="step-error" style="color: var(--danger); font-size: 14px; margin-top: 10px; display: none;"></div>
+                </div>
+                <div style="display: flex; justify-content: flex-end; gap: 15px; margin-top: 20px;">
+                    <button id="btn-record-room" class="btn btn-primary" onclick="startRoomScanRecord()">Start Room Scan</button>
+                    <button id="btn-next-step" class="btn btn-primary" style="background:#2563eb; color:white; border:none;" onclick="goToStep(getNextStep(6))" disabled>Next Step</button>
+                </div>
+            `;
+            setupRoomScanPreview();
             break;
             
-        case 3:
+        case 10:
+            const mobileUrl = `${window.location.origin}/mobile-camera.html?token=${encodeURIComponent(sessionToken)}&exam_id=${encodeURIComponent(examConfig.id)}`;
+            const qrApiUrl = `https://api.qrserver.com/v1/create-qr-code/?size=160x160&data=${encodeURIComponent(mobileUrl)}`;
+            
+            contentEl.innerHTML = `
+                <div>
+                    <h2 class="step-title">Secondary Mobile Camera</h2>
+                    <p class="step-description">
+                        To add an extra layer of security, you are required to use your mobile device as a secondary camera. Scan the QR code below with your phone to link it.
+                    </p>
+                    
+                    <div style="display: flex; gap: 20px; align-items: center; flex-wrap: wrap; margin-top: 15px;">
+                        <div style="background: white; padding: 12px; border-radius: 8px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); width: 160px; height: 160px; display: flex; align-items: center; justify-content: center;">
+                            <img src="${qrApiUrl}" style="width: 160px; height: 160px; image-rendering: pixelated;" alt="QR Code" />
+                        </div>
+                        <div style="flex-grow: 1; min-width: 250px;">
+                            <div id="mobile-pairing-status" style="margin-bottom: 15px; padding: 12px 15px; border-radius: 6px; background: rgba(245, 158, 11, 0.1); border: 1px solid rgba(245, 158, 11, 0.3); color: #f59e0b; font-size: 14px; font-weight: 600; display: flex; align-items: center; gap: 8px;">
+                                <div class="spinner" style="width:16px; height:16px; border-width: 2px;"></div>
+                                <span>Waiting for phone to connect...</span>
+                            </div>
+                            
+                            <div style="font-size: 13px; color: #475569; line-height: 1.5;">
+                                <strong>Instructions:</strong>
+                                <ul style="margin: 4px 0 0 0; padding-left: 18px;">
+                                    <li>Scan the QR code and authorize camera access on your phone.</li>
+                                    <li>Prop your phone up on the side of your desk (e.g. against a book).</li>
+                                    <li>The camera should clearly capture your profile, hands, and keyboard.</li>
+                                    <li>Do not lock your phone or close the browser tab during the exam.</li>
+                                </ul>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <div style="display: flex; justify-content: flex-end; gap: 15px; margin-top: 30px;">
+                    <button id="btn-next-step" class="btn btn-primary" style="background:#e5e7eb; color:#9ca3af; border:none;" onclick="goToStep(getNextStep(10))" disabled>Next Step</button>
+                </div>
+            `;
+            
+            if (window.isMobileCameraPaired) {
+                const statusDiv = document.getElementById('mobile-pairing-status');
+                if (statusDiv) {
+                    statusDiv.style.background = 'rgba(16, 185, 129, 0.1)';
+                    statusDiv.style.borderColor = 'rgba(16, 185, 129, 0.3)';
+                    statusDiv.style.color = '#10b981';
+                    statusDiv.innerHTML = '✅ Phone Connected Successfully!';
+                }
+                const nextBtn = document.getElementById('btn-next-step');
+                if (nextBtn) {
+                    nextBtn.disabled = false;
+                    nextBtn.style.background = '#2563eb';
+                    nextBtn.style.color = 'white';
+                }
+            }
+            break;
+
+        case 7:
+            // SCREEN SHARE
             const ios = isIOS();
             contentEl.innerHTML = `
                 <div>
                     <h2 class="step-title">Screen Share</h2>
                     ${ios ? `
-                        <p class="step-description" style="color: #1e3a8a; font-weight: bold; background: #eff6ff; padding: 15px; border-radius: 6px; border: 1px solid #bfdbfe;">
+                        <p class="step-description" style="color: #60a5fa; font-weight: bold; background: rgba(59, 130, 246, 0.1); padding: 15px; border-radius: 6px; border: 1px solid rgba(59, 130, 246, 0.2);">
                             📱 iPad / iPhone Detected: Apple iOS does not support screen-sharing in Safari. This requirement has been bypassed for your device, but webcam and microphone monitoring will remain active.
                         </p>
                     ` : `
                         <p class="step-description">
                             You must share your <strong>ENTIRE SCREEN</strong> (not just a window or Chrome tab) to secure the exam session.
                         </p>
-                        <div id="screenshare-status" style="font-weight: bold; color: #059669; margin: 15px 0;">
+                        <div id="screenshare-status" style="font-weight: bold; color: #10b981; margin: 15px 0;">
                             ${localScreenStream ? '✓ Screen Share Active' : 'Screen share not yet active'}
                         </div>
                     `}
@@ -339,12 +897,13 @@ function goToStep(step) {
                 </div>
                 <div style="display: flex; justify-content: flex-end; gap: 15px; margin-top: 20px;">
                     ${ios ? '' : `<button class="btn btn-primary" onclick="requestScreenShareStep()" style="${localScreenStream ? 'display:none;' : ''}">Share Entire Screen</button>`}
-                    <button id="btn-next-step" class="btn btn-primary" style="background:#f97316; color:white; border:none;" onclick="goToStep(getNextStep(3))" ${ios || localScreenStream ? '' : 'disabled'}>Next Step</button>
+                    <button id="btn-next-step" class="btn btn-primary" style="background:#2563eb; color:white; border:none;" onclick="goToStep(getNextStep(7))" ${ios || localScreenStream ? '' : 'disabled'}>Next Step</button>
                 </div>
             `;
             break;
             
-        case 4:
+        case 8:
+            // FULLSCREEN
             const fullscreenSupported = typeof document.documentElement.requestFullscreen === 'function';
             contentEl.innerHTML = `
                 <div>
@@ -353,11 +912,11 @@ function goToStep(step) {
                         <p class="step-description">
                             This exam must be taken in Fullscreen Mode to prevent multitasking or accessing other tabs/windows.
                         </p>
-                        <div id="fullscreen-status" style="font-weight: bold; color: #059669; margin: 15px 0;">
+                        <div id="fullscreen-status" style="font-weight: bold; color: #10b981; margin: 15px 0;">
                             ${document.fullscreenElement ? '✓ Fullscreen Mode Enabled' : 'Fullscreen not yet active'}
                         </div>
                     ` : `
-                        <p class="step-description" style="color: #1e3a8a; font-weight: bold; background: #eff6ff; padding: 15px; border-radius: 6px; border: 1px solid #bfdbfe;">
+                        <p class="step-description" style="color: #60a5fa; font-weight: bold; background: rgba(59, 130, 246, 0.1); padding: 15px; border-radius: 6px; border: 1px solid rgba(59, 130, 246, 0.2);">
                             📱 Mobile Device / Browser Compatibility: Your browser or device does not support standard fullscreen mode. This step has been bypassed, but webcam and microphone monitoring remain active.
                         </p>
                     `}
@@ -365,12 +924,13 @@ function goToStep(step) {
                 </div>
                 <div style="display: flex; justify-content: flex-end; gap: 15px; margin-top: 20px;">
                     ${fullscreenSupported ? `<button class="btn btn-primary" onclick="requestFullscreenStep()" style="${document.fullscreenElement ? 'display:none;' : ''}">Enter Fullscreen</button>` : ''}
-                    <button id="btn-next-step" class="btn btn-primary" style="background:#f97316; color:white; border:none;" onclick="goToStep(getNextStep(4))" ${!fullscreenSupported || document.fullscreenElement ? '' : 'disabled'}>Next Step</button>
+                    <button id="btn-next-step" class="btn btn-primary" style="background:#2563eb; color:white; border:none;" onclick="goToStep(getNextStep(8))" ${!fullscreenSupported || document.fullscreenElement ? '' : 'disabled'}>Next Step</button>
                 </div>
             `;
             break;
             
-        case 5:
+        case 9:
+            // BEGIN EXAM
             contentEl.innerHTML = `
                 <div>
                     <h2 class="step-title">Begin Exam</h2>
@@ -379,7 +939,7 @@ function goToStep(step) {
                     </p>
                 </div>
                 <div style="display: flex; justify-content: flex-end; gap: 15px; margin-top: 20px;">
-                    <button id="btn-begin-exam" class="btn btn-success" style="padding: 15px 40px; font-size: 16px; font-weight: bold;" onclick="startMainExamSession()">Begin Exam Now</button>
+                    <button id="btn-begin-exam" class="btn btn-success" style="padding: 15px 40px; font-size: 16px; font-weight: bold; background: #10b981; border: none;" onclick="startMainExamSession()">Begin Exam Now</button>
                 </div>
             `;
             break;
@@ -436,16 +996,170 @@ async function startMicCheck() {
     }
 }
 
-async function startWebcamCheck() {
+let trackingLoaded = false;
+let isModelLoading = false;
+let isCheckingWebcamAI = false;
+let trackerInstance = null;
+let trackerTask = null;
+let lastFaceDetectedTime = 0;
+let webcamWatchdogInterval = null;
+
+function loadScript(url) {
+    return new Promise((resolve, reject) => {
+        const script = document.createElement('script');
+        script.src = url;
+        script.onload = resolve;
+        script.onerror = reject;
+        document.head.appendChild(script);
+    });
+}
+
+let cocoSsdModel = null;
+let facemeshModel = null;
+
+async function loadAIModel() {
+    if (cocoSsdModel && facemeshModel) return;
+    if (isModelLoading) {
+        while (isModelLoading) {
+            await new Promise(r => setTimeout(r, 100));
+        }
+        return;
+    }
+    isModelLoading = true;
     try {
+        console.log("[AI] Loading TensorFlow.js...");
+        await loadScript("https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@3.11.0/dist/tf.min.js");
+        
+        console.log("[AI] Loading COCO-SSD & FaceMesh...");
+        await loadScript("https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd@2.2.2/dist/coco-ssd.min.js");
+        await loadScript("https://cdn.jsdelivr.net/npm/@tensorflow-models/facemesh@0.0.5/dist/facemesh.min.js");
+        
+        console.log("[AI] Initializing models...");
+        cocoSsdModel = await cocoSsd.load();
+        facemeshModel = await facemesh.load({ maxFaces: 1 });
+        
+        trackingLoaded = true;
+        console.log("[AI] Models loaded successfully.");
+    } catch (err) {
+        console.error("[AI] Failed to load AI models:", err);
+        throw err;
+    } finally {
+        isModelLoading = false;
+    }
+}
+
+function runWebcamAIDetection() {
+    if (!facemeshModel) return;
+    
+    const videoEl = document.getElementById('webcam-check-preview');
+    if (!videoEl || !localCamStream) return;
+
+    lastFaceDetectedTime = Date.now();
+    isCheckingWebcamAI = true;
+
+    if (webcamWatchdogInterval) {
+        clearInterval(webcamWatchdogInterval);
+    }
+    
+    let detectionLoopId = null;
+
+    async function detectLoop() {
+        if (!isCheckingWebcamAI) return;
+        
+        try {
+            const predictions = await facemeshModel.estimateFaces(videoEl);
+            if (predictions.length > 0) {
+                lastFaceDetectedTime = Date.now();
+                const statusMsgEl = document.getElementById('ai-status-msg');
+                const recordBtn = document.getElementById('btn-record-webcam');
+                const nextBtn = document.getElementById('btn-next-step');
+                if (statusMsgEl) {
+                    statusMsgEl.innerHTML = `<span style="color: #10b981; font-weight: bold;">✓ Human Verified</span>`;
+                }
+                if (recordBtn) recordBtn.disabled = false;
+                if (nextBtn) nextBtn.disabled = false;
+            }
+        } catch (e) {
+            // Ignore inference errors
+        }
+        
+        if (isCheckingWebcamAI) {
+            detectionLoopId = setTimeout(detectLoop, 1000);
+        }
+    }
+    
+    detectLoop();
+
+    // Watchdog interval for Webcam Check
+    webcamWatchdogInterval = setInterval(() => {
+        if (!isCheckingWebcamAI) {
+            clearInterval(webcamWatchdogInterval);
+            if (detectionLoopId) clearTimeout(detectionLoopId);
+            return;
+        }
+        const elapsed = Date.now() - lastFaceDetectedTime;
+        if (elapsed > 1500) {
+            const statusMsgEl = document.getElementById('ai-status-msg');
+            const recordBtn = document.getElementById('btn-record-webcam');
+            const nextBtn = document.getElementById('btn-next-step');
+            if (statusMsgEl) {
+                statusMsgEl.innerHTML = `<span style="color: #ef4444; font-weight: bold;">❌ No Human Detected - Please face the camera</span>`;
+            }
+            if (recordBtn) recordBtn.disabled = true;
+            if (nextBtn) nextBtn.disabled = true;
+        }
+    }, 1000);
+}
+
+async function startWebcamCheck() {
+    const nextBtn = document.getElementById('btn-next-step');
+    const recordBtn = document.getElementById('btn-record-webcam');
+    const aiLoadingContainer = document.getElementById('ai-loading-container');
+    const aiStatusContainer = document.getElementById('ai-status-container');
+    try {
+        if (examConfig.require_camera) {
+            if (nextBtn) nextBtn.disabled = true;
+            if (recordBtn) recordBtn.disabled = true;
+        }
+
         localCamStream = await navigator.mediaDevices.getUserMedia({ video: { width: 640, height: 480 }, audio: false });
         const videoEl = document.getElementById('webcam-check-preview');
         if (videoEl) videoEl.srcObject = localCamStream;
         
-        // Enable Next Step button immediately once webcam preview is active
-        const nextBtn = document.getElementById('btn-next-step');
-        if (nextBtn) nextBtn.disabled = false;
+        if (examConfig.require_camera) {
+            if (aiLoadingContainer) aiLoadingContainer.style.display = 'flex';
+            if (aiStatusContainer) aiStatusContainer.style.display = 'none';
+
+            try {
+                await loadAIModel();
+                if (aiLoadingContainer) aiLoadingContainer.style.display = 'none';
+                if (aiStatusContainer) aiStatusContainer.style.display = 'flex';
+
+                isCheckingWebcamAI = true;
+                runWebcamAIDetection();
+            } catch (aiErr) {
+                console.error("[AI] Graceful degradation: Failed to initialize AI model:", aiErr);
+                if (aiLoadingContainer) aiLoadingContainer.style.display = 'none';
+                if (aiStatusContainer) aiStatusContainer.style.display = 'none';
+                
+                const errEl = document.getElementById('step-error');
+                if (errEl) {
+                    errEl.innerText = "Warning: AI presence verification offline. Proceeding with standard camera check.";
+                    errEl.style.color = "#b45309";
+                    errEl.style.display = 'block';
+                }
+                if (nextBtn) nextBtn.disabled = false;
+                if (recordBtn) recordBtn.disabled = false;
+            }
+        } else {
+            if (aiLoadingContainer) aiLoadingContainer.style.display = 'none';
+            if (aiStatusContainer) aiStatusContainer.style.display = 'none';
+            
+            if (nextBtn) nextBtn.disabled = false;
+            if (recordBtn) recordBtn.disabled = false;
+        }
     } catch (err) {
+        if (aiLoadingContainer) aiLoadingContainer.style.display = 'none';
         showStepError("Camera access denied or not found: " + err.message);
     }
 }
@@ -567,19 +1281,23 @@ function requestFullscreenStep() {
 async function requestScreenShareStep() {
     try {
         localScreenStream = await navigator.mediaDevices.getDisplayMedia({
-            video: { cursor: "always", width: { max: 1024 }, height: { max: 768 }, frameRate: { max: 5 } },
+            video: { cursor: "always", width: { max: 1280 }, height: { max: 720 }, frameRate: { max: 15 } },
             audio: false
         });
         
         const track = localScreenStream.getVideoTracks()[0];
+        if (track && 'contentHint' in track) {
+            track.contentHint = 'detail';
+        }
         const settings = track.getSettings();
         if (settings.displaySurface && settings.displaySurface !== 'monitor') {
+            track.stop();
             throw new Error("You must share your ENTIRE SCREEN, not just a window or tab.");
         }
         
         track.onended = () => {
             localScreenStream = null;
-            if (currentStep === 3) {
+            if (currentStep === 7) {
                 const nextBtn = document.getElementById('btn-next-step');
                 const ssBtn = document.querySelector('button[onclick="requestScreenShareStep()"]');
                 if (nextBtn) nextBtn.disabled = true;
@@ -631,6 +1349,95 @@ async function startMainExamSession() {
         if (sessionInfo.next_chunk_index !== undefined) {
             chunkIndex = sessionInfo.next_chunk_index;
             console.log(`[Resume] Setting chunkIndex to ${chunkIndex}`);
+        }
+
+        // Upload room scan now that session is created
+        if (roomScanBlob) {
+            console.log("[Session] Uploading Room Scan...");
+            const reader = new FileReader();
+            reader.readAsDataURL(roomScanBlob);
+            reader.onloadend = async function() {
+                const base64data = reader.result;
+                try {
+                    await fetch('/api/session/room-scan', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                            'Authorization': 'Bearer ' + sessionToken
+                        },
+                        body: JSON.stringify({
+                            exam_session_id: sessionInfo.id,
+                            base64_video: base64data
+                        })
+                    });
+                    console.log("[Session] Room scan uploaded successfully.");
+                } catch(e) {
+                    console.error("[Session] Failed to upload room scan", e);
+                }
+            };
+        }
+
+        // Upload ID Verification Image
+        if (window.capturedIdPhoto) {
+            console.log("[Session] Uploading ID Verification Image...");
+            try {
+                await fetch('/api/session/upload-id', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': 'Bearer ' + sessionToken
+                    },
+                    body: JSON.stringify({
+                        exam_session_id: sessionInfo.id,
+                        base64_image: window.capturedIdPhoto
+                    })
+                });
+                console.log("[Session] ID image uploaded successfully.");
+            } catch (e) {
+                console.error("[Session] Failed to upload ID image:", e);
+            }
+        }
+
+        // Upload Signature Image
+        if (window.signatureDataUrl) {
+            console.log("[Session] Uploading Signature Image...");
+            try {
+                await fetch('/api/session/upload-signature', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': 'Bearer ' + sessionToken
+                    },
+                    body: JSON.stringify({
+                        exam_session_id: sessionInfo.id,
+                        base64_image: window.signatureDataUrl,
+                        full_name: window.signatureName || ''
+                    })
+                });
+                console.log("[Session] Signature image uploaded successfully.");
+            } catch (e) {
+                console.error("[Session] Failed to upload signature image:", e);
+            }
+        }
+
+        // Clean up chunks from any old sessions to save disk space
+        await cleanOldChunks(sessionInfo.id);
+
+        // Recover any pending chunks in IndexedDB for the current session
+        const pending = await getPendingChunksFromDB(sessionInfo.id);
+        if (pending.length > 0) {
+            console.log(`[DB] Found ${pending.length} pending chunks in IndexedDB for current session. Restoring queue.`);
+            uploadQueue = pending.map(p => ({ index: p.index, attempts: p.attempts }));
+            
+            // Sync chunkIndex to the highest pending chunk index if it's greater to avoid collision
+            const maxIdx = Math.max(...pending.map(p => p.index));
+            if (maxIdx > chunkIndex) {
+                chunkIndex = maxIdx;
+                console.log(`[DB] Adjusted chunkIndex to ${chunkIndex} based on pending chunks.`);
+            }
+            
+            // Start processing the restored queue
+            processUploadQueue();
         }
 
         if (isIOS()) {
@@ -689,9 +1496,11 @@ async function startMainExamSession() {
         } else {
             quizUrl += "?secure_proctor=canvas-proctor-shared-secret-key-998877";
         }
+        quizUrl += `&proctor_session_token=${encodeURIComponent(sessionToken)}`;
         if (sessionInfo.auto_login_signature) {
             quizUrl += `&auto_login_user_id=${encodeURIComponent(sessionInfo.auto_login_user_id)}&auto_login_expires=${encodeURIComponent(sessionInfo.auto_login_expires)}&auto_login_signature=${encodeURIComponent(sessionInfo.auto_login_signature)}`;
         }
+        window.fallbackQuizUrl = quizUrl; // Store globally for iPad/iPhone fallback
         
         const iframe = document.getElementById('quiz-iframe');
         if (examConfig.block_downloads) {
@@ -732,9 +1541,35 @@ async function startMainExamSession() {
                     advanced_program_detection: !!examConfig.advanced_program_detection,
                     advanced_vm_detection: !!examConfig.advanced_vm_detection,
                     allow_apps: !!examConfig.allow_apps,
-                    block_mobile: !!examConfig.block_mobile
+                    block_mobile: !!examConfig.block_mobile,
+                    // Per-page lockdown settings (enforced on ALL tabs including Canvas quiz)
+                    disable_clipboard: !!examConfig.disable_clipboard,
+                    disable_right_click: !!examConfig.disable_right_click,
+                    disable_printing: !!examConfig.disable_printing
                 }
             }, '*');
+        }
+
+        const isCompanionApp = navigator.userAgent.includes('CanvasProctorCompanion');
+        if (isCompanionApp && window.companionAPI) {
+            console.log("[Proctor] Companion Desktop App detected. Initializing process monitoring.");
+            window.companionAPI.startMonitoring({
+                blockedApps: examConfig.blocked_apps,
+                allowedApps: examConfig.allowed_apps,
+                allowedUrls: examConfig.allowed_urls
+            });
+            window.companionAPI.onViolation((violation) => {
+                if (violation.type === 'prohibited_process') {
+                    console.warn(`[Companion] Violation detected: Prohibited process running: ${violation.process}`);
+                    handleViolation('prohibited_process', `Prohibited background application running: ${violation.process}`);
+                    document.getElementById('focus-violation-overlay').querySelector('p').innerText = 
+                        `🔒 Prohibited App Running: "${violation.process}" has been detected in the background. Close this application immediately to resume your exam.`;
+                    document.getElementById('focus-violation-overlay').style.display = 'flex';
+                } else if (violation.type === 'multiple_displays') {
+                    console.warn(`[Companion] Violation detected: Multiple displays connected: ${violation.count}`);
+                    showDualScreenBlocker(true, 'desktop companion');
+                }
+            });
         }
 
     } catch(err) {
@@ -745,6 +1580,59 @@ async function startMainExamSession() {
             btn.innerText = "Begin Exam Now";
         }
         alert("Failed to initialize proctoring session: " + err.message);
+    }
+}
+
+function handleScreenShareStopped() {
+    console.warn("[Proctor] Screen share stopped during exam!");
+    logProctorEvent('screen_share_disabled', 'Screen sharing was stopped by the student.');
+    
+    const overlay = document.getElementById('screen-share-blocker-overlay');
+    if (overlay) {
+        overlay.style.display = 'flex';
+    }
+}
+
+async function reShareScreenFromBlocker() {
+    try {
+        const stream = await navigator.mediaDevices.getDisplayMedia({
+            video: { cursor: "always", width: { max: 1280 }, height: { max: 720 }, frameRate: { max: 15 } },
+            audio: false
+        });
+        
+        const track = stream.getVideoTracks()[0];
+        const settings = track.getSettings();
+        if (settings.displaySurface && settings.displaySurface !== 'monitor') {
+            track.stop();
+            alert("You must share your ENTIRE SCREEN, not just a window or tab.");
+            return;
+        }
+        
+        // Update variables
+        localScreenStream = stream;
+        screenStream = stream;
+        
+        if ('contentHint' in track) {
+            track.contentHint = 'detail';
+        }
+        
+        track.onended = () => {
+            handleScreenShareStopped();
+        };
+        
+        // Update the screen video element used in composite track
+        if (compositeVScreen) {
+            compositeVScreen.srcObject = localScreenStream;
+            await compositeVScreen.play().catch(e => console.warn("[Media] Re-shared screen play failed:", e));
+        }
+        
+        // Hide overlay
+        document.getElementById('screen-share-blocker-overlay').style.display = 'none';
+        
+        logProctorEvent('screen_share_resolved', 'Screen sharing was re-enabled by the student.');
+    } catch (err) {
+        console.error("Failed to re-share screen:", err);
+        alert("Failed to share screen: " + err.message);
     }
 }
 
@@ -764,6 +1652,22 @@ async function startProctoring() {
         
         videoStream = localCamStream;
         screenStream = localScreenStream;
+
+        if (screenStream && screenStream.getVideoTracks().length > 0) {
+            const screenTrack = screenStream.getVideoTracks()[0];
+            if ('contentHint' in screenTrack) {
+                screenTrack.contentHint = 'detail';
+            }
+            screenTrack.onended = () => {
+                handleScreenShareStopped();
+            };
+        }
+        if (videoStream && videoStream.getVideoTracks().length > 0) {
+            const camTrack = videoStream.getVideoTracks()[0];
+            if ('contentHint' in camTrack) {
+                camTrack.contentHint = 'motion';
+            }
+        }
         
         const tracks = [];
         let compositeStream = null;
@@ -771,16 +1675,26 @@ async function startProctoring() {
 
         const ios = isIOS();
         if (ios) {
-            console.log("[Media] iOS/Safari detected: recording raw webcam and mic directly for maximum stability.");
-            finalStream = localCamStream;
-            if (localMicStream && finalStream) {
-                localMicStream.getAudioTracks().forEach(t => {
-                    try {
-                        finalStream.addTrack(t);
-                    } catch(e) {
-                        console.warn("Failed to add mic track to finalStream:", e);
-                    }
+            console.log("[Media] iOS/Safari detected: obtaining combined audio/video stream for MediaRecorder...");
+            // Stop old tracks to release camera/mic hardware cleanly
+            if (localCamStream) {
+                localCamStream.getTracks().forEach(t => { try { t.stop(); } catch(e){} });
+            }
+            if (localMicStream) {
+                localMicStream.getTracks().forEach(t => { try { t.stop(); } catch(e){} });
+            }
+            
+            try {
+                finalStream = await navigator.mediaDevices.getUserMedia({
+                    video: { width: 640, height: 480 },
+                    audio: true
                 });
+                localCamStream = finalStream;
+                localMicStream = finalStream;
+                videoStream = finalStream;
+            } catch (mediaErr) {
+                console.error("[Media] Failed to get combined stream on iOS:", mediaErr);
+                throw mediaErr;
             }
         } else {
             // Always create a composite track layout to ensure proctoring status indicators and flags are drawn on the recording
@@ -833,6 +1747,8 @@ async function startProctoring() {
             student_name: sessionInfo.student_name
         });
 
+        socket.emit('laptop_begin_exam', { token: sessionToken });
+
         if (examConfig.require_fullscreen && !document.fullscreenElement && typeof document.documentElement.requestFullscreen === 'function') {
              await document.documentElement.requestFullscreen().catch(e => console.log('Fullscreen failed:', e));
         }
@@ -846,6 +1762,7 @@ async function startProctoring() {
             initDisplayMonitoring();
         }
         setupSimulatedAIProctoring();
+        startExamLiveAIDetection();
         if (localMicStream) {
             setupAudioAnalysis(localMicStream);
             setupSpeechRecognition();
@@ -950,8 +1867,12 @@ function setupRecording() {
     // Dynamically select the most compatible codec for the current hardware/tracks
     let mimeType = '';
     
-    // Check both WebM (Chrome/Firefox/Edge) and MP4 (Safari/iOS) candidates
+    // Check WebM (VP9, H264, VP8) and MP4 candidates
     const candidates = [
+        'video/webm;codecs=vp9,opus',
+        'video/webm;codecs=vp9',
+        'video/webm;codecs=h264,opus',
+        'video/webm;codecs=h264',
         'video/webm;codecs=vp8,opus',
         'video/webm;codecs=vp8',
         'video/webm',
@@ -970,7 +1891,7 @@ function setupRecording() {
     console.log(`[Recorder] Initialized with: ${mimeType || 'browser default'}`);
     
     const options = {
-        videoBitsPerSecond: 800000, 
+        videoBitsPerSecond: 1500000, // Legible screen text
         audioBitsPerSecond: 128000
     };
     if (mimeType) {
@@ -982,7 +1903,7 @@ function setupRecording() {
         if (e.data && e.data.size > 0 && sessionInfo && sessionInfo.id) {
             // CRITICAL: Capture the current index locally to prevent race conditions during upload
             const currentIndex = ++chunkIndex;
-            activeUploads++;
+            activeUploads++; // Increment to track that file reading/db writing is in progress
             
             const reader = new FileReader();
             reader.onloadend = async () => {
@@ -990,52 +1911,15 @@ function setupRecording() {
                 const base64Part = result.indexOf(';base64,');
                 const base64Data = base64Part !== -1 ? result.substring(base64Part + 8) : (result.indexOf(',') !== -1 ? result.substring(result.indexOf(',') + 1) : result);
                 
-                console.log(`[Recorder] Chunk #${currentIndex}: size=${e.data.size} bytes, base64Len=${base64Data.length}`);
+                console.log(`[Recorder] Saving chunk #${currentIndex} (${e.data.size} bytes) to IndexedDB...`);
+                await saveChunkToDB(sessionInfo.id, currentIndex, base64Data);
                 
-                const uploadWithRetry = async (attempt = 1) => {
-                    try {
-                        const response = await fetch('/api/session/upload-chunk', { 
-                            method: 'POST', 
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({
-                                exam_session_id: sessionInfo.id,
-                                chunk_index: currentIndex,
-                                base64_video: base64Data,
-                                token: sessionToken
-                            })
-                        });
-                        
-                        if (!response.ok) {
-                            const errorData = await response.json().catch(() => ({}));
-                            throw new Error(errorData.error || `HTTP ${response.status}`);
-                        }
-                        console.log(`[Recorder] Chunk #${currentIndex} upload success (attempt ${attempt})`);
-                    } catch(err) {
-                        console.warn(`[Recorder] Chunk #${currentIndex} upload failed (attempt ${attempt}):`, err.message);
-                        if (attempt < 3) {
-                            const delay = attempt * 1500;
-                            console.log(`[Recorder] Retrying chunk #${currentIndex} in ${delay}ms...`);
-                            await new Promise(r => setTimeout(r, delay));
-                            return uploadWithRetry(attempt + 1);
-                        }
-                        throw err;
-                    }
-                };
-
-                try {
-                    await uploadWithRetry(1);
-                } catch(err) {
-                    console.error(`[Recorder] Failed to upload chunk #${currentIndex} after 3 attempts`, err);
-                    if (socket) {
-                        socket.emit('proctor_log', {
-                            exam_session_id: sessionInfo.id,
-                            event_type: 'error',
-                            event_message: `Chunk #${currentIndex} upload failed after 3 attempts: ${err.message}`
-                        });
-                    }
-                } finally {
-                    activeUploads--;
-                }
+                // Add to sequential upload queue and decrement read counter
+                uploadQueue.push({ index: currentIndex, attempts: 0 });
+                activeUploads--;
+                
+                // Trigger background queue processor
+                processUploadQueue();
             };
             reader.onerror = () => {
                 console.error(`[Recorder] FileReader error on chunk #${currentIndex}`);
@@ -1060,11 +1944,115 @@ function setupRecording() {
     // with a specific warm-up delay to prevent DEMUXER_ERRORs.
 }
 
+async function processUploadQueue() {
+    if (isProcessingQueue) return;
+    if (uploadQueue.length === 0) return;
+    
+    isProcessingQueue = true;
+    console.log(`[Queue] Processing started. Remaining items in queue: ${uploadQueue.length}`);
+    
+    while (uploadQueue.length > 0) {
+        const item = uploadQueue[0];
+        activeUploads++; // Count as active upload while fetch is active
+        
+        let success = false;
+        try {
+            let chunkRecord = null;
+            if (useMemoryStorage) {
+                const chunkKey = `${sessionInfo.id}_${item.index}`;
+                chunkRecord = memoryChunks[chunkKey];
+            } else {
+                // Retrieve chunk data from IndexedDB
+                const db = await openDB();
+                const chunkKey = `${sessionInfo.id}_${item.index}`;
+                chunkRecord = await new Promise((resolve) => {
+                    const tx = db.transaction(STORE_NAME, 'readonly');
+                    const store = tx.objectStore(STORE_NAME);
+                    const req = store.get(chunkKey);
+                    req.onsuccess = () => resolve(req.result);
+                    req.onerror = () => resolve(null);
+                });
+            }
+
+            if (!chunkRecord || !chunkRecord.data) {
+                console.warn(`[Queue] Chunk #${item.index} data not found in DB. Skipping to prevent lock.`);
+                uploadQueue.shift();
+                continue;
+            }
+
+            console.log(`[Queue] Uploading chunk #${item.index} (attempt ${item.attempts + 1})...`);
+            const response = await fetch('/api/session/upload-chunk', { 
+                method: 'POST', 
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    exam_session_id: sessionInfo.id,
+                    chunk_index: item.index,
+                    base64_video: chunkRecord.data,
+                    token: sessionToken
+                })
+            });
+            
+            if (response.ok) {
+                success = true;
+                console.log(`[Queue] Chunk #${item.index} upload success. Deleting from IndexedDB.`);
+                await deleteChunkFromDB(sessionInfo.id, item.index);
+            } else {
+                const errorData = await response.json().catch(() => ({}));
+                console.warn(`[Queue] Chunk #${item.index} rejected by server (HTTP ${response.status}):`, errorData.error);
+            }
+        } catch (err) {
+            console.warn(`[Queue] Chunk #${item.index} upload network exception:`, err.message);
+        } finally {
+            activeUploads--;
+        }
+        
+        if (success) {
+            uploadQueue.shift(); // Remove successfully uploaded item
+        } else {
+            item.attempts++;
+            if (item.attempts >= 100) {
+                console.error(`[Queue] Chunk #${item.index} failed permanently after 100 attempts. Discarding from DB and queue.`);
+                await deleteChunkFromDB(sessionInfo.id, item.index);
+                if (socket) {
+                    socket.emit('proctor_log', {
+                        exam_session_id: sessionInfo.id,
+                        event_type: 'error',
+                        event_message: `Chunk #${item.index} upload failed permanently after 100 attempts.`
+                    });
+                }
+                uploadQueue.shift(); // Discard failed item
+            } else {
+                // Update attempts in IndexedDB
+                await updateChunkAttemptsInDB(sessionInfo.id, item.index, item.attempts);
+                // Wait before retrying (exponential backoff capped at 30s)
+                const delay = Math.min(item.attempts * 2000, 30000);
+                console.log(`[Queue] Retrying chunk #${item.index} in ${delay}ms...`);
+                await new Promise(r => setTimeout(r, delay));
+            }
+        }
+    }
+    
+    isProcessingQueue = false;
+    console.log(`[Queue] Processing completed.`);
+}
+
+function getTargetFPS() {
+    const queueLen = uploadQueue.length;
+    if (queueLen > 10) {
+        return 3;  // Severe congestion, drop to 3 FPS
+    } else if (queueLen > 6) {
+        return 6;  // Medium congestion, drop to 6 FPS
+    } else if (queueLen > 3) {
+        return 10; // Mild congestion, drop to 10 FPS
+    }
+    return 15;     // Healthy network, normal 15 FPS
+}
+
 async function createCompositeTrack(screenStream, cameraStream) {
     const canvas = document.createElement('canvas');
     canvas.width = 1600; // 1280 (screen) + 320 (sidebar)
     canvas.height = 720;
-    const ctx = canvas.getContext('2d');
+    const ctx = canvas.getContext('2d', { alpha: false });
 
     let vScreen = null;
     if (screenStream) {
@@ -1074,6 +2062,7 @@ async function createCompositeTrack(screenStream, cameraStream) {
         vScreen.setAttribute('playsinline', ''); 
         await vScreen.play().catch(e => console.warn("[Media] Screen video play failed:", e));
     }
+    compositeVScreen = vScreen;
 
     let vCam = null;
     if (cameraStream && cameraStream.getVideoTracks().length > 0) {
@@ -1083,6 +2072,7 @@ async function createCompositeTrack(screenStream, cameraStream) {
         vCam.setAttribute('playsinline', '');
         await vCam.play().catch(e => console.warn("[Media] Camera video play failed:", e));
     }
+    compositeVCam = vCam;
 
     // Volume Detection for visual feedback
     let volumeLevel = 0;
@@ -1100,7 +2090,7 @@ async function createCompositeTrack(screenStream, cameraStream) {
             source.connect(analyser);
             analyser.fftSize = 256;
             const dataArray = new Uint8Array(analyser.frequencyBinCount);
-
+ 
             function updateVolume() {
                 if (!compositeAnimationId && compositeAnimationId !== 0) return;
                 if (audioCtx.state === 'suspended') audioCtx.resume();
@@ -1115,19 +2105,22 @@ async function createCompositeTrack(screenStream, cameraStream) {
     } catch (e) {
         console.warn("[Media] Audio context failed, mic indicator will be static.", e);
     }
-
+ 
     function draw() {
         if (!compositeAnimationId && compositeAnimationId !== 0) return;
         
+        ctx.imageSmoothingEnabled = true;
+        ctx.imageSmoothingQuality = 'high';
+        
         ctx.fillStyle = "#0f172a";
         ctx.fillRect(0, 0, canvas.width, canvas.height);
-
+ 
         if (vScreen && screenStream) {
             ctx.drawImage(vScreen, 0, 0, 1280, 720);
         } else {
             ctx.fillStyle = "#1e293b";
             ctx.fillRect(0, 0, 1280, 720);
-            ctx.fillStyle = "#94a3b8";
+            ctx.fillStyle = "#9ca3af";
             ctx.font = "bold 20px Arial";
             const placeholderText = "SCREEN MONITORING INACTIVE";
             ctx.fillText(placeholderText, (1280 - ctx.measureText(placeholderText).width) / 2, 360);
@@ -1144,7 +2137,7 @@ async function createCompositeTrack(screenStream, cameraStream) {
         } else {
             ctx.fillStyle = "#1e293b";
             ctx.fillRect(sidebarX, camY, camW, camH);
-            ctx.fillStyle = "#94a3b8";
+            ctx.fillStyle = "#9ca3af";
             ctx.font = "bold 13px Arial";
             const placeholderText = "NO WEBCAM REQUIRED";
             ctx.fillText(placeholderText, sidebarX + (320 - ctx.measureText(placeholderText).width) / 2, camY + camH / 2);
@@ -1157,28 +2150,28 @@ async function createCompositeTrack(screenStream, cameraStream) {
         ctx.font = "bold 14px Arial";
         const camLabel = "PROCTOR FEED";
         ctx.fillText(camLabel, sidebarX + (320 - ctx.measureText(camLabel).width) / 2, camY - 15);
-
+ 
         // Mic Status Box - Hardware connectivity based
         const hasMic = localMicStream && localMicStream.getAudioTracks().some(t => t.enabled && !t.muted && t.readyState === 'live');
         const micBoxY = camY + camH + 40;
         const micBoxW = 240;
         const micBoxH = 60;
         const micBoxX = sidebarX + (320 - micBoxW) / 2;
-
+ 
         ctx.fillStyle = "rgba(15, 23, 42, 0.8)";
         ctx.beginPath();
         ctx.roundRect(micBoxX, micBoxY, micBoxW, micBoxH, 10);
         ctx.fill();
         ctx.strokeStyle = "rgba(255,255,255,0.2)";
         ctx.stroke();
-
+ 
         const dotColor = hasMic ? "#22c55e" : "#ef4444";
         
         ctx.fillStyle = dotColor;
         ctx.beginPath();
         ctx.arc(micBoxX + 25, micBoxY + 30, 8, 0, Math.PI * 2);
         ctx.fill();
-
+ 
         ctx.fillStyle = "white";
         ctx.font = "bold 13px Arial";
         ctx.fillText(hasMic ? "MICROPHONE: ON" : "MICROPHONE: OFF", micBoxX + 45, micBoxY + 35);
@@ -1215,10 +2208,10 @@ async function createCompositeTrack(screenStream, cameraStream) {
             alertY += 55;
         }
         
-        compositeAnimationId = setTimeout(draw, 1000 / 15);
+        compositeAnimationId = setTimeout(draw, 1000 / getTargetFPS());
     }
     
-    compositeAnimationId = setTimeout(draw, 1000 / 15);
+    compositeAnimationId = setTimeout(draw, 1000 / getTargetFPS());
     
     const canvasStream = canvas.captureStream(15); 
     const outputStream = new MediaStream([canvasStream.getVideoTracks()[0]]);
@@ -1304,12 +2297,12 @@ function showDualScreenBlocker(show, source = 'system') {
         `;
         dualScreenOverlay.innerHTML = `
             <div style="background: rgba(30, 41, 59, 0.5); padding: 40px; border-radius: 16px; border: 1px solid rgba(255,255,255,0.1); max-width: 500px; box-shadow: 0 20px 40px rgba(0,0,0,0.5);">
-                <div style="font-size: 60px; margin-bottom: 20px;">🖥️🚫</div>
+                <div style="margin-bottom: 20px; display: flex; justify-content: center;"><img src="icons/only-one-screen.svg" style="width:60px; height:60px;" /></div>
                 <h2 style="font-size: 24px; font-weight: 700; margin: 0 0 15px 0; font-family:'Outfit',sans-serif; color:#f87171;">Multiple Screens Detected</h2>
-                <p style="font-size: 14px; line-height: 1.6; color: #cbd5e1; margin-bottom: 25px;">
+                <p style="font-size: 14px; line-height: 1.6; color: #374151; margin-bottom: 25px;">
                     This exam requires using a single display. Please disconnect, unplug, or disable all secondary screens, monitors, or display mirroring to resume the exam.
                 </p>
-                <div style="font-size: 11px; color: #94a3b8; border-top: 1px solid rgba(255,255,255,0.1); padding-top: 15px;">
+                <div style="font-size: 11px; color: #9ca3af; border-top: 1px solid rgba(255,255,255,0.1); padding-top: 15px;">
                     Proctoring is active. This event has been logged.
                 </div>
             </div>
@@ -1330,8 +2323,12 @@ function showDualScreenBlocker(show, source = 'system') {
     }
 }
 
+let isDisplayMonitoringInitialized = false;
+
 function initDisplayMonitoring() {
     if (!examConfig.only_one_screen) return;
+    if (isDisplayMonitoringInitialized) return;
+    isDisplayMonitoringInitialized = true;
 
     // Heuristics and API checks
     async function evaluateScreens() {
@@ -1388,6 +2385,15 @@ function setupFocusTracking() {
 async function bootStudent() {
     isExamCompleted = true; // Stop tracking violations
     window.postMessage({ type: 'END_EXAM_LOCKDOWN' }, '*');
+    
+    if (examTrackerTask) {
+        clearTimeout(examTrackerTask);
+        examTrackerTask = null;
+    }
+    if (examWatchdogInterval) {
+        clearInterval(examWatchdogInterval);
+        examWatchdogInterval = null;
+    }
     
     if (document.fullscreenElement) {
         document.exitFullscreen().catch(err => console.log('Exit fullscreen failed:', err));
@@ -1476,7 +2482,7 @@ function logProctorEvent(type, message) {
         })
     }).catch(console.error);
 
-    showToast('Activity Logged: ' + message);
+    // showToast('Activity Logged: ' + message);
 }
 
 function showToast(msg) {
@@ -1541,6 +2547,15 @@ async function stopRecordingAndAwaitUploads() {
 async function endExam() {
     isExamCompleted = true; // Instantly disable focus tracking
     window.postMessage({ type: 'END_EXAM_LOCKDOWN' }, '*');
+    
+    if (examTrackerTask) {
+        clearTimeout(examTrackerTask);
+        examTrackerTask = null;
+    }
+    if (examWatchdogInterval) {
+        clearInterval(examWatchdogInterval);
+        examWatchdogInterval = null;
+    }
     
     if (speechRecognition) {
         try {
@@ -1634,7 +2649,15 @@ async function endExam() {
 async function autoEndExamSession() {
     if (isExamCompleted) return;
     isExamCompleted = true;
-    window.postMessage({ type: 'END_EXAM_LOCKDOWN' }, '*');
+    
+    if (examTrackerTask) {
+        clearTimeout(examTrackerTask);
+        examTrackerTask = null;
+    }
+    if (examWatchdogInterval) {
+        clearInterval(examWatchdogInterval);
+        examWatchdogInterval = null;
+    }
     
     if (speechRecognition) {
         try {
@@ -1714,7 +2737,16 @@ async function autoEndExamSession() {
         console.error("Background teardown error:", err);
     }
 
-    if (isSeb) {
+    const isCompanion = navigator.userAgent.includes('CanvasProctorCompanion');
+    if (isCompanion) {
+        const statusEl = document.getElementById('proctor-upload-status');
+        const progressEl = document.getElementById('proctor-upload-progress');
+        if (statusEl) statusEl.innerText = "Upload Complete! Exiting Secure Proctor...";
+        if (progressEl) progressEl.style.display = 'none';
+        
+        await new Promise(r => setTimeout(r, 2500));
+        stopCompanionApp();
+    } else if (isSeb) {
         const statusEl = document.getElementById('proctor-upload-status');
         const progressEl = document.getElementById('proctor-upload-progress');
         if (statusEl) statusEl.innerText = "Upload Complete! Exiting Safe Exam Browser...";
@@ -1748,8 +2780,19 @@ window.addEventListener('message', async (event) => {
     } else if (event.data && event.data.type === 'EXTENSION_DISPLAY_RESOLVED') {
         console.log("[Extension Display Resolved] Single display mode restored.");
         showDualScreenBlocker(false, 'chrome extension');
+    } else if (event.data && event.data.type === 'END_EXAM_LOCKDOWN') {
+        stopCompanionApp();
     }
 });
+
+function stopCompanionApp() {
+    const isCompanionApp = navigator.userAgent.includes('CanvasProctorCompanion');
+    if (isCompanionApp && window.companionAPI) {
+        console.log("[Proctor] Stopping companion app process monitoring.");
+        window.companionAPI.stopMonitoring();
+        window.companionAPI.exitApp();
+    }
+}
 
 // Exit Handler: Attempt to save session if student quits SEB or closes browser
 window.addEventListener('beforeunload', (event) => {
@@ -1949,12 +2992,431 @@ function setupSimulatedAIProctoring() {
 }
 
 function openQuizInNewTabFallback() {
-    if (!examConfig || !examConfig.canvas_quiz_url) {
+    const targetUrl = window.fallbackQuizUrl || (examConfig && examConfig.canvas_quiz_url);
+    if (!targetUrl) {
         alert("Exam configuration not loaded.");
         return;
     }
     if (confirm("WARNING: Opening the quiz in a new tab is a fallback. Safari may pause your webcam recording when you switch tabs, which will be logged as a warning for your instructor. Do this only if you cannot log in inside the frame below. Proceed?")) {
-        window.open(examConfig.canvas_quiz_url, '_blank');
+        window.open(targetUrl, '_blank');
         logProctorEvent('ios_fallback_tab', 'Student opened Canvas quiz in a fallback new tab');
+    }
+}
+
+let examTrackerTask = null;
+let lastExamFaceDetectedTime = 0;
+
+function startExamLiveAIDetection() {
+    if (!examConfig.require_camera) return;
+    
+    console.log("[AI] Starting active exam face presence verification loop...");
+    const localVideo = document.getElementById('local-video');
+    if (localVideo) {
+        localVideo.srcObject = localCamStream;
+        localVideo.muted = true;
+        localVideo.play().catch(e => console.warn("[AI] local-video play failed:", e));
+    } else {
+        return;
+    }
+
+    lastExamFaceDetectedTime = Date.now();
+    lastCameraActiveTime = Date.now();
+    
+    if (!facemeshModel || !cocoSsdModel) {
+        loadAIModel().catch(e => console.warn("[AI] Failed to load tracker on start:", e));
+    }
+
+    if (examTrackerTask) {
+        clearTimeout(examTrackerTask);
+        examTrackerTask = null;
+    }
+    if (examWatchdogInterval) {
+        clearInterval(examWatchdogInterval);
+        examWatchdogInterval = null;
+    }
+
+    let lastPhoneLogTime = 0;
+    let lastGazeLogTime = 0;
+
+    async function examAiLoop() {
+        if (isExamCompleted) {
+            const blocker = document.getElementById('ai-blocker-overlay');
+            if (blocker) blocker.style.display = 'none';
+            return;
+        }
+
+        const blocker = document.getElementById('ai-blocker-overlay');
+        
+        try {
+            if (facemeshModel) {
+                const faces = await facemeshModel.estimateFaces(localVideo);
+                if (faces.length > 0) {
+                    lastExamFaceDetectedTime = Date.now();
+                    
+                    const isCameraActive = localCamStream &&
+                                           localCamStream.getVideoTracks().length > 0 &&
+                                           localCamStream.getVideoTracks().every(t => t.enabled && t.readyState === 'live' && !t.muted);
+
+                    if (isCameraActive && blocker && blocker.style.display === 'flex') {
+                        console.log("[AI] Student returned. Dismissing overlay.");
+                        blocker.style.display = 'none';
+                        logProctorEvent('AI_PEOPLE_RESOLVED', 'AI Detection: Student returned to camera view');
+                    }
+                    
+                    // Gaze / Head Pose tracking using facemesh landmarks
+                    const mesh = faces[0].scaledMesh;
+                    const nose = mesh[1];
+                    const leftEye = mesh[33];
+                    const rightEye = mesh[263];
+                    
+                    const eyeDist = Math.abs(rightEye[0] - leftEye[0]);
+                    const eyeCenter = (leftEye[0] + rightEye[0]) / 2;
+                    const gazeOffset = Math.abs(nose[0] - eyeCenter);
+                    
+                    if (gazeOffset > eyeDist * 0.4 && (Date.now() - lastGazeLogTime > 5000)) {
+                        logProctorEvent('gaze_off_screen', 'AI Detection: Student is looking significantly away from the screen.');
+                        lastGazeLogTime = Date.now();
+                    }
+                    
+                    if (faces.length > 1 && (Date.now() - lastGazeLogTime > 5000)) {
+                        logProctorEvent('multiple_faces', 'AI Detection: Multiple faces detected.');
+                        lastGazeLogTime = Date.now();
+                    }
+                }
+            }
+            
+            if (cocoSsdModel && (Date.now() - lastPhoneLogTime > 3000)) {
+                const objects = await cocoSsdModel.detect(localVideo);
+                const phoneDetected = objects.find(obj => obj.class === 'cell phone');
+                if (phoneDetected) {
+                    logProctorEvent('phone_detected', 'AI Detection: Cell phone detected in view.');
+                    lastPhoneLogTime = Date.now();
+                }
+            }
+        } catch (e) {
+            // Ignore inference errors
+        }
+
+        examTrackerTask = setTimeout(examAiLoop, 1000);
+    }
+    
+    examAiLoop();
+
+    // Watchdog interval for active exam monitoring (runs every 500ms)
+    examWatchdogInterval = setInterval(() => {
+        if (isExamCompleted) {
+            clearInterval(examWatchdogInterval);
+            examWatchdogInterval = null;
+            return;
+        }
+
+        const blocker = document.getElementById('ai-blocker-overlay');
+        if (!blocker) return;
+
+        // Check if camera stream is active, enabled, live, and not muted
+        const isCameraActive = localCamStream && 
+                               localCamStream.getVideoTracks().length > 0 && 
+                               localCamStream.getVideoTracks().every(t => t.enabled && t.readyState === 'live' && !t.muted);
+
+        if (!isCameraActive) {
+            const cameraElapsed = Date.now() - lastCameraActiveTime;
+            if (cameraElapsed > 1500) {
+                if (blocker.style.display !== 'flex') {
+                    console.warn("[AI Watchdog] Camera is inactive or disabled! Showing blocker.");
+                    
+                    // Update text to indicate camera is off
+                    const titleEl = document.getElementById('ai-blocker-title');
+                    const descEl = document.getElementById('ai-blocker-desc');
+                    const causesEl = document.getElementById('ai-blocker-causes');
+                    if (titleEl) titleEl.innerText = "📹 Camera Access Required";
+                    if (descEl) descEl.innerText = "Your webcam stream is inactive or has been disabled. Please turn on your camera and look directly at the webcam to resume the exam.";
+                    if (causesEl) causesEl.style.display = 'none'; // Hide the "Possible causes" list for camera off
+                    
+                    blocker.style.display = 'flex';
+                    logProctorEvent('AI_PEOPLE', 'AI Detection: Camera stream was disabled or disconnected (blocker shown)');
+                }
+            }
+        } else {
+            lastCameraActiveTime = Date.now();
+            
+            // Camera is active, check face detection elapsed time
+            const faceElapsed = Date.now() - lastExamFaceDetectedTime;
+            if (faceElapsed > 3000) {
+                if (blocker.style.display !== 'flex') {
+                    console.warn("[AI Watchdog] No face detected for more than 3 seconds! Showing blocker.");
+                    
+                    // Restore default text for human detection
+                    const titleEl = document.getElementById('ai-blocker-title');
+                    const descEl = document.getElementById('ai-blocker-desc');
+                    const causesEl = document.getElementById('ai-blocker-causes');
+                    if (titleEl) titleEl.innerText = "Student Presence Required";
+                    if (descEl) descEl.innerText = "The AI proctoring system has detected that you are not in front of the camera, or your face is obscured.";
+                    if (causesEl) causesEl.style.display = 'block'; // Show the "Possible causes" list
+                    
+                    blocker.style.display = 'flex';
+                    logProctorEvent('AI_PEOPLE', 'AI Detection: Student left camera view or face is obscured (blocker shown)');
+                }
+            }
+        }
+    }, 500);
+}
+
+
+
+// ==========================================
+// ENTERPRISE PROCTORING EXTENSIONS
+// ==========================================
+
+async function runNetworkCheck() {
+    const nextBtn = document.getElementById('btn-next-step');
+    const msgEl = document.getElementById('network-status-msg');
+    const spinner = document.getElementById('network-spinner');
+    
+    try {
+        const startTime = Date.now();
+        // Fetch a small test payload (or just ping the server)
+        const res = await fetch('/api/session/status?token=' + encodeURIComponent(sessionToken) + '&exam_id=' + encodeURIComponent(examConfig.id));
+        await res.json();
+        const latency = Date.now() - startTime;
+        
+        spinner.style.display = 'none';
+        
+        if (latency < 1000) {
+            msgEl.innerHTML = `<span style="color: #10b981;">✓ Connection stable (Latency: ${latency}ms)</span>`;
+            if (nextBtn) nextBtn.disabled = false;
+        } else {
+            msgEl.innerHTML = `<span style="color: #f59e0b;">⚠️ Connection slow (Latency: ${latency}ms). You may proceed, but video uploads might be delayed.</span>`;
+            if (nextBtn) nextBtn.disabled = false;
+        }
+    } catch (e) {
+        spinner.style.display = 'none';
+        msgEl.innerHTML = `<span style="color: #ef4444;">❌ Connection test failed. Please check your internet connection.</span>`;
+    }
+}
+
+let roomScanRecorder = null;
+let roomScanStream = null;
+
+async function setupRoomScanPreview() {
+    try {
+        roomScanStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment', width: 640, height: 480 }, audio: false });
+        const videoEl = document.getElementById('room-scan-preview');
+        if (videoEl) videoEl.srcObject = roomScanStream;
+    } catch (e) {
+        showStepError("Could not access camera for room scan. " + e.message);
+    }
+}
+
+let roomScanBlob = null;
+
+async function startRoomScanRecord() {
+    const btnRecord = document.getElementById('btn-record-room');
+    const btnNext = document.getElementById('btn-next-step');
+    const timerEl = document.getElementById('room-scan-timer');
+    const videoEl = document.getElementById('room-scan-preview');
+    
+    if (!roomScanStream) {
+        showStepError("No camera feed available.");
+        return;
+    }
+    
+    btnRecord.disabled = true;
+    timerEl.innerText = "Recording... 10";
+    
+    try {
+        roomScanRecorder = new MediaRecorder(roomScanStream, { mimeType: 'video/webm;codecs=vp8' });
+    } catch (e) {
+        roomScanRecorder = new MediaRecorder(roomScanStream, { mimeType: 'video/mp4' });
+    }
+    
+    let chunks = [];
+    roomScanRecorder.ondataavailable = (e) => {
+        if (e.data.size > 0) chunks.push(e.data);
+    };
+    
+    roomScanRecorder.onstop = async () => {
+        roomScanBlob = new Blob(chunks, { type: roomScanRecorder.mimeType });
+        timerEl.innerHTML = `<span style="color: #10b981;">✓ Room scan recorded successfully.</span>`;
+        if (btnNext) btnNext.disabled = false;
+    };
+    
+    roomScanRecorder.start();
+    
+    let timeLeft = 10;
+    const interval = setInterval(() => {
+        timeLeft--;
+        if (timeLeft > 0) {
+            timerEl.innerText = `Recording... ${timeLeft}`;
+        } else {
+            clearInterval(interval);
+            roomScanRecorder.stop();
+            // Turn off camera
+        }
+    }, 1000);
+}
+
+async function setupIdPreview() {
+    try {
+        if (!localCamStream) {
+            localCamStream = await navigator.mediaDevices.getUserMedia({ video: { width: 640, height: 480 }, audio: false });
+        }
+        const videoEl = document.getElementById('id-check-preview');
+        if (videoEl) {
+            videoEl.srcObject = localCamStream;
+        }
+    } catch (err) {
+        showStepError("Failed to access camera for ID verification: " + err.message);
+    }
+}
+
+function captureIdPhoto() {
+    const videoEl = document.getElementById('id-check-preview');
+    if (!videoEl || !localCamStream) {
+        showStepError("Camera stream not available. Please allow camera access.");
+        return;
+    }
+    const canvas = document.createElement('canvas');
+    canvas.width = videoEl.videoWidth || 640;
+    canvas.height = videoEl.videoHeight || 480;
+    const ctx = canvas.getContext('2d');
+    ctx.drawImage(videoEl, 0, 0, canvas.width, canvas.height);
+    const dataUrl = canvas.toDataURL('image/jpeg');
+    
+    window.capturedIdPhoto = dataUrl;
+    
+    const resultDiv = document.getElementById('id-capture-result');
+    const capturedImg = document.getElementById('id-captured-image');
+    if (capturedImg && resultDiv) {
+        capturedImg.src = dataUrl;
+        resultDiv.style.display = 'block';
+        videoEl.parentElement.style.display = 'none';
+    }
+    
+    const captureBtn = document.getElementById('btn-capture-id');
+    if (captureBtn) {
+        captureBtn.innerText = "Retake ID Photo";
+        captureBtn.onclick = retakeIdPhoto;
+    }
+    
+    const nextBtn = document.getElementById('btn-next-step');
+    if (nextBtn) {
+        nextBtn.disabled = false;
+        nextBtn.style.background = '#2563eb';
+        nextBtn.style.color = 'white';
+    }
+}
+
+function retakeIdPhoto() {
+    const videoEl = document.getElementById('id-check-preview');
+    const resultDiv = document.getElementById('id-capture-result');
+    if (videoEl && resultDiv) {
+        videoEl.parentElement.style.display = 'block';
+        resultDiv.style.display = 'none';
+    }
+    const captureBtn = document.getElementById('btn-capture-id');
+    if (captureBtn) {
+        captureBtn.innerText = "Capture ID Photo";
+        captureBtn.onclick = captureIdPhoto;
+    }
+    const nextBtn = document.getElementById('btn-next-step');
+    if (nextBtn) {
+        nextBtn.disabled = true;
+        nextBtn.style.background = '#e5e7eb';
+        nextBtn.style.color = '#9ca3af';
+    }
+    window.capturedIdPhoto = null;
+}
+
+let isDrawingSignature = false;
+let signatureCanvas = null;
+let signatureCtx = null;
+let signatureDrawnPoints = 0;
+
+function setupSignaturePad() {
+    signatureCanvas = document.getElementById('signature-pad');
+    if (!signatureCanvas) return;
+    
+    const rect = signatureCanvas.getBoundingClientRect();
+    signatureCanvas.width = rect.width || 400;
+    signatureCanvas.height = rect.height || 150;
+    
+    signatureCtx = signatureCanvas.getContext('2d');
+    signatureCtx.lineWidth = 2.5;
+    signatureCtx.lineJoin = 'round';
+    signatureCtx.lineCap = 'round';
+    signatureCtx.strokeStyle = '#0f172a';
+    
+    signatureDrawnPoints = 0;
+    
+    function getMousePos(canvasDom, touchOrMouseEvent) {
+        const rect = canvasDom.getBoundingClientRect();
+        const clientX = touchOrMouseEvent.touches ? touchOrMouseEvent.touches[0].clientX : touchOrMouseEvent.clientX;
+        const clientY = touchOrMouseEvent.touches ? touchOrMouseEvent.touches[0].clientY : touchOrMouseEvent.clientY;
+        return {
+            x: clientX - rect.left,
+            y: clientY - rect.top
+        };
+    }
+    
+    const startDrawing = (e) => {
+        isDrawingSignature = true;
+        const pos = getMousePos(signatureCanvas, e);
+        signatureCtx.beginPath();
+        signatureCtx.moveTo(pos.x, pos.y);
+        e.preventDefault();
+    };
+    
+    const draw = (e) => {
+        if (!isDrawingSignature) return;
+        const pos = getMousePos(signatureCanvas, e);
+        signatureCtx.lineTo(pos.x, pos.y);
+        signatureCtx.stroke();
+        signatureDrawnPoints++;
+        checkSignatureValidity();
+        e.preventDefault();
+    };
+    
+    const stopDrawing = () => {
+        isDrawingSignature = false;
+    };
+    
+    signatureCanvas.addEventListener('mousedown', startDrawing);
+    signatureCanvas.addEventListener('mousemove', draw);
+    signatureCanvas.addEventListener('mouseup', stopDrawing);
+    signatureCanvas.addEventListener('mouseleave', stopDrawing);
+    
+    signatureCanvas.addEventListener('touchstart', startDrawing);
+    signatureCanvas.addEventListener('touchmove', draw);
+    signatureCanvas.addEventListener('touchend', stopDrawing);
+}
+
+function clearSignaturePad() {
+    if (signatureCanvas && signatureCtx) {
+        signatureCtx.clearRect(0, 0, signatureCanvas.width, signatureCanvas.height);
+        signatureDrawnPoints = 0;
+        checkSignatureValidity();
+    }
+}
+
+function checkSignatureValidity() {
+    const nameInput = document.getElementById('sig-name-input');
+    const nextBtn = document.getElementById('btn-next-step');
+    if (!nameInput || !nextBtn) return;
+    
+    const nameValid = nameInput.value.trim().length > 2;
+    const drawingValid = signatureDrawnPoints > 10;
+    
+    if (nameValid && drawingValid) {
+        nextBtn.disabled = false;
+        nextBtn.style.background = '#2563eb';
+        nextBtn.style.color = 'white';
+        if (signatureCanvas) {
+            window.signatureDataUrl = signatureCanvas.toDataURL('image/png');
+        }
+        window.signatureName = nameInput.value.trim();
+    } else {
+        nextBtn.disabled = true;
+        nextBtn.style.background = '#e5e7eb';
+        nextBtn.style.color = '#9ca3af';
     }
 }

@@ -1353,6 +1353,7 @@ body::before {
   border-color: #1e272e !important;
 }
 
+
 /* ===== PROCTORIO CONFIG GRID ===== */
 .proctorio-grid {
   display: grid;
@@ -1381,14 +1382,23 @@ body::before {
 }
 
 .proctorio-card:hover {
-  border-color: var(--accent);
-  background: rgba(0, 142, 226, 0.02);
+  border-color: #2ebd59;
+  background: rgba(46, 189, 89, 0.02);
   transform: translateY(-2px);
 }
 
 .proctorio-card.selected {
-  border: 2px solid var(--accent);
-  background: rgba(0, 142, 226, 0.05);
+  border: 2px solid #2ebd59 !important;
+  background: #333333 !important;
+  color: #2ebd59 !important;
+}
+
+.proctorio-card.selected .proctorio-title {
+  color: #2ebd59 !important;
+}
+
+.proctorio-card.selected .proctorio-icon img {
+  filter: invert(53%) sepia(81%) saturate(417%) hue-rotate(90deg) brightness(97%) contrast(89%) !important;
 }
 
 .proctorio-check {
@@ -1399,7 +1409,7 @@ body::before {
   width: 20px;
   height: 20px;
   border-radius: 50%;
-  background: var(--accent);
+  background: #2ebd59;
   color: white;
   font-size: 11px;
   font-weight: 700;
@@ -1409,12 +1419,23 @@ body::before {
 }
 
 .proctorio-card.selected .proctorio-check {
-  display: flex;
+  display: none; /* Hide check badge in favor of clean Proctorio look */
 }
 
 .proctorio-icon {
   font-size: 24px;
   margin-bottom: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+}
+
+.proctorio-icon img {
+  width: 24px;
+  height: 24px;
+  object-fit: contain;
 }
 
 .proctorio-title {
@@ -1422,6 +1443,128 @@ body::before {
   line-height: 1.25;
   font-weight: 700;
   color: var(--text-primary);
+}
+
+/* Proctorio Accordion / Section styling */
+.proctorio-section {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--bg-card);
+  margin-bottom: 16px;
+  overflow: hidden;
+}
+
+.proctorio-section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 20px;
+  background: #f8fafc;
+  cursor: pointer;
+  user-select: none;
+  border-bottom: 1px solid var(--border);
+  transition: background 0.2s;
+}
+
+.proctorio-section-header:hover {
+  background: #f1f5f9;
+}
+
+.proctorio-section-title-container {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.proctorio-section-title {
+  font-family: 'Outfit', sans-serif;
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.proctorio-section-subtitle {
+  font-size: 11px;
+  color: var(--text-muted);
+  margin-top: 2px;
+}
+
+.proctorio-toggle-icon {
+  font-size: 10px;
+  color: var(--text-muted);
+  transition: transform 0.2s;
+}
+
+.proctorio-section-content {
+  padding: 20px;
+  background: #ffffff;
+}
+
+.proctorio-section.collapsed .proctorio-section-content {
+  display: none;
+}
+
+.proctorio-section.collapsed .proctorio-section-header {
+  border-bottom: none;
+}
+
+.proctorio-section.collapsed .proctorio-toggle-icon {
+  transform: rotate(-90deg);
+}
+
+/* Metric Weights and Presets styling */
+.metric-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 16px;
+  border-radius: 8px;
+  background: #f8fafc;
+  margin-bottom: 10px;
+  border: 1px solid #e2e8f0;
+}
+
+.metric-info {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.metric-label-title {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.metric-bar-container {
+  display: flex;
+  gap: 4px;
+}
+
+.metric-segment {
+  width: 20px;
+  height: 8px;
+  border-radius: 2px;
+  background: #cbd5e1;
+  cursor: pointer;
+  transition: background 0.15s, transform 0.1s;
+}
+
+.metric-segment:hover {
+  transform: scaleY(1.2);
+}
+
+/* Coloring rules based on segment weight levels */
+.metric-segment.active-green {
+  background: #2ebd59 !important;
+}
+
+.metric-segment.active-orange {
+  background: #fc5e13 !important;
+}
+
+.metric-segment.active-red {
+  background: #ee0612 !important;
 }
 
 /* ===== SEB BLOCKER CONTAINER & FACELIFT ===== */
