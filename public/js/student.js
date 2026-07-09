@@ -468,6 +468,20 @@ function updateSidebarNav() {
     const activeSteps = stepsConfig.filter(s => s.req());
     const currentActiveIndex = activeSteps.findIndex(s => s.id === currentStep);
 
+    if (activeSteps.length > 0) {
+        const progressPct = ((currentActiveIndex) / activeSteps.length) * 100;
+        const progressFill = document.getElementById('setup-progress-fill');
+        if (progressFill) progressFill.style.width = `${progressPct}%`;
+        
+        const stepsRemaining = activeSteps.length - currentActiveIndex - 1;
+        const timeEst = document.getElementById('setup-time-est');
+        if (timeEst) {
+            const minStr = Math.max(1, Math.ceil(stepsRemaining * 0.5));
+            timeEst.textContent = `~${minStr} min remaining`;
+            if (stepsRemaining <= 0) timeEst.textContent = `Almost done!`;
+        }
+    }
+
     let visualIndex = 1;
     stepsConfig.forEach((stepItem) => {
         const navEl = document.getElementById(`step-nav-${stepItem.id}`);
@@ -479,17 +493,39 @@ function updateSidebarNav() {
             navEl.style.display = 'block';
             navEl.className = 'sidebar-step';
             
-            const itemActiveIndex = activeSteps.findIndex(s => s.id === stepItem.id);
+            const stepNameStr = getStepName(stepItem.id);
+            const isLast = (visualIndex === activeSteps.length);
             
+            let circleHtml = `<div class="step-circle">${visualIndex}</div>`;
+            let rightBadge = '';
+            
+            if (isLast) {
+                circleHtml = `<div class="step-circle step-circle-go" style="color:#ffffff;border-color:#10b981;background:#10b981;font-size:10px;font-weight:bold;">GO</div>`;
+            }
+
+            const itemActiveIndex = activeSteps.findIndex(s => s.id === stepItem.id);
+
             if (stepItem.id === currentStep) {
                 navEl.classList.add('active');
-                navEl.innerHTML = `STEP ${visualIndex}: ${getStepName(stepItem.id)}`;
+                if (isLast) {
+                    circleHtml = `<div class="step-circle step-circle-go" style="color:#ffffff;border-color:#059669;background:#059669;font-size:10px;font-weight:bold;">GO</div>`;
+                } else {
+                    circleHtml = `<div class="step-circle">${visualIndex}</div>`;
+                }
+                rightBadge = `<div class="step-badge step-badge-progress">In progress</div>`;
             } else if (itemActiveIndex !== -1 && itemActiveIndex < currentActiveIndex) {
                 navEl.classList.add('completed');
-                navEl.innerHTML = `STEP ${visualIndex}: ${getStepName(stepItem.id)} ✓`;
+                circleHtml = `<div class="step-circle"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg></div>`;
+                if (stepItem.id === 1 && window.networkLatency) {
+                    rightBadge = `<div class="step-badge step-badge-done">${window.networkLatency}ms</div>`;
+                } else {
+                    rightBadge = ``;
+                }
             } else {
-                navEl.innerHTML = `STEP ${visualIndex}: ${getStepName(stepItem.id)}`;
+                navEl.classList.remove('active', 'completed');
             }
+            
+            navEl.innerHTML = `${circleHtml} <span>${stepNameStr}</span> ${rightBadge}`;
             visualIndex++;
         }
     });
@@ -531,18 +567,18 @@ function getNextStep(current) {
 
 function getStepName(step) {
     switch(step) {
-        case 1: return 'NETWORK CHECK';
-        case 2: return 'MICROPHONE CHECK';
-        case 3: return 'WEBCAM CHECK';
-        case 11: return 'ID VERIFICATION';
-        case 12: return 'SIGNATURE AGREEMENT';
-        case 4: return 'ADDITIONAL INSTRUCTIONS';
-        case 5: return 'GUIDELINES + TIPS';
-        case 6: return 'ROOM SCAN';
-        case 7: return 'SCREEN SHARE';
-        case 8: return 'FULLSCREEN MODE';
-        case 9: return 'BEGIN EXAM';
-        case 10: return 'SECONDARY MOBILE CAMERA';
+        case 1: return 'Network check';
+        case 2: return 'Microphone';
+        case 3: return 'Webcam';
+        case 11: return 'ID verification';
+        case 12: return 'Signature';
+        case 4: return 'Instructions';
+        case 5: return 'Guidelines';
+        case 6: return 'Room scan';
+        case 7: return 'Screen share';
+        case 8: return 'Fullscreen mode';
+        case 9: return 'Begin exam';
+        case 10: return 'Mobile camera';
     }
 }
 
@@ -1491,6 +1527,16 @@ async function startMainExamSession() {
         }
 
         let quizUrl = examConfig.canvas_quiz_url;
+        if (quizUrl.includes('/quizzes/') && !quizUrl.includes('/take')) {
+            try {
+                const urlObj = new URL(quizUrl);
+                if (!urlObj.pathname.endsWith('/take')) {
+                    urlObj.pathname = urlObj.pathname.replace(/\/$/, '') + '/take';
+                    quizUrl = urlObj.toString();
+                }
+            } catch(e) {}
+        }
+
         if (quizUrl.includes('?')) {
             quizUrl += "&secure_proctor=canvas-proctor-shared-secret-key-998877";
         } else {
@@ -2076,6 +2122,8 @@ async function createCompositeTrack(screenStream, cameraStream) {
 
     // Volume Detection for visual feedback
     let volumeLevel = 0;
+    let lastNonZeroVolumeTime = Date.now();
+    let audioTrackerActive = false;
     try {
         const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
         const analyser = audioCtx.createAnalyser();
@@ -2086,6 +2134,7 @@ async function createCompositeTrack(screenStream, cameraStream) {
         }
         
         if (sourceStream && sourceStream.getAudioTracks().length > 0) {
+            audioTrackerActive = true;
             const source = audioCtx.createMediaStreamSource(sourceStream);
             source.connect(analyser);
             analyser.fftSize = 256;
@@ -2098,6 +2147,9 @@ async function createCompositeTrack(screenStream, cameraStream) {
                 let max = 0;
                 for (let i = 0; i < dataArray.length; i++) if(dataArray[i] > max) max = dataArray[i];
                 volumeLevel = max;
+                if (max > 0) {
+                    lastNonZeroVolumeTime = Date.now();
+                }
                 setTimeout(updateVolume, 100);
             }
             updateVolume();
@@ -2152,7 +2204,9 @@ async function createCompositeTrack(screenStream, cameraStream) {
         ctx.fillText(camLabel, sidebarX + (320 - ctx.measureText(camLabel).width) / 2, camY - 15);
  
         // Mic Status Box - Hardware connectivity based
-        const hasMic = localMicStream && localMicStream.getAudioTracks().some(t => t.enabled && !t.muted && t.readyState === 'live');
+        const hasHardwareMic = localMicStream && localMicStream.getAudioTracks().some(t => t.enabled && !t.muted && t.readyState === 'live');
+        const isHardwareMuted = audioTrackerActive && (Date.now() - lastNonZeroVolumeTime) > 3000;
+        const hasMic = hasHardwareMic && !isHardwareMuted;
         const micBoxY = camY + camH + 40;
         const micBoxW = 240;
         const micBoxH = 60;
@@ -2649,6 +2703,7 @@ async function endExam() {
 async function autoEndExamSession() {
     if (isExamCompleted) return;
     isExamCompleted = true;
+    window.postMessage({ type: 'END_EXAM_LOCKDOWN' }, '*');
     
     if (examTrackerTask) {
         clearTimeout(examTrackerTask);
@@ -3178,6 +3233,8 @@ async function runNetworkCheck() {
         const res = await fetch('/api/session/status?token=' + encodeURIComponent(sessionToken) + '&exam_id=' + encodeURIComponent(examConfig.id));
         await res.json();
         const latency = Date.now() - startTime;
+        window.networkLatency = latency;
+        updateSidebarNav();
         
         spinner.style.display = 'none';
         

@@ -40,9 +40,11 @@ function syncExamStatus() {
       examActive = true;
       examSettings = response.settings || {};
       enablePageRestrictions();
+      enforceExamUI();
     } else {
       examActive = false;
       examSettings = {};
+      restoreExamUI();
     }
   });
 }
@@ -61,6 +63,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   } else if (message.type === "EXAM_ENDED") {
     examActive = false;
     examSettings = {};
+    restoreExamUI();
     sendResponse({ received: true });
   } else if (message.type === "DISPLAY_VIOLATION") {
     window.postMessage({ type: "EXTENSION_DISPLAY_VIOLATION", displayCount: message.displayCount }, "*");
@@ -96,6 +99,36 @@ function enablePageRestrictions() {
     document.head.appendChild(style);
     window.addEventListener('beforeprint', (e) => { e.preventDefault(); }, true);
   }
+}
+
+function enforceExamUI() {
+  if (!examActive) return;
+
+  // 1. Hide Canvas navigation & expand main layout
+  if (!document.getElementById('proctor-hide-nav-style')) {
+    const style = document.createElement('style');
+    style.id = 'proctor-hide-nav-style';
+    style.textContent = `
+      #header, #left-side, .ic-app-nav-toggle-and-crumbs, #breadcrumbs { display: none !important; }
+      #wrapper, #wrapper-container, body.ic-fixed-layout #wrapper { margin-left: 0 !important; padding-left: 0 !important; }
+      .ic-app-main-content { margin-left: 0 !important; }
+      .ic-Layout-wrapper { max-width: 100% !important; margin: 0 !important; padding: 20px !important; }
+      .ic-Layout-columns { margin: 0 !important; }
+    `;
+    document.head.appendChild(style);
+  }
+
+  // 2. Automatically click "Take the Quiz" or "Take the Quiz Again"
+  const takeBtn = document.getElementById('take_quiz_link');
+  if (takeBtn && !takeBtn.dataset.proctorAutoClicked) {
+    takeBtn.dataset.proctorAutoClicked = "true";
+    takeBtn.click();
+  }
+}
+
+function restoreExamUI() {
+  const style = document.getElementById('proctor-hide-nav-style');
+  if (style) style.remove();
 }
 
 function preventContextMenu(e) {
@@ -348,8 +381,7 @@ function openExamReviewCenterModal(sessions, loadError) {
       /* ---- Overlay ---- */
       #proctor-review-center-modal {
         position: fixed; inset: 0; z-index: 999990;
-        background: rgba(10,14,26,0.92);
-        backdrop-filter: blur(6px);
+        background: rgba(10,14,26,0.98);
         display: flex; align-items: center; justify-content: center;
         font-family: -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
         color: #1a1a2e;
@@ -358,7 +390,7 @@ function openExamReviewCenterModal(sessions, loadError) {
       /* ---- Shell ---- */
       .prc-shell {
         background: #fff;
-        border-radius: 4px;
+        border-radius: 8px;
         width: 96%; max-width: 1100px;
         height: 86vh;
         display: flex; flex-direction: column;
@@ -386,7 +418,7 @@ function openExamReviewCenterModal(sessions, loadError) {
         border-bottom: 3px solid transparent;
         transition: color .15s, border-color .15s;
       }
-      .prc-nav-tab.active { color: #0fa47a; border-bottom-color: #0fa47a; font-weight: 600; }
+      .prc-nav-tab.active { color: #2563eb; border-bottom-color: #2563eb; font-weight: 600; }
       .prc-nav-tab svg { opacity: .7; }
       .prc-nav-right { margin-left: auto; display: flex; align-items: center; gap: 8px; }
       .prc-close-btn {
@@ -450,7 +482,7 @@ function openExamReviewCenterModal(sessions, loadError) {
         vertical-align: middle; color: #2d3748;
       }
       .prc-data-table td.icon-col { text-align: center; }
-      .prc-data-table td a { color: #0fa47a; font-weight: 500; text-decoration: none; }
+      .prc-data-table td a { color: #2563eb; font-weight: 500; text-decoration: none; }
       .prc-data-table td a:hover { text-decoration: underline; }
 
       /* Coloured stat numbers */
@@ -484,7 +516,7 @@ function openExamReviewCenterModal(sessions, loadError) {
         border: 1px solid #e2e8f0; color: #718096;
         cursor: default; position: relative;
       }
-      .prc-icon-badge:hover { border-color: #0fa47a; color: #0fa47a; background: #f0fdf9; }
+      .prc-icon-badge:hover { border-color: #2563eb; color: #2563eb; background: #eff4ff; }
 
       /* Action eye button */
       .prc-eye-btn {
@@ -493,7 +525,7 @@ function openExamReviewCenterModal(sessions, loadError) {
         color: #718096; padding: 4px; border-radius: 4px;
         transition: color .15s;
       }
-      .prc-eye-btn:hover { color: #0fa47a; }
+      .prc-eye-btn:hover { color: #2563eb; }
 
       /* Review detail button */
       .prc-review-btn {
@@ -502,7 +534,7 @@ function openExamReviewCenterModal(sessions, loadError) {
         padding: 5px 12px; border-radius: 4px; cursor: pointer;
         transition: all .15s;
       }
-      .prc-review-btn:hover { background: #0fa47a; color: #fff; border-color: #0fa47a; }
+      .prc-review-btn:hover { background: #2563eb; color: #fff; border-color: #2563eb; }
 
       /* Empty states */
       .prc-empty-state {
@@ -552,28 +584,11 @@ function openExamReviewCenterModal(sessions, loadError) {
         <table class="prc-data-table">
           <thead>
             <tr>
-              <th style="width:28px"></th>
-              <th>Name</th>
-              <th>Submission</th>
-              <th>Availability</th>
-              <th class="icon-col" title="Recordings">
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="23 7 16 12 23 17 23 7"></polygon><rect x="1" y="5" width="15" height="14" rx="2" ry="2"></rect></svg>
-              </th>
-              <th class="icon-col" title="ID Verification">
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="5" width="20" height="14" rx="2"></rect><line x1="2" y1="10" x2="22" y2="10"></line></svg>
-              </th>
-              <th class="icon-col" title="Annotations">
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path></svg>
-              </th>
-              <th class="icon-col" title="Abnormalities">
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="8" x2="12" y2="12"></line><line x1="12" y1="16" x2="12.01" y2="16"></line></svg>
-              </th>
-              <th class="icon-col" title="Suspicious Level">
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"></polyline></svg>
-              </th>
-              <th class="icon-col" title="Alerts">
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"></path><line x1="12" y1="9" x2="12" y2="13"></line><line x1="12" y1="17" x2="12.01" y2="17"></line></svg>
-              </th>
+              <th>Student</th>
+              <th>Submitted</th>
+              <th>Risk</th>
+              <th>Alerts</th>
+              <th>Risk Level</th>
               <th style="width:80px"></th>
             </tr>
           </thead>
@@ -635,38 +650,52 @@ function updateReviewCenterModalBody(modalEl, sessions, loadError) {
   tbody.innerHTML = '';
   sessions.forEach(s => {
     const submissionDate = new Date(s.started_at).toLocaleDateString('en-US', {month:'2-digit',day:'2-digit',year:'numeric'});
-    const suspPct = Math.min(100, s.riskScore);
-    const suspClass = suspPct >= 70 ? 'high' : suspPct >= 30 ? 'medium' : 'low';
-    const suspColor = suspPct >= 70 ? '#e53e3e' : suspPct >= 30 ? '#d69e2e' : '#38a169';
     const alertCount = _prcAlertCount(s.logs);
     const annotCount = _prcAnnotationCount(s.logs);
     const abnormCount = _prcAbnormalCount(s.logs);
+    const calcScore = (alertCount * 5) + (abnormCount * 2);
+    const suspPct = s.riskScore || Math.min(100, calcScore);
+    const suspClass = suspPct >= 70 ? 'high' : suspPct >= 30 ? 'medium' : 'low';
+    const suspColor = suspPct >= 70 ? '#e53e3e' : suspPct >= 30 ? '#d69e2e' : '#38a169';
     const iconRow = _prcIconRowHtml(s);
     const alertClass = alertCount > 0 ? 'red' : 'gray';
 
     const tr = document.createElement('tr');
     tr.innerHTML = `
       <td>
-        <button class="prc-eye-btn prc-open-detail" data-student-id="${s.student_canvas_id}" title="Review ${s.student_name}">
-          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path><circle cx="12" cy="12" r="3"></circle></svg>
-        </button>
+        <div style="font-weight:700;color:#1a202c;line-height:1.2;margin-bottom:2px;">${s.student_name.split(' ')[0]}</div>
+        <div style="font-weight:700;color:#1a202c;line-height:1.2;">${s.student_name.split(' ').slice(1).map(n=>n[0]+'.').join(' ')}</div>
       </td>
-      <td><a href="#" class="prc-open-detail" data-student-id="${s.student_canvas_id}">${s.student_name}</a></td>
-      <td><span style="color:#3182ce;font-weight:600;">${submissionDate}</span></td>
-      <td><span style="color:#38a169;font-size:13px;">6 Months</span></td>
-      <td class="icon-col"><span class="prc-stat blue">${s.drive_file_id ? 1 : 0}</span></td>
-      <td class="icon-col"><span class="prc-stat green">1</span></td>
-      <td class="icon-col"><span class="prc-stat gray">${annotCount}</span></td>
-      <td class="icon-col"><span class="prc-stat gray">${abnormCount}</span></td>
-      <td class="icon-col">
-        <div class="prc-susp-wrap">
-          <div class="prc-susp-bar-outer"><div class="prc-susp-bar-inner ${suspClass}" style="width:${suspPct}%"></div></div>
-          <span style="font-size:12px;font-weight:600;color:${suspColor};">${suspPct}%</span>
+      <td>
+        <div style="color:#4a5568;font-size:13px;line-height:1.4;">${new Date(s.started_at).toLocaleDateString('en-US', {month:'short',day:'numeric'})},</div>
+        <div style="color:#4a5568;font-size:13px;line-height:1.4;">${new Date(s.started_at).toLocaleTimeString('en-US', {hour:'numeric',minute:'2-digit'}).toLowerCase()}</div>
+      </td>
+      <td>
+        <div style="display:flex; gap:3px; width:75px; height:6px; border-radius:3px; overflow:hidden;">
+          ${(() => {
+            let html = '';
+            const segCount = alertCount === 0 && abnormCount === 0 ? 5 : Math.min(5, Math.max(1, Math.ceil(alertCount / 4)));
+            const actualColor = (alertCount === 0 && abnormCount === 0) ? '#38a169' : (alertCount >= 3 ? '#e53e3e' : '#dd6b20');
+            for(let i=0; i<5; i++) {
+               html += `<div style="flex:1; border-radius:3px; background:${i < segCount ? actualColor : '#f1f5f9'}"></div>`;
+            }
+            return html;
+          })()}
         </div>
       </td>
-      <td class="icon-col"><div class="prc-icon-row">${iconRow}</div></td>
+      <td>
+        <div style="display:inline-flex; flex-direction:column; align-items:center; justify-content:center; padding:4px 10px; border-radius:12px; background:${alertCount>=10 ? '#fff5f5' : alertCount>0 ? '#fffaf0' : '#f0fff4'}; color:${alertCount>=10 ? '#c53030' : alertCount>0 ? '#b7791f' : '#2f855a'}; font-size:11px; font-weight:700; line-height:1.2;">
+          <div>${alertCount}</div>
+          <div>alerts</div>
+        </div>
+      </td>
+      <td>
+        <div style="display:inline-flex; align-items:center; justify-content:center; padding:3px 8px; border-radius:12px; background:${suspPct>=70 ? '#fff5f5' : suspPct>=30 ? '#fffaf0' : '#f0fff4'}; border:1px solid ${suspPct>=70 ? '#feb2b2' : suspPct>=30 ? '#fbd38d' : '#c6f6d5'}; color:${suspPct>=70 ? '#c53030' : suspPct>=30 ? '#dd6b20' : '#276749'}; font-size:12px; font-weight:700;">
+          ${suspPct}%
+        </div>
+      </td>
       <td style="text-align:right;">
-        <button class="prc-review-btn prc-open-detail" data-student-id="${s.student_canvas_id}">Review</button>
+        <button class="prc-review-btn prc-open-detail" data-student-id="${s.student_canvas_id}" style="background:none; color:#2563eb; font-weight:700; border:none; padding:4px 8px; cursor:pointer;">Review</button>
       </td>
     `;
     tbody.appendChild(tr);
@@ -749,19 +778,13 @@ function openInlineStudentDetail(rcModal, sessions) {
       </div>
       <div class="prm-right">
         <div class="prm-tabs" id="prm-tabs">
-          <button class="prm-tab-btn active" data-tab="attempt">Attempt</button>
-          <button class="prm-tab-btn" data-tab="score">Score</button>
-          <button class="prm-tab-btn" data-tab="annotations">Annotations</button>
-          <button class="prm-tab-btn" data-tab="abnormalities">Abnormalities</button>
-          <button class="prm-tab-btn" data-tab="suspicious">Suspicious %</button>
+          <button class="prm-tab-btn active" data-tab="abnormalities">Abnormalities</button>
           <button class="prm-tab-btn" data-tab="alerts">Alerts</button>
+          <button class="prm-tab-btn" data-tab="verification">Verification</button>
         </div>
-        <div id="prm-panel-attempt"   class="prm-tab-panel active"></div>
-        <div id="prm-panel-score"     class="prm-tab-panel"></div>
-        <div id="prm-panel-annotations" class="prm-tab-panel"></div>
-        <div id="prm-panel-abnormalities" class="prm-tab-panel"></div>
-        <div id="prm-panel-suspicious" class="prm-tab-panel"></div>
+        <div id="prm-panel-abnormalities" class="prm-tab-panel active"></div>
         <div id="prm-panel-alerts"   class="prm-tab-panel"></div>
+        <div id="prm-panel-verification" class="prm-tab-panel"></div>
       </div>
     </div>
   `;
@@ -798,15 +821,14 @@ function injectPrmStyles() {
   style.innerHTML = `
     #proctor-report-modal {
       position: fixed; inset: 0; z-index: 999999;
-      background: rgba(10,14,26,0.92);
-      backdrop-filter: blur(6px);
+      background: rgba(10,14,26,0.98);
       display: flex; align-items: center; justify-content: center;
       font-family: -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
       color: #2d3748;
     }
     .prm-shell {
       background: #fff;
-      border-radius: 4px;
+      border-radius: 8px;
       width: 98%; max-width: 1200px;
       height: 90vh;
       display: flex; flex-direction: column;
@@ -875,22 +897,25 @@ function injectPrmStyles() {
     }
     .prm-video-primary {
       flex: 1; background: #0d0d1a;
-      display: flex; align-items: center; justify-content: center;
-      position: relative;
+      display: flex; flex-direction: row; align-items: center; justify-content: center;
+      gap: 10px; padding: 10px;
     }
     .prm-video-primary video {
       width: 100%; height: 100%; object-fit: contain;
       background: #000;
     }
     .prm-webcam-thumb {
-      position: absolute; bottom: 12px; left: 12px;
-      width: 140px; height: 90px;
+      flex: 1; height: 100%;
       background: #111; border: 2px solid #2d3748;
       border-radius: 4px; overflow: hidden;
       display: flex; align-items: center; justify-content: center;
       color: #4a5568; font-size: 11px; text-align: center;
     }
-    .prm-webcam-thumb video { width: 100%; height: 100%; object-fit: cover; }
+    .prm-webcam-thumb video { width: 100%; height: 100%; object-fit: contain; }
+    .prm-vid-main-container {
+      flex: 2; height: 100%;
+      display: flex; align-items: center; justify-content: center;
+    }
     .prm-no-video {
       display: flex; flex-direction: column; align-items: center; justify-content: center;
       gap: 8px; color: #4a5568; font-size: 13px;
@@ -942,7 +967,7 @@ function injectPrmStyles() {
       text-transform: uppercase; letter-spacing: .03em;
       white-space: nowrap;
     }
-    .prm-tab-btn.active { color: #0fa47a; border-bottom-color: #0fa47a; }
+    .prm-tab-btn.active { color: #2563eb; border-bottom-color: #2563eb; }
     .prm-tab-btn:hover:not(.active) { color: #2d3748; }
     .prm-tab-panel { display: none; flex: 1; overflow-y: auto; padding: 14px; }
     .prm-tab-panel.active { display: block; }
@@ -971,7 +996,7 @@ function injectPrmStyles() {
       margin-bottom: 12px; border: 1px solid #e2e8f0;
     }
     .prm-score-card h4 { margin: 0 0 6px; font-size: 13px; font-weight: 700; color: #2d3748; }
-    .prm-score-card p  { margin: 0; font-size: 22px; font-weight: 800; color: #0fa47a; }
+    .prm-score-card p  { margin: 0; font-size: 22px; font-weight: 800; color: #2563eb; }
     .prm-score-card small { font-size: 11px; color: #718096; }
 
     /* Abnormality chip */
@@ -1009,11 +1034,13 @@ function loadSessionInModal(modal, session) {
   if (hasVideo) {
     videoArea.innerHTML = `
       <div class="prm-video-primary">
-        <video id="prm-vid-main" controls playsinline>
-          <source src="${videoSrc}" type="video/webm">
-          <source src="${videoSrc}" type="video/mp4">
-        </video>
         ${hasMobile ? `<div class="prm-webcam-thumb"><video id="prm-vid-mobile" controls playsinline muted src="${mobileSrc}"></video></div>` : ''}
+        <div class="prm-vid-main-container" style="flex:${hasMobile ? '2' : '1'};">
+          <video id="prm-vid-main" controls playsinline>
+            <source src="${videoSrc}" type="video/webm">
+            <source src="${videoSrc}" type="video/mp4">
+          </video>
+        </div>
       </div>
     `;
   } else {
@@ -1032,14 +1059,24 @@ function loadSessionInModal(modal, session) {
   const mainVid = modal.querySelector('#prm-vid-main');
 
   // ------- STATS ROW -------
-  const suspPct  = Math.min(100, session.riskScore);
-  const suspCls  = suspPct >= 70 ? 'high' : suspPct >= 30 ? 'medium' : 'low';
   const alertCnt = _prcAlertCount(session.logs);
   const annotCnt = _prcAnnotationCount(session.logs);
   const abnCnt   = _prcAbnormalCount(session.logs);
+  const calcScore = (alertCnt * 5) + (abnCnt * 2);
+  const suspPct  = session.riskScore || Math.min(100, calcScore);
+  const suspCls  = suspPct >= 70 ? 'high' : suspPct >= 30 ? 'medium' : 'low';
   const started  = new Date(session.started_at);
   const ended    = session.end_time ? new Date(session.end_time) : null;
-  const durationSec = ended ? Math.floor((ended - started) / 1000) : null;
+  
+  let durationSec = null;
+  if (ended) {
+    durationSec = Math.floor((ended - started) / 1000);
+  } else if (session.logs && session.logs.length > 0) {
+    const lastLogTime = Math.max(...session.logs.map(l => new Date(l.event_timestamp).getTime()));
+    if (lastLogTime && !isNaN(lastLogTime)) {
+      durationSec = Math.floor((lastLogTime - started.getTime()) / 1000);
+    }
+  }
   const durStr   = durationSec ? `${Math.floor(durationSec/60)}m ${durationSec%60}s` : 'N/A';
 
   statsRow.innerHTML = `
@@ -1113,6 +1150,66 @@ function loadSessionInModal(modal, session) {
     });
   });
 
+  if (mainVid) {
+    mainVid.addEventListener('loadedmetadata', function() {
+      const realDur = this.duration;
+      if (realDur && realDur > 0) {
+        const secPerSeg = realDur / segments;
+        let newTlBars = '';
+        for (let i = 0; i < segments; i++) {
+          const segStart = i * secPerSeg;
+          const segEnd   = (i + 1) * secPerSeg;
+          const segLogs  = logs.filter(l => {
+            let off = Math.max(0, (new Date(l.event_timestamp) - started) / 1000);
+            if (off >= realDur) off = Math.max(0, realDur - 0.1);
+            return off >= segStart && off < segEnd;
+          });
+          const hasAlert = segLogs.some(l => _prcAlertCount([l]) > 0);
+          const hasWarn  = segLogs.some(l => _prcAbnormalCount([l]) > 0);
+          const segClass = hasAlert ? 'alert' : hasWarn ? 'warn' : '';
+          const seekSec  = Math.round(segStart);
+          newTlBars += `<div class="prm-timeline-seg ${segClass}" data-seek="${seekSec}" title="${seekSec}s"></div>`;
+        }
+        
+        const tlLabels = [];
+        for (let i = 0; i <= 4; i++) {
+          const sec = Math.round((i / 4) * realDur);
+          const m   = Math.floor(sec / 60);
+          const s   = sec % 60;
+          tlLabels.push(`<span>${m}:${String(s).padStart(2,'0')}</span>`);
+        }
+        
+        timeline.innerHTML = `
+          <div class="prm-timeline-bar" id="prm-tl-bar">${newTlBars}</div>
+          <div class="prm-timeline-bar" id="prm-tl-bar2">${newTlBars}</div>
+          <div class="prm-timeline-labels">${tlLabels.join('')}</div>
+        `;
+        
+        timeline.querySelectorAll('.prm-timeline-seg').forEach(seg => {
+          seg.addEventListener('click', () => {
+            const seek = parseInt(seg.dataset.seek, 10);
+            mainVid.currentTime = seek; mainVid.play();
+          });
+        });
+
+        // Update sidebar log timestamps if they exceed video duration
+        modal.querySelectorAll('.prm-log-item').forEach(el => {
+            const rawOff = parseInt(el.dataset.rawOff, 10);
+            if (rawOff > realDur) {
+                const cappedOff = Math.max(0, Math.floor(realDur));
+                const m = Math.floor(cappedOff / 60);
+                const s = cappedOff % 60;
+                const ts = `${m}:${String(s).padStart(2,'0')}`;
+                const tsSpan = el.querySelector('.prm-log-ts');
+                if (tsSpan) {
+                    tsSpan.innerText = ts;
+                }
+            }
+        });
+      }
+    });
+  }
+
   // ------- HELPER: log item -------
   const alertTypes = ['tab_blur','window_blur','fullscreen_exit','Tab Blocked','audio_violation','clipboard_attempt','copy_attempt','paste_attempt','right_click','print_attempt','keyboard_shortcut_blocked'];
   const abnTypes   = ['phone_detected','multiple_faces','no_face','AI_PEOPLE','gaze_off_screen','audio_threshold_exceeded','mobile_camera_lost'];
@@ -1128,125 +1225,108 @@ function loadSessionInModal(modal, session) {
     mobile_camera_lost: 'Mobile Camera Lost'
   };
 
-  const makeLogEl = (log) => {
+  const makeLogEl = (log, index) => {
     const off  = Math.max(0, Math.floor((new Date(log.event_timestamp) - started) / 1000));
     const m    = Math.floor(off / 60);
     const s    = off % 60;
     const ts   = `${m}:${String(s).padStart(2,'0')}`;
     const isAl = alertTypes.includes(log.event_type);
     const isAb = abnTypes.includes(log.event_type);
-    const cls  = isAl ? 'alert' : isAb ? 'warn' : 'info';
+    
+    let severity = 'Low';
+    let sevColor = '#38a169'; // green
+    let sevBg = '#f0fff4';
+    if (['tab_blur','window_blur','fullscreen_exit','Tab Blocked'].includes(log.event_type)) {
+      severity = 'High'; sevColor = '#c53030'; sevBg = '#fff5f5';
+    } else if (['clipboard_attempt','copy_attempt','paste_attempt','right_click','print_attempt'].includes(log.event_type)) {
+      severity = 'Med'; sevColor = '#dd6b20'; sevBg = '#fffaf0';
+    }
+    
+    if (!isAl) {
+      severity = 'Info'; sevColor = '#3182ce'; sevBg = '#ebf8ff';
+    }
+    
     const label= alertLabels[log.event_type] || abnLabels[log.event_type] || log.event_type.replace(/_/g,' ').replace(/\b\w/g, c=>c.toUpperCase());
     const el   = document.createElement('div');
-    el.className = `prm-log-item ${cls}`;
+    
+    let details = `<span class="prm-log-ts">${ts}</span> · ${isAl ? 'Violation #' + (index + 1) : 'Logged event'}`;
+    // The mockup had "0:25 · 3 sec · Violation #1" and "Browser minimized". We can put log.event_message if available, or a generic duration.
+    let desc = log.event_message ? log.event_message : (isAl ? 'Proctoring rule triggered' : 'Event recorded');
+
     el.innerHTML = `
-      <div class="prm-log-time">${ts}</div>
-      <div class="prm-log-type">${label}</div>
-      ${log.event_message ? `<div class="prm-log-msg">${log.event_message}</div>` : ''}
+      <div style="padding:16px 20px; border-bottom:1px solid #e2e8f0; display:flex; flex-direction:column; gap:4px;">
+        <div style="display:flex; align-items:center; gap:8px;">
+          <div style="width:8px; height:8px; border-radius:50%; background:${sevColor};"></div>
+          <div style="font-weight:700; color:#1a202c; font-size:14px;">${label}</div>
+        </div>
+        <div style="color:#718096; font-size:12px; margin-left:16px; margin-bottom:6px;">${details}</div>
+        <div style="display:flex; align-items:center; gap:8px; margin-left:16px;">
+          <div style="padding:4px 12px; border-radius:12px; background:${sevBg}; color:${sevColor}; font-size:12px; font-weight:700; white-space:nowrap; display:inline-flex; align-items:center; justify-content:center;">${severity}</div>
+          <div style="color:#4a5568; font-size:13px; line-height:1.4;">${desc}</div>
+        </div>
+      </div>
     `;
+    el.className = 'prm-log-item';
+    el.dataset.rawOff = off;
+    el.style.cursor = 'pointer';
+    el.title = 'Click to seek video to this timestamp';
+    el.addEventListener('mouseover', () => el.style.background = '#f7fafc');
+    el.addEventListener('mouseout', () => el.style.background = '');
     el.addEventListener('click', () => {
-      if (mainVid) { mainVid.currentTime = off; mainVid.play(); }
+      if (mainVid) {
+        let seekTime = off;
+        if (!isNaN(mainVid.duration) && mainVid.duration > 0) {
+            seekTime = Math.min(off, Math.max(0, mainVid.duration - 1));
+        }
+        mainVid.currentTime = seekTime; 
+        mainVid.play(); 
+      }
     });
     return el;
   };
 
   // ------- PANELS -------
 
-  // Attempt
-  const pAttempt = modal.querySelector('#prm-panel-attempt');
-  pAttempt.innerHTML = `
-    <div class="prm-score-card">
-      <h4>Attempt Details</h4>
-      <p style="font-size:14px;color:#2d3748;">${session.student_name}</p>
-      <small>Attempt ${session.attempt_number} &nbsp;|&nbsp; ${started.toLocaleString()}</small>
-    </div>
-    <div class="prm-score-card">
-      <h4>Session Status</h4>
-      <p style="font-size:14px;color:${session.status==='completed'?'#38a169':'#d69e2e'}">${(session.status||'unknown').toUpperCase()}</p>
-      <small>Duration: ${durStr}</small>
-    </div>
-    ${session.room_scan_drive_file_id ? `
-    <div class="prm-score-card">
-      <h4>Room Scan</h4>
-      <a href="https://proctor.siotw.net/api/session/room-scan-playback/${session.id}?token=canvas-proctor-shared-secret-key-998877" target="_blank" style="color:#0fa47a;font-size:13px;font-weight:600;">▶ View Room Scan Video</a>
-    </div>` : ''}
-  `;
-
-  // Score
-  const pScore = modal.querySelector('#prm-panel-score');
-  pScore.innerHTML = `
-    <div class="prm-score-card">
-      <h4>Suspicion Score</h4>
-      <p>${suspPct}%</p>
-      <small>${suspCls.toUpperCase()} RISK</small>
-    </div>
-    <div class="prm-score-card">
-      <h4>Risk Tier</h4>
-      <p style="color:${suspCls==='high'?'#e53e3e':suspCls==='medium'?'#d69e2e':'#38a169'}">${session.riskTier}</p>
-      <small>Raw score: ${session.riskScore} pts</small>
-    </div>
-    <div class="prm-score-card">
-      <h4>Breakdown</h4>
-      <table style="width:100%;font-size:12px;border-collapse:collapse;">
-        <tr><td style="padding:3px 0;color:#718096;">Alerts triggered</td><td style="text-align:right;font-weight:700;color:${alertCnt>0?'#e53e3e':'#38a169'}">${alertCnt}</td></tr>
-        <tr><td style="padding:3px 0;color:#718096;">Abnormalities</td><td style="text-align:right;font-weight:700;">${abnCnt}</td></tr>
-        <tr><td style="padding:3px 0;color:#718096;">Annotations</td><td style="text-align:right;font-weight:700;">${annotCnt}</td></tr>
-        <tr><td style="padding:3px 0;color:#718096;">Total events</td><td style="text-align:right;font-weight:700;">${logs.length}</td></tr>
-      </table>
-    </div>
-  `;
-
-  // Annotations
-  const pAnnotations = modal.querySelector('#prm-panel-annotations');
-  const annotLogs = logs.filter(l => l.event_type === 'annotation');
-  if (annotLogs.length === 0) {
-    pAnnotations.innerHTML = `<div class="prm-panel-empty"><svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/></svg><p>No annotations recorded.</p></div>`;
-  } else {
-    pAnnotations.innerHTML = '';
-    annotLogs.forEach(l => pAnnotations.appendChild(makeLogEl(l)));
-  }
-
   // Abnormalities
   const pAbnorm = modal.querySelector('#prm-panel-abnormalities');
-  const abnLogs = logs.filter(l => abnTypes.includes(l.event_type));
-  if (abnLogs.length === 0) {
-    pAbnorm.innerHTML = `<div class="prm-panel-empty"><svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg><p>No abnormalities detected.</p></div>`;
-  } else {
-    pAbnorm.innerHTML = '<div style="margin-bottom:10px;">' + [...new Set(abnLogs.map(l=>l.event_type))].map(t => `<span class="prm-abnorm-chip">${abnLabels[t]||t} (${abnLogs.filter(l=>l.event_type===t).length})</span>`).join('') + '</div>';
-    abnLogs.forEach(l => pAbnorm.appendChild(makeLogEl(l)));
-  }
-
-  // Suspicious %
-  const pSusp = modal.querySelector('#prm-panel-suspicious');
-  const suspLogs = logs.filter(l => [
-    'phone_detected','multiple_faces','tab_blur','window_blur','fullscreen_exit',
-    'audio_threshold_exceeded','no_face','AI_PEOPLE','gaze_off_screen','audio_violation'
-  ].includes(l.event_type));
-  const barW = Math.min(100, suspPct);
-  pSusp.innerHTML = `
-    <div class="prm-score-card">
-      <h4>Suspicion Level</h4>
-      <p>${suspPct}%</p>
-      <div style="width:100%;height:12px;background:#e2e8f0;border-radius:999px;overflow:hidden;margin-top:8px;">
-        <div style="width:${barW}%;height:100%;border-radius:999px;background:${suspCls==='high'?'#e53e3e':suspCls==='medium'?'#d69e2e':'#38a169'};"></div>
-      </div>
-      <small style="margin-top:4px;display:block">${suspCls.toUpperCase()} — ${session.riskScore} raw pts</small>
-    </div>
-  `;
-  if (suspLogs.length === 0) {
-    pSusp.innerHTML += `<div class="prm-panel-empty"><p>No suspicious events logged.</p></div>`;
-  } else {
-    suspLogs.forEach(l => pSusp.appendChild(makeLogEl(l)));
+  if (pAbnorm) {
+    const abnLogs = logs.filter(l => abnTypes.includes(l.event_type));
+    if (abnLogs.length === 0) {
+      pAbnorm.innerHTML = `<div class="prm-panel-empty"><svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg><p>No abnormalities detected.</p></div>`;
+    } else {
+      pAbnorm.innerHTML = '<div style="margin-bottom:10px;">' + [...new Set(abnLogs.map(l=>l.event_type))].map(t => `<span class="prm-abnorm-chip">${abnLabels[t]||t} (${abnLogs.filter(l=>l.event_type===t).length})</span>`).join('') + '</div>';
+      abnLogs.forEach((l, i) => pAbnorm.appendChild(makeLogEl(l, i)));
+    }
   }
 
   // Alerts
   const pAlerts = modal.querySelector('#prm-panel-alerts');
-  const alertLogs = logs.filter(l => alertTypes.includes(l.event_type));
-  if (alertLogs.length === 0) {
-    pAlerts.innerHTML = `<div class="prm-panel-empty"><svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg><p>No alerts triggered during this attempt.</p></div>`;
-  } else {
-    pAlerts.innerHTML = '';
-    alertLogs.forEach(l => pAlerts.appendChild(makeLogEl(l)));
+  if (pAlerts) {
+    const alertLogs = logs.filter(l => alertTypes.includes(l.event_type));
+    if (alertLogs.length === 0) {
+      pAlerts.innerHTML = `<div class="prm-panel-empty"><svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg><p>No alerts triggered during this attempt.</p></div>`;
+    } else {
+      pAlerts.innerHTML = '';
+      alertLogs.forEach((l, index) => {
+        pAlerts.appendChild(makeLogEl(l, index));
+      });
+    }
+  }
+
+  // Verification
+  const pVerif = modal.querySelector('#prm-panel-verification');
+  if (pVerif) {
+    let vHtml = '';
+    if (session.verify_id_image) {
+      vHtml += `<div class="prm-score-card"><h4>ID Captured</h4><img src="${session.verify_id_image}" style="max-width:100%;border-radius:4px;margin-top:8px;"></div>`;
+    }
+    if (session.verify_signature_image) {
+      vHtml += `<div class="prm-score-card"><h4>Signature: ${session.verify_signature_name || 'Captured'}</h4><img src="${session.verify_signature_image}" style="max-width:100%;border-radius:4px;margin-top:8px;background:#fff;"></div>`;
+    }
+    if (!session.verify_id_image && !session.verify_signature_image) {
+      vHtml = `<div class="prm-panel-empty"><svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"></path><polyline points="22,6 12,13 2,6"></polyline></svg><p>No ID or Signature captured.</p></div>`;
+    }
+    pVerif.innerHTML = vHtml;
   }
 }
 
@@ -1412,27 +1492,27 @@ function injectProctorGuardTab(tabNav, quizId) {
     const st = document.createElement('style');
     st.id = 'pg-ext-styles';
     st.textContent = `
-      #proctorguard_tab_panel{font-family:'Lato','Open Sans',Arial,sans-serif;font-size:13px;color:#333;background:#fff;padding:28px 32px;line-height:1.5;}
+      #proctorguard_tab_panel{font-family:'Outfit','Plus Jakarta Sans',Arial,sans-serif;font-size:13px;color:#333;background:#fff;padding:28px 32px;line-height:1.5;}
       .pg-sec-title{font-size:16px;font-weight:700;color:#1a1a1a;margin:0 0 6px 0;display:flex;align-items:center;gap:6px;cursor:pointer;user-select:none;}
       .pg-arrow{font-size:10px;display:inline-block;transition:transform 0.2s;}
       .pg-divider{border:none;border-top:1px solid #e0e0e0;margin:20px 0;}
-      .pg-exam-warn{font-size:12px;color:#0770a3;font-style:italic;margin-bottom:18px;}
+      .pg-exam-warn{position:sticky;top:0;z-index:10;background:#e8eefd;border:1px solid #2563eb;color:#2563eb;padding:10px;border-radius:4px;font-size:13px;font-weight:600;margin-bottom:18px;}
       .pg-sub-title{font-size:14px;font-weight:700;color:#1a1a1a;margin:20px 0 8px 0;display:flex;align-items:center;gap:6px;cursor:pointer;user-select:none;}
-      .pg-note{font-size:12px;color:#0770a3;margin:6px 0 16px 0;}
+      .pg-note{font-size:12px;color:#2563eb;margin:6px 0 16px 0;}
       .pg-grid{display:flex;flex-wrap:wrap;gap:10px;margin-bottom:6px;}
       .pg-lbl{cursor:pointer;display:inline-block;position:relative;}
       .pg-chk{position:absolute;opacity:0;width:0;height:0;}
-      .pg-card{display:flex;flex-direction:column;align-items:center;justify-content:center;width:118px;min-height:108px;padding:14px 8px 10px;border:1.5px solid #d9d9d9;border-radius:4px;background:#fff;box-sizing:border-box;transition:background 0.12s,border-color 0.12s;text-align:center;user-select:none;}
+      .pg-card{display:flex;flex-direction:column;align-items:center;justify-content:center;width:118px;min-height:108px;padding:14px 8px 10px;border:1px solid #e2e8f0;border-radius:4px;background:#fff;box-sizing:border-box;transition:all 0.15s;text-align:center;user-select:none;}
       .pg-card:hover{border-color:#bbb;background:#fafafa;}
-      .pg-chk:checked+.pg-card{background:#373a3c;border-color:#55b813;box-shadow:0 0 0 1px #55b813;}
-      .pg-chk:checked+.pg-card svg{stroke:#55b813!important;}
-      .pg-chk:checked+.pg-card .pg-ct{color:#55b813;}
+      .pg-chk:checked+.pg-card{background:#e8eefd;border:2px solid #2563eb;}
+      .pg-chk:checked+.pg-card svg{stroke:#2563eb!important;}
+      .pg-chk:checked+.pg-card .pg-ct{color:#2563eb;}
       .pg-icon{width:38px;height:38px;margin-bottom:9px;display:flex;align-items:center;justify-content:center;}
       .pg-icon svg{width:34px;height:34px;stroke:#333;fill:none;stroke-width:1.75;stroke-linecap:round;stroke-linejoin:round;}
       .pg-ct{font-size:11.5px;font-weight:600;color:#333;line-height:1.3;}
       .pg-savebar{margin-top:28px;padding-top:16px;border-top:1px solid #e0e0e0;display:flex;align-items:center;gap:14px;justify-content:flex-end;}
-      #pg-save-btn{background:#2d7cc1;color:#fff;border:none;padding:9px 22px;font-size:13px;font-weight:700;border-radius:4px;cursor:pointer;font-family:inherit;}
-      #pg-save-btn:hover{background:#1a5fa0;}
+      #pg-save-btn{background:#2563eb;color:#fff;border:none;padding:9px 22px;font-size:13px;font-weight:700;border-radius:4px;cursor:pointer;font-family:inherit;}
+      #pg-save-btn:hover{background:#1d4ed8;}
       #pg-save-btn:disabled{background:#9db8d2;cursor:default;}
       #pg-save-ok{font-size:13px;color:#2e7d32;font-weight:600;display:none;}
       #pg-save-err{font-size:13px;color:#c0392b;font-weight:600;display:none;}
@@ -1485,8 +1565,9 @@ function injectProctorGuardTab(tabNav, quizId) {
   panel.innerHTML = `
     <div class="pg-sec-title" data-pg-body="pg-prof"><span class="pg-arrow">&#9660;</span>&nbsp;Saved Profiles</div>
     <div id="pg-prof">
-      <p class="pg-prof-note">You have not saved any profiles yet :(</p>
+      <p class="pg-prof-note" style="margin-bottom:8px;">You have not saved any profiles yet :(</p>
       <p class="pg-prof-sub">Saving ProctorGuard settings profiles allows you to apply your favorite exam settings with a single click.</p>
+      <button style="margin-top:14px;background:#fff;color:#2563eb;border:1px solid #2563eb;padding:6px 14px;border-radius:4px;cursor:pointer;font-weight:600;">Create profile</button>
     </div>
     <hr class="pg-divider">
     <div class="pg-sec-title" data-pg-body="pg-main"><span class="pg-arrow">&#9660;</span>&nbsp;ProctorGuard Exam Settings</div>

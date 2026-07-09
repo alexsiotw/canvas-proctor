@@ -10,9 +10,9 @@
   --text-primary: #2d3b45; /* Canvas dark charcoal text */
   --text-secondary: #4a5c68;
   --text-muted: #73818c;
-  --accent: #008ee2; /* Canvas blue */
-  --accent-hover: #007bc4;
-  --accent-glow: rgba(0, 142, 226, 0.15);
+  --accent: #2563eb; /* ProctorGuard brand blue */
+  --accent-hover: #1d4ed8;
+  --accent-glow: rgba(37, 99, 235, 0.15);
   --success: #008a00; /* Canvas green */
   --success-bg: rgba(0, 138, 0, 0.08);
   --danger: #ee0612; /* Canvas red */
@@ -29,7 +29,7 @@
   --shadow: 0 1px 3px rgba(0, 0, 0, 0.1), 0 1px 2px rgba(0, 0, 0, 0.05);
   --shadow-lg: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
   --transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
-  --accent-gradient: linear-gradient(135deg, #008ee2 0%, #005f9e 100%);
+  --accent-gradient: linear-gradient(135deg, #2563eb 0%, #1d4ed8 100%);
 }
 
 * {

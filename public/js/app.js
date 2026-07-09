@@ -1893,7 +1893,7 @@ function showCreateExamModal(examId = null) {
                             <div>
                                 <label class="switch-container" style="position: relative; display: inline-block; width: 44px; height: 24px; cursor: pointer;">
                                     <input type="checkbox" id="chk-seb" ${exam && exam.require_seb ? 'checked' : ''} onchange="toggleSebSection()" style="opacity: 0; width: 0; height: 0;" />
-                                    <span class="switch-slider" style="position: absolute; top: 0; left: 0; right: 0; bottom: 0; background-color: ${exam && exam.require_seb ? '#008ee2' : '#cbd5e1'}; transition: .3s; border-radius: 24px;"></span>
+                                    <span class="switch-slider" style="position: absolute; top: 0; left: 0; right: 0; bottom: 0; background-color: ${exam && exam.require_seb ? '#2563eb' : '#cbd5e1'}; transition: .3s; border-radius: 24px;"></span>
                                 </label>
                             </div>
                         </div>
@@ -1918,7 +1918,7 @@ function showCreateExamModal(examId = null) {
                             <div>
                                 <label class="switch-container" style="position: relative; display: inline-block; width: 44px; height: 24px; cursor: pointer;">
                                     <input type="checkbox" id="chk-extension" ${!exam || exam.require_extension ? 'checked' : ''} onchange="toggleExtensionSection()" style="opacity: 0; width: 0; height: 0;" />
-                                    <span class="switch-slider" style="position: absolute; top: 0; left: 0; right: 0; bottom: 0; background-color: ${!exam || exam.require_extension ? '#008ee2' : '#cbd5e1'}; transition: .3s; border-radius: 24px;"></span>
+                                    <span class="switch-slider" style="position: absolute; top: 0; left: 0; right: 0; bottom: 0; background-color: ${!exam || exam.require_extension ? '#2563eb' : '#cbd5e1'}; transition: .3s; border-radius: 24px;"></span>
                                 </label>
                             </div>
                         </div>
@@ -1948,7 +1948,7 @@ function showCreateExamModal(examId = null) {
                             <div>
                                 <label class="switch-container" style="position: relative; display: inline-block; width: 44px; height: 24px; cursor: pointer;">
                                     <input type="checkbox" id="chk-companion" ${exam && exam.require_companion_app ? 'checked' : ''} onchange="toggleCompanionSection()" style="opacity: 0; width: 0; height: 0;" />
-                                    <span class="switch-slider" style="position: absolute; top: 0; left: 0; right: 0; bottom: 0; background-color: ${exam && exam.require_companion_app ? '#008ee2' : '#cbd5e1'}; transition: .3s; border-radius: 24px;"></span>
+                                    <span class="switch-slider" style="position: absolute; top: 0; left: 0; right: 0; bottom: 0; background-color: ${exam && exam.require_companion_app ? '#2563eb' : '#cbd5e1'}; transition: .3s; border-radius: 24px;"></span>
                                 </label>
                             </div>
                         </div>
@@ -2064,7 +2064,7 @@ function showCreateExamModal(examId = null) {
         const container = document.getElementById('extension-options-container');
         if (chk && container) {
             container.style.display = chk.checked ? 'block' : 'none';
-            slider.style.backgroundColor = chk.checked ? '#008ee2' : '#cbd5e1';
+            slider.style.backgroundColor = chk.checked ? '#2563eb' : '#cbd5e1';
         }
     };
 
@@ -2074,7 +2074,7 @@ function showCreateExamModal(examId = null) {
         const container = document.getElementById('seb-options-container');
         if (chk && container) {
             container.style.display = chk.checked ? 'block' : 'none';
-            slider.style.backgroundColor = chk.checked ? '#008ee2' : '#cbd5e1';
+            slider.style.backgroundColor = chk.checked ? '#2563eb' : '#cbd5e1';
         }
     };
 
@@ -2084,7 +2084,7 @@ function showCreateExamModal(examId = null) {
         const container = document.getElementById('companion-options-container');
         if (chk && container) {
             container.style.display = chk.checked ? 'block' : 'none';
-            slider.style.backgroundColor = chk.checked ? '#008ee2' : '#cbd5e1';
+            slider.style.backgroundColor = chk.checked ? '#2563eb' : '#cbd5e1';
         }
     };
 

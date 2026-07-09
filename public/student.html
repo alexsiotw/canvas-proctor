@@ -21,7 +21,7 @@
       }).catch(err => {});
     });
   </script>
-  <link rel="stylesheet" href="/css/styles.css?v=1.0.7">
+  <link rel="stylesheet" href="/css/styles.css?v=1.0.8">
   <script src="/socket.io/socket.io.js"></script>
   <style>
     body, html { margin: 0; padding: 0; min-height: 100%; overflow: auto; background: #f3f4f6; } /* Light gray background */
@@ -47,7 +47,8 @@
         font-size: 16px;
         font-weight: 700;
         display: flex;
-        align-items: center;
+        flex-direction: column;
+        align-items: stretch;
         gap: 12px;
         border-bottom: 1px solid #e5e7eb;
     }
@@ -56,41 +57,85 @@
         min-height: 520px;
     }
     .setup-sidebar {
-        width: 250px;
-        background: #f9fafb;
+        width: 270px;
+        background: #ffffff;
         border-right: 1px solid #e5e7eb;
         display: flex;
         flex-direction: column;
     }
-    .sidebar-step {
-        padding: 18px 20px;
-        font-size: 13px;
-        font-weight: 600;
+    .sidebar-header {
+        padding: 16px 20px;
+        font-size: 14px;
+        font-weight: 700;
         color: #4b5563;
-        border-bottom: 1px solid #f3f4f6;
+        border-bottom: 1px solid #f1f2f4;
         display: flex;
         align-items: center;
-        gap: 10px;
+        gap: 8px;
+    }
+    .sidebar-step {
+        padding: 14px 20px;
+        font-size: 14px;
+        font-weight: 500;
+        color: #6b7280;
+        border-bottom: 1px solid #f1f2f4;
+        border-left: 3px solid transparent;
+        display: flex;
+        flex-direction: row;
+        flex-wrap: nowrap;
+        align-items: center;
+        justify-content: flex-start;
         position: relative;
-        transition: all 0.3s ease;
+        transition: all 0.2s ease;
+        gap: 12px;
     }
     .sidebar-step.active {
-        background: #eff6ff; /* Soft academic blue */
-        color: #1d4ed8; /* Royal blue */
-    }
-    .sidebar-step.active::before {
-        content: '';
-        position: absolute;
-        left: 0;
-        top: 0;
-        bottom: 0;
-        width: 4px;
-        background: #1d4ed8;
-        border-top-right-radius: 4px;
-        border-bottom-right-radius: 4px;
+        color: #111827;
+        font-weight: 600;
+        border-left: 3px solid #2563eb;
+        background: #eff4ff;
     }
     .sidebar-step.completed {
-        color: #059669; /* Success green */
+        color: #111827;
+        font-weight: 600;
+    }
+    .step-circle {
+        width: 22px;
+        height: 22px;
+        border-radius: 50%;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 11px;
+        font-weight: 700;
+        flex-shrink: 0;
+        border: 1px solid #d1d5db;
+        color: #9ca3af;
+    }
+    .sidebar-step.active .step-circle {
+        background: #2563eb;
+        border-color: #2563eb;
+        color: #ffffff;
+    }
+    .sidebar-step.completed .step-circle {
+        background: #10b981;
+        border-color: #10b981;
+        color: #ffffff;
+    }
+    .step-badge {
+        margin-left: auto;
+        font-size: 11px;
+        font-weight: 600;
+        padding: 4px 10px;
+        border-radius: 12px;
+    }
+    .step-badge-progress {
+        background: #dbeafe;
+        color: #1d4ed8;
+    }
+    .step-badge-done {
+        color: #059669;
+        font-size: 12px;
     }
     .setup-content {
         flex: 1;
@@ -259,7 +304,13 @@
 
   <div id="setup-container">
       <div class="setup-header">
-          <span><img src="icons/block-navigation.svg" style="width:16px; height:16px; vertical-align:middle; margin-right:5px; filter: brightness(0) invert(1);" /> ProctorGuard Browser Check</span>
+          <div style="display: flex; justify-content: space-between; align-items: center;">
+              <span><img src="icons/block-navigation.svg" style="width:16px; height:16px; vertical-align:middle; margin-right:5px; filter: brightness(0) invert(1);" /> ProctorGuard Browser Check</span>
+              <span id="setup-time-est" style="font-size: 13px; font-weight: normal; color: #6b7280;">~3 min remaining</span>
+          </div>
+          <div style="width: 100%; height: 6px; background: #e5e7eb; border-radius: 3px; overflow: hidden;">
+              <div id="setup-progress-fill" style="width: 10%; height: 100%; background: #10b981; transition: width 0.3s ease;"></div>
+          </div>
       </div>
       <!-- iOS third-party cookie check warning -->
       <div id="ios-cookie-warning" style="display: none; background: #fffbeb; border-bottom: 1px solid #fef3c7; padding: 15px 20px; color: #b45309; font-size: 13px; line-height: 1.5; font-family: sans-serif;">
@@ -275,18 +326,22 @@
       </div>
       <div class="setup-body">
           <div class="setup-sidebar" id="setup-sidebar">
-              <div class="sidebar-step active" id="step-nav-1">STEP 1: NETWORK CHECK</div>
-              <div class="sidebar-step" id="step-nav-2">STEP 2: MICROPHONE CHECK</div>
-              <div class="sidebar-step" id="step-nav-3">STEP 3: WEBCAM CHECK</div>
-              <div class="sidebar-step" id="step-nav-11">STEP 3.5: ID VERIFICATION</div>
-              <div class="sidebar-step" id="step-nav-12">STEP 3.6: SIGNATURE AGREEMENT</div>
-              <div class="sidebar-step" id="step-nav-4">STEP 4: ADDITIONAL INSTRUCTIONS</div>
-              <div class="sidebar-step" id="step-nav-5">STEP 5: GUIDELINES + TIPS</div>
-              <div class="sidebar-step" id="step-nav-6">STEP 6: ROOM SCAN</div>
-              <div class="sidebar-step" id="step-nav-10">STEP 6.5: SECONDARY MOBILE CAMERA</div>
-              <div class="sidebar-step" id="step-nav-7">STEP 7: SCREEN SHARE</div>
-              <div class="sidebar-step" id="step-nav-8">STEP 8: FULLSCREEN MODE</div>
-              <div class="sidebar-step" id="step-nav-9">STEP 9: BEGIN EXAM</div>
+              <div class="sidebar-header">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="8" y1="6" x2="21" y2="6"></line><line x1="8" y1="12" x2="21" y2="12"></line><line x1="8" y1="18" x2="21" y2="18"></line><line x1="3" y1="6" x2="3.01" y2="6"></line><line x1="3" y1="12" x2="3.01" y2="12"></line><line x1="3" y1="18" x2="3.01" y2="18"></line></svg>
+                  Pre-check steps — improved sidebar
+              </div>
+              <div class="sidebar-step active" id="step-nav-1"></div>
+              <div class="sidebar-step" id="step-nav-2"></div>
+              <div class="sidebar-step" id="step-nav-3"></div>
+              <div class="sidebar-step" id="step-nav-11"></div>
+              <div class="sidebar-step" id="step-nav-12"></div>
+              <div class="sidebar-step" id="step-nav-4"></div>
+              <div class="sidebar-step" id="step-nav-5"></div>
+              <div class="sidebar-step" id="step-nav-6"></div>
+              <div class="sidebar-step" id="step-nav-10"></div>
+              <div class="sidebar-step" id="step-nav-7"></div>
+              <div class="sidebar-step" id="step-nav-8"></div>
+              <div class="sidebar-step" id="step-nav-9"></div>
           </div>
           <div class="setup-content" id="setup-content">
               <!-- Dynamically populated step content -->
@@ -408,7 +463,7 @@
       </div>
   </div>
 
-  <script src="/js/student.js?v=1.0.7"></script>
+  <script src="/js/student.js?v=1.0.9"></script>
 </body>
 
 </html>

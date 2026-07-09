@@ -736,12 +736,12 @@ app.get('/api/canvas-native/session-report', async (req, res) => {
         let sessionsResult;
         if (student_id) {
             sessionsResult = await pool.query(
-                'SELECT id, student_canvas_id, student_name, status, attempt_number, started_at, end_time, drive_file_id, mobile_drive_file_id, room_scan_drive_file_id, video_archived, mime_type FROM exam_sessions WHERE exam_id = $1 AND student_canvas_id = $2 ORDER BY attempt_number DESC',
+                'SELECT id, student_canvas_id, student_name, status, attempt_number, started_at, end_time, drive_file_id, mobile_drive_file_id, room_scan_drive_file_id, video_archived, mime_type, verify_id_image, verify_signature_image, verify_signature_name FROM exam_sessions WHERE exam_id = $1 AND student_canvas_id = $2 ORDER BY attempt_number DESC',
                 [exam_id, String(student_id)]
             );
         } else {
             sessionsResult = await pool.query(
-                'SELECT id, student_canvas_id, student_name, status, attempt_number, started_at, end_time, drive_file_id, mobile_drive_file_id, room_scan_drive_file_id, video_archived, mime_type FROM exam_sessions WHERE exam_id = $1 ORDER BY started_at DESC',
+                'SELECT id, student_canvas_id, student_name, status, attempt_number, started_at, end_time, drive_file_id, mobile_drive_file_id, room_scan_drive_file_id, video_archived, mime_type, verify_id_image, verify_signature_image, verify_signature_name FROM exam_sessions WHERE exam_id = $1 ORDER BY started_at DESC',
                 [exam_id]
             );
         }
@@ -759,8 +759,8 @@ app.get('/api/canvas-native/session-report', async (req, res) => {
             for (const log of logs) {
                 if (log.event_type === 'phone_detected') riskScore += 50;
                 else if (log.event_type === 'multiple_faces') riskScore += 30;
-                else if (log.event_type === 'tab_switched' || log.event_type === 'tab_blurred') riskScore += 15;
-                else if (log.event_type === 'audio_threshold_exceeded') riskScore += 10;
+                else if (log.event_type === 'tab_blur' || log.event_type === 'window_blur' || log.event_type === 'fullscreen_exit') riskScore += 15;
+                else if (log.event_type === 'audio_threshold_exceeded' || log.event_type === 'audio_violation') riskScore += 10;
                 else if (log.event_type === 'no_face' || log.event_type === 'AI_PEOPLE') riskScore += 10;
                 else if (log.event_type === 'gaze_off_screen') riskScore += 10;
             }

@@ -27,7 +27,8 @@
         "*://canvas.siotw.net/courses/*/gradebook/speed_grader*"
       ],
       "js": ["content.js"],
-      "run_at": "document_start"
+      "run_at": "document_start",
+      "all_frames": true
     }
   ],
   "action": {
