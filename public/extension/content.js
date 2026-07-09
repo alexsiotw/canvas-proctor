@@ -224,9 +224,36 @@ function bgFetch(url) {
   });
 }
 
+// Detect whether the current Canvas page is being viewed by a teacher/TA/admin,
+// as opposed to a student. Read via DOM (Canvas's ENV JS object lives in the page's
+// main world and isn't reachable from this isolated-world content script), so we
+// parse the inline ENV script tag Canvas always renders server-side.
+function isCanvasTeacherContext() {
+  try {
+    const scripts = document.querySelectorAll('script:not([src])');
+    for (const s of scripts) {
+      const text = s.textContent;
+      if (!text || !text.includes('current_user_roles')) continue;
+      const match = text.match(/"current_user_roles"\s*:\s*(\[[^\]]*\])/);
+      if (match) {
+        const roles = JSON.parse(match[1]);
+        return roles.some(r => ['teacher', 'ta', 'admin', 'designer'].includes(r));
+      }
+    }
+  } catch (e) { /* fall through to DOM heuristic below */ }
+
+  // Fallback: elements Canvas only renders for users with edit/manage permissions on the quiz.
+  return !!document.querySelector('a.edit_assignment_link, a[href*="/moderate"], .quiz-edit-button, #quiz-edit-link');
+}
+
 // --- Exam Review Center Integration ---
 async function initExamReviewCenterIntegration() {
   const url = window.location.href;
+
+  if (!isCanvasTeacherContext()) {
+    console.log('[ProctorGuard RC] Student context detected, skipping Review Center integration.');
+    return;
+  }
 
   // Must contain /quizzes/<id> but NOT be on take/history/edit/moderation subpages
   if (!url.includes('/quizzes/')) {
@@ -578,17 +605,19 @@ function openExamReviewCenterModal(sessions, loadError) {
       <div class="prc-section-header">
         <div class="prc-sub-row-right" id="prc-row-count"></div>
         <h2>Completed Attempts</h2>
-        <p>Retention Period: <strong>6 months</strong></p>
+        <p>Proctored exam sessions for this quiz</p>
       </div>
       <div class="prc-table-area">
         <table class="prc-data-table">
           <thead>
             <tr>
+              <th class="icon-col"><input type="checkbox" class="prc-row-check-all" /></th>
+              <th class="icon-col"></th>
               <th>Student</th>
               <th>Submitted</th>
-              <th>Risk</th>
+              <th>Recordings</th>
               <th>Alerts</th>
-              <th>Risk Level</th>
+              <th>Risk</th>
               <th style="width:80px"></th>
             </tr>
           </thead>
@@ -632,18 +661,18 @@ function updateReviewCenterModalBody(modalEl, sessions, loadError) {
   if (!tbody) return;
 
   if (loadError) {
-    tbody.innerHTML = `<tr><td colspan="11"><div class="prc-empty-state"><svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg><p>${loadError}</p><small>Check ProctorGuard server connection</small></div></td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="8"><div class="prc-empty-state"><svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg><p>${loadError}</p><small>Check ProctorGuard server connection</small></div></td></tr>`;
     return;
   }
   if (sessions === null) {
-    tbody.innerHTML = `<tr><td colspan="11"><div class="prc-empty-state"><p>Loading student proctored reports...</p></div></td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="8"><div class="prc-empty-state"><p>Loading student proctored reports...</p></div></td></tr>`;
     return;
   }
 
   if (rowCount) rowCount.textContent = `Rows per page: 25   1${sessions.length > 0 ? `–${sessions.length}` : ''} of ${sessions.length}`;
 
   if (sessions.length === 0) {
-    tbody.innerHTML = `<tr><td colspan="11"><div class="prc-empty-state"><svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg><p>No proctored attempts recorded for this exam yet.</p><small>Check back later to see if there are any changes</small></div></td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="8"><div class="prc-empty-state"><svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg><p>No proctored attempts recorded for this exam yet.</p><small>Check back later to see if there are any changes</small></div></td></tr>`;
     return;
   }
 
@@ -662,6 +691,12 @@ function updateReviewCenterModalBody(modalEl, sessions, loadError) {
 
     const tr = document.createElement('tr');
     tr.innerHTML = `
+      <td class="icon-col"><input type="checkbox" class="prc-row-check" /></td>
+      <td class="icon-col">
+        <button class="prc-eye-btn prc-open-detail" data-student-id="${s.student_canvas_id}" title="View session detail">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path><circle cx="12" cy="12" r="3"></circle></svg>
+        </button>
+      </td>
       <td>
         <div style="font-weight:700;color:#1a202c;line-height:1.2;margin-bottom:2px;">${s.student_name.split(' ')[0]}</div>
         <div style="font-weight:700;color:#1a202c;line-height:1.2;">${s.student_name.split(' ').slice(1).map(n=>n[0]+'.').join(' ')}</div>
@@ -671,17 +706,7 @@ function updateReviewCenterModalBody(modalEl, sessions, loadError) {
         <div style="color:#4a5568;font-size:13px;line-height:1.4;">${new Date(s.started_at).toLocaleTimeString('en-US', {hour:'numeric',minute:'2-digit'}).toLowerCase()}</div>
       </td>
       <td>
-        <div style="display:flex; gap:3px; width:75px; height:6px; border-radius:3px; overflow:hidden;">
-          ${(() => {
-            let html = '';
-            const segCount = alertCount === 0 && abnormCount === 0 ? 5 : Math.min(5, Math.max(1, Math.ceil(alertCount / 4)));
-            const actualColor = (alertCount === 0 && abnormCount === 0) ? '#38a169' : (alertCount >= 3 ? '#e53e3e' : '#dd6b20');
-            for(let i=0; i<5; i++) {
-               html += `<div style="flex:1; border-radius:3px; background:${i < segCount ? actualColor : '#f1f5f9'}"></div>`;
-            }
-            return html;
-          })()}
-        </div>
+        <div class="prc-icon-row">${iconRow}</div>
       </td>
       <td>
         <div style="display:inline-flex; flex-direction:column; align-items:center; justify-content:center; padding:4px 10px; border-radius:12px; background:${alertCount>=10 ? '#fff5f5' : alertCount>0 ? '#fffaf0' : '#f0fff4'}; color:${alertCount>=10 ? '#c53030' : alertCount>0 ? '#b7791f' : '#2f855a'}; font-size:11px; font-weight:700; line-height:1.2;">
@@ -690,8 +715,9 @@ function updateReviewCenterModalBody(modalEl, sessions, loadError) {
         </div>
       </td>
       <td>
-        <div style="display:inline-flex; align-items:center; justify-content:center; padding:3px 8px; border-radius:12px; background:${suspPct>=70 ? '#fff5f5' : suspPct>=30 ? '#fffaf0' : '#f0fff4'}; border:1px solid ${suspPct>=70 ? '#feb2b2' : suspPct>=30 ? '#fbd38d' : '#c6f6d5'}; color:${suspPct>=70 ? '#c53030' : suspPct>=30 ? '#dd6b20' : '#276749'}; font-size:12px; font-weight:700;">
-          ${suspPct}%
+        <div class="prc-susp-wrap">
+          <div class="prc-susp-bar-outer"><div class="prc-susp-bar-inner ${suspClass}" style="width:${suspPct}%;"></div></div>
+          <span style="color:${suspColor}; font-size:12px; font-weight:700;">${suspPct}%</span>
         </div>
       </td>
       <td style="text-align:right;">
