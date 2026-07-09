@@ -2874,63 +2874,72 @@ function setupAudioAnalysis(stream) {
         const analyser = audioCtx.createAnalyser();
         const source = audioCtx.createMediaStreamSource(stream);
         source.connect(analyser);
-        analyser.fftSize = 256;
-        const dataArray = new Uint8Array(analyser.frequencyBinCount);
-        
+        analyser.fftSize = 1024;
+        analyser.smoothingTimeConstant = 0.4;
+        const timeDomainArray = new Uint8Array(analyser.fftSize);
+
         let consecutiveLoudFrames = 0;
         let consecutiveQuietFrames = 0;
-        const threshold = 15; // Lowered threshold for higher sensitivity (was 30)
+        // RMS-based threshold (0-100 scale). Ambient hum/fan noise/mic hiss typically sits under ~4-6;
+        // normal speaking voice at a laptop mic typically reads 12+.
+        const RMS_THRESHOLD = 10;
+        // Require ~500ms of sustained loud audio before flagging, so a single cough/click/knock
+        // doesn't trigger a false "talking" violation.
+        const LOUD_FRAMES_TO_TRIGGER = 5;
+        // ~2s of quiet before considering speech ended (unchanged behavior)
+        const QUIET_FRAMES_TO_RESET = 20;
         let logCounter = 0;
-        
-        console.log("[Audio] Initializing voice activity analysis. Threshold:", threshold);
-        
+
+        console.log("[Audio] Initializing voice activity analysis. RMS threshold:", RMS_THRESHOLD);
+
         talkingDetectionInterval = setInterval(() => {
             if (isExamCompleted) {
                 clearInterval(talkingDetectionInterval);
                 return;
             }
-            
+
             if (audioCtx.state === 'suspended') {
                 audioCtx.resume();
             }
-            
-            analyser.getByteFrequencyData(dataArray);
-            let max = 0;
-            for (let i = 0; i < dataArray.length; i++) {
-                if (dataArray[i] > max) max = dataArray[i];
+
+            analyser.getByteTimeDomainData(timeDomainArray);
+            let sumSquares = 0;
+            for (let i = 0; i < timeDomainArray.length; i++) {
+                const normalized = (timeDomainArray[i] - 128) / 128; // -1..1
+                sumSquares += normalized * normalized;
             }
-            
+            const rms = Math.sqrt(sumSquares / timeDomainArray.length) * 100; // 0..100 scale
+
             logCounter++;
-            if (logCounter % 50 === 0) { // Log peak amplitude every 5 seconds to console for debugging
-                console.log(`[Audio] Monitoring... Peak amplitude in last 5s: ${max} (threshold is ${threshold})`);
+            if (logCounter % 50 === 0) { // Log RMS level every 5 seconds to console for debugging
+                console.log(`[Audio] Monitoring... RMS in last 5s: ${rms.toFixed(1)} (threshold is ${RMS_THRESHOLD})`);
             }
-            
-            if (max > threshold) {
-                console.log(`[Audio] Sound level (${max}) exceeds threshold (${threshold})`);
+
+            if (rms > RMS_THRESHOLD) {
                 consecutiveLoudFrames++;
                 consecutiveQuietFrames = 0;
             } else {
                 consecutiveQuietFrames++;
                 consecutiveLoudFrames = 0;
             }
-            
-            // Speech started: 2 consecutive frames at 100ms interval (200ms)
-            if (!isCurrentlyTalking && consecutiveLoudFrames >= 2) {
+
+            // Speech started: sustained loud frames at 100ms interval
+            if (!isCurrentlyTalking && consecutiveLoudFrames >= LOUD_FRAMES_TO_TRIGGER) {
                 isCurrentlyTalking = true;
                 talkingStartTimestamp = new Date();
-                console.log(`[Audio] Voice activity detected (max amplitude: ${max})...`);
+                console.log(`[Audio] Voice activity detected (RMS: ${rms.toFixed(1)})...`);
             }
-            
-            // Speech ended: 20 consecutive quiet frames (2.0 seconds of silence)
-            if (isCurrentlyTalking && consecutiveQuietFrames >= 20) {
+
+            // Speech ended: sustained quiet frames
+            if (isCurrentlyTalking && consecutiveQuietFrames >= QUIET_FRAMES_TO_RESET) {
                 isCurrentlyTalking = false;
-                const duration = Math.round((new Date() - talkingStartTimestamp) / 1000) - 2;
+                const duration = Math.round((new Date() - talkingStartTimestamp) / 1000) - Math.round(QUIET_FRAMES_TO_RESET / 10);
                 const finalDuration = Math.max(1, duration);
                 const startTimeStr = talkingStartTimestamp.toLocaleTimeString();
                 logProctorEvent('audio_violation', `Talking/Voice detected starting at ${startTimeStr} (Duration: ${finalDuration}s)`);
             }
         }, 100); // 100ms interval for high-resolution tracking
-        
+
     } catch (e) {
         console.warn("[Audio] Failed to setup audio analysis:", e);
     }

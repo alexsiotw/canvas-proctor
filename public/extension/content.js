@@ -1576,9 +1576,9 @@ function injectProctorGuardTab(tabNav, quizId) {
       <div class="pg-sub-title" data-pg-body="pg-rec"><span class="pg-arrow">&#9660;</span>&nbsp;Recording Options</div>
       <div id="pg-rec">
         <div class="pg-grid">
-          ${card('pg_cam','cam','Record Video')}${card('pg_mic','mic','Record Audio')}${card('pg_screen','screen','Record Screen')}${card('pg_traffic','traffic','Record Web Traffic')}${card('pg_desk','desk','Record Desk')}
+          ${card('pg_cam','cam','Record Video')}${card('pg_mic','mic','Record Audio')}${card('pg_screen','screen','Record Screen')}${card('pg_traffic','traffic','Record Web Traffic')}${card('pg_desk','desk','Secondary Mobile Camera')}
         </div>
-        <p class="pg-note" data-pg-desc="rec">Record Desk will require the candidate to show their entire exam environment at intervals based on the option selected.</p>
+        <p class="pg-note" data-pg-desc="rec">Secondary Mobile Camera will require the candidate to show their entire exam environment at intervals based on the option selected.</p>
       </div>
       <div class="pg-sub-title" data-pg-body="pg-lock"><span class="pg-arrow">&#9660;</span>&nbsp;Lock Down Options</div>
       <div id="pg-lock">
@@ -1680,7 +1680,7 @@ function injectProctorGuardTab(tabNav, quizId) {
     pg_mic: "Record Audio will record the candidate's microphone audio during the exam.",
     pg_screen: "Record Screen will record the candidate's desktop screen during the exam.",
     pg_traffic: "Record Web Traffic will capture all network requests and URLs visited by the candidate during the exam.",
-    pg_desk: "Record Desk will require the candidate to show their entire exam environment at intervals based on the option selected.",
+    pg_desk: "Secondary Mobile Camera will require the candidate to show their entire exam environment at intervals based on the option selected.",
     pg_fs: "Force Full Screen requires the exam to be taken in full screen mode, preventing access to other apps.",
     pg_one: "Only One Screen prevents candidates from using dual or multiple monitor setups.",
     pg_ntab: "Disable New Tabs prevents candidates from opening new browser tabs or windows during the exam.",
@@ -1701,7 +1701,7 @@ function injectProctorGuardTab(tabNav, quizId) {
   };
 
   const defaults = {
-    rec: "Record Desk will require the candidate to show their entire exam environment at intervals based on the option selected.",
+    rec: "Secondary Mobile Camera will require the candidate to show their entire exam environment at intervals based on the option selected.",
     lock: "Close Open Tabs prevents access to unauthorized material by requiring any other webpages to be closed before starting the exam.",
     verify: "These options determine what will be verified prior to the exam.",
     tools: "These options enable helper tools inside the quiz player interface."
