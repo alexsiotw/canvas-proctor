@@ -517,15 +517,15 @@ function updateSidebarNav() {
                 navEl.classList.add('completed');
                 circleHtml = `<div class="step-circle"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg></div>`;
                 if (stepItem.id === 1 && window.networkLatency) {
-                    rightBadge = `<div class="step-badge step-badge-done">${window.networkLatency}ms</div>`;
+                    rightBadge = `<div class="step-badge step-badge-done">${window.networkLatency}ms &check;</div>`;
                 } else {
                     rightBadge = ``;
                 }
             } else {
                 navEl.classList.remove('active', 'completed');
             }
-            
-            navEl.innerHTML = `${circleHtml} <span>${stepNameStr}</span> ${rightBadge}`;
+
+            navEl.innerHTML = `<div class="step-row-left">${circleHtml} <span>${stepNameStr}</span></div> ${rightBadge}`;
             visualIndex++;
         }
     });
