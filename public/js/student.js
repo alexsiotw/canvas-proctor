@@ -1,7 +1,7 @@
 // Debug logging is off by default: it's an exam-integrity page, and a student with
 // devtools open should not be able to see detection state, violation events, or
 // what the proctoring system just flagged in real time.
-const PG_DEBUG = false;
+const PG_DEBUG = true; // TEMPORARY — flip back to false once the setup-wizard-reappearing bug is found
 if (!PG_DEBUG) {
   console.log = function () {};
 }
