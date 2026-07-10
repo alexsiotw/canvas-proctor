@@ -1279,7 +1279,12 @@ async function verifyStudentExamAccess(exam, userId, ltiSession) {
         ...exam,
         auto_login_user_id,
         auto_login_expires,
-        auto_login_signature
+        auto_login_signature,
+        // Canvas's own quizzes_controller.rb (self-hosted, patched) checks this exact
+        // param to bypass its native require_lockdown_browser gate on /take page loads
+        // that come from us. Without it, Canvas re-triggers its own LDB redirect on
+        // every iframe load of the quiz, colliding with our own launch flow in a loop.
+        secure_proctor_secret: CANVAS_LAUNCH_SECRET
     };
 }
 

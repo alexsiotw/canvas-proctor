@@ -1545,11 +1545,16 @@ async function startMainExamSession() {
             } catch(e) {}
         }
 
-        // NOTE: a "&secure_proctor=<static secret>" param used to be appended here.
-        // Removed during the PG_SHARED_SECRET retirement — nothing server-side ever
-        // read it (grepped server.js/extension/), so it was leaking the secret to
-        // every student's browser and Canvas iframe URL bar for zero functional gain.
+        // This param is read by Canvas's OWN quizzes_controller.rb (self-hosted, custom
+        // patched), not by our server — it's Canvas's native bypass for its
+        // require_lockdown_browser gate on /take page loads. Without it, Canvas re-fires
+        // its own LDB redirect on every iframe load of the quiz, looping against our flow.
+        // Value comes from the server (examConfig.secure_proctor_secret) rather than being
+        // hardcoded here, matching CANVAS_LAUNCH_SECRET server-side.
         quizUrl += (quizUrl.includes('?') ? '&' : '?') + `proctor_session_token=${encodeURIComponent(sessionToken)}`;
+        if (examConfig.secure_proctor_secret) {
+            quizUrl += `&secure_proctor=${encodeURIComponent(examConfig.secure_proctor_secret)}`;
+        }
         if (sessionInfo.auto_login_signature) {
             quizUrl += `&auto_login_user_id=${encodeURIComponent(sessionInfo.auto_login_user_id)}&auto_login_expires=${encodeURIComponent(sessionInfo.auto_login_expires)}&auto_login_signature=${encodeURIComponent(sessionInfo.auto_login_signature)}`;
         }
