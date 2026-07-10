@@ -1,0 +1,368 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Secure Exam Proctor</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body, html {
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            background: #1e293b;
+            color: #f1f5f9;
+            display: flex;
+            flex-direction: column;
+        }
+        #toolbar {
+            height: 48px;
+            background: #0f172a;
+            border-bottom: 1px solid #334155;
+            display: flex;
+            align-items: center;
+            padding: 0 16px;
+            gap: 12px;
+            user-select: none;
+        }
+        .nav-btn {
+            background: transparent;
+            border: none;
+            color: #94a3b8;
+            width: 32px;
+            height: 32px;
+            border-radius: 6px;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 16px;
+            transition: all 0.2s;
+        }
+        .nav-btn:hover {
+            background: #1e293b;
+            color: #f1f5f9;
+        }
+        .nav-btn:disabled {
+            color: #475569;
+            cursor: not-allowed;
+            background: transparent;
+        }
+        #address-container {
+            flex: 1;
+            position: relative;
+            display: flex;
+            align-items: center;
+        }
+        #address-bar {
+            width: 100%;
+            height: 32px;
+            background: #1e293b;
+            border: 1px solid #334155;
+            border-radius: 6px;
+            color: #cbd5e1;
+            padding: 0 12px;
+            font-size: 13px;
+            outline: none;
+            transition: all 0.2s;
+        }
+        #address-bar:focus {
+            border-color: #008ee2;
+            background: #0f172a;
+            color: #f1f5f9;
+        }
+        #resources-btn {
+            background: #008ee2;
+            color: white;
+            border: none;
+            padding: 0 16px;
+            height: 32px;
+            border-radius: 6px;
+            font-size: 12px;
+            font-weight: 600;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            transition: all 0.2s;
+        }
+        #resources-btn:hover {
+            background: #007bc4;
+        }
+        #resources-menu {
+            display: none;
+            position: absolute;
+            top: 40px;
+            right: 0;
+            background: #0f172a;
+            border: 1px solid #334155;
+            border-radius: 6px;
+            width: 260px;
+            padding: 8px;
+            box-shadow: 0 10px 25px rgba(0,0,0,0.5);
+            z-index: 999999;
+            flex-direction: column;
+            gap: 4px;
+        }
+        .menu-item {
+            width: 100%;
+            text-align: left;
+            background: transparent;
+            border: none;
+            color: #cbd5e1;
+            padding: 8px 10px;
+            border-radius: 4px;
+            font-size: 12px;
+            cursor: pointer;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+            transition: all 0.2s;
+        }
+        .menu-item:hover {
+            background: #1e293b;
+            color: white;
+        }
+        #webview-container {
+            flex: 1;
+            position: relative;
+            background: white;
+        }
+        webview {
+            width: 100%;
+            height: 100%;
+            border: none;
+            background: white;
+        }
+    </style>
+</head>
+<body>
+    <div id="update-blocker-overlay" style="display: none; position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; background: #0f172a; z-index: 99999999; justify-content: center; align-items: center; flex-direction: column; color: white; font-family: -apple-system, BlinkMacSystemFont, sans-serif; text-align: center; padding: 20px;">
+        <div style="background: #1e293b; border: 1px solid #334155; padding: 40px; border-radius: 16px; max-width: 500px; width: 90%; box-shadow: 0 20px 25px -5px rgba(0,0,0,0.5); display: flex; flex-direction: column; align-items: center; justify-content: center;">
+            <div style="font-size: 60px; margin-bottom: 20px; animation: pulse 1.5s infinite;">📢</div>
+            <h1 style="color: #ea580c; font-size: 24px; font-weight: 800; margin: 0 0 15px 0;">Update Required</h1>
+            <p style="color: #94a3b8; font-size: 14px; line-height: 1.6; margin-bottom: 25px;">
+                A newer version of the Secure Exam Proctor application is available. You must update to the latest version to proceed with your exam.
+            </p>
+            <button id="force-update-btn" style="background: #ea580c; color: white; border: none; padding: 12px 30px; border-radius: 6px; font-weight: bold; cursor: pointer; font-size: 14px; width: 100%; transition: all 0.2s;">Update and Restart Now</button>
+            <div id="update-progress-container" style="display: none; margin-top: 20px; text-align: center;">
+                <div style="border: 3px solid #334155; border-top: 3px solid #ea580c; border-radius: 50%; width: 24px; height: 24px; animation: spin 1s linear infinite; display: inline-block; margin-bottom: 10px;"></div>
+                <div id="update-status-text" style="font-size: 12px; color: #cbd5e1;">Downloading update...</div>
+            </div>
+        </div>
+    </div>
+    <div id="toolbar">
+        <button class="nav-btn" id="btn-back" title="Go Back">◀</button>
+        <button class="nav-btn" id="btn-forward" title="Go Forward">▶</button>
+        <button class="nav-btn" id="btn-reload" title="Reload Page">⟳</button>
+        <button class="nav-btn" id="btn-home" title="Go Home">🏠</button>
+        
+        <div id="address-container">
+            <input type="text" id="address-bar" readonly />
+        </div>
+
+        <div style="position: relative;">
+            <button id="resources-btn">➕ Allowed Websites ▾</button>
+            <div id="resources-menu">
+                <div style="padding: 6px 10px; font-size: 11px; color: #64748b; border-bottom: 1px solid #334155; margin-bottom: 4px;">Permitted Links</div>
+                <div id="menu-items-list" style="max-height: 150px; overflow-y: auto;"></div>
+                
+                <div id="apps-section" style="display: none; border-top: 1px solid #334155; padding-top: 8px; margin-top: 8px;">
+                    <div style="padding: 0 10px 6px 10px; font-size: 11px; color: #64748b;">Permitted Applications</div>
+                    <div id="apps-items-list" style="max-height: 120px; overflow-y: auto; display: flex; flex-direction: column; gap: 4px;"></div>
+                </div>
+                
+                <div style="border-top: 1px solid #334155; padding-top: 8px; margin-top: 8px; display: flex; flex-direction: column; gap: 6px;">
+                    <div style="font-size: 11px; color: #64748b;">Open Custom URL:</div>
+                    <div style="display: flex; gap: 4px;">
+                        <input type="text" id="custom-url-input" placeholder="e.g. google.com" style="flex: 1; height: 26px; background: #1e293b; border: 1px solid #334155; border-radius: 4px; color: white; font-size: 11px; padding: 0 6px; outline: none;" />
+                        <button id="custom-url-go" style="background: #008ee2; color: white; border: none; padding: 0 10px; height: 26px; border-radius: 4px; font-size: 11px; cursor: pointer;">Go</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+        <button id="exit-btn" style="background:#dc2626; color:white; border:none; padding:0 16px; height:32px; border-radius:6px; font-size:12px; font-weight:600; cursor:pointer; transition:all 0.2s;">✕ Exit Proctor</button>
+    </div>
+
+    <div id="webview-container">
+        <!-- Webview will be injected dynamically -->
+    </div>
+
+    <script>
+        const webviewContainer = document.getElementById('webview-container');
+        
+        // Dynamically create webview with preload script and clean user agent
+        const webview = document.createElement('webview');
+        webview.id = 'webview';
+        webview.src = 'https://canvas.siotw.net/';
+        webview.setAttribute('preload', './preload.js');
+        webview.setAttribute('useragent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 CanvasProctorCompanion/1.0.0');
+        webviewContainer.appendChild(webview);
+
+        const btnBack = document.getElementById('btn-back');
+        const btnForward = document.getElementById('btn-forward');
+        const btnReload = document.getElementById('btn-reload');
+        const btnHome = document.getElementById('btn-home');
+        const addressBar = document.getElementById('address-bar');
+        const resourcesBtn = document.getElementById('resources-btn');
+        const resourcesMenu = document.getElementById('resources-menu');
+        const menuItemsList = document.getElementById('menu-items-list');
+        const exitBtn = document.getElementById('exit-btn');
+        
+        const customUrlInput = document.getElementById('custom-url-input');
+        const customUrlGo = document.getElementById('custom-url-go');
+
+        // Navigation button event listeners
+        btnBack.onclick = () => { if (webview.canGoBack()) webview.goBack(); };
+        btnForward.onclick = () => { if (webview.canGoForward()) webview.goForward(); };
+        btnReload.onclick = () => { webview.reload(); };
+        btnHome.onclick = () => { webview.loadURL('https://canvas.siotw.net/'); };
+        exitBtn.onclick = () => {
+            if(confirm('Are you sure you want to exit the Secure Proctor? Your exam session may be affected.')) {
+                window.companionAPI.exitApp();
+            }
+        };
+
+        // Handle URL address bar updates
+        const updateNavigationState = () => {
+            try {
+                const url = webview.getURL();
+                addressBar.value = url;
+                btnBack.disabled = !webview.canGoBack();
+                btnForward.disabled = !webview.canGoForward();
+            } catch(e) {}
+        };
+
+        webview.addEventListener('did-navigate', updateNavigationState);
+        webview.addEventListener('did-navigate-in-page', updateNavigationState);
+
+        // Open allowed websites menu
+        resourcesBtn.onclick = (e) => {
+            e.stopPropagation();
+            resourcesMenu.style.display = resourcesMenu.style.display === 'flex' ? 'none' : 'flex';
+        };
+
+        document.addEventListener('click', () => {
+            resourcesMenu.style.display = 'none';
+        });
+        
+        resourcesMenu.onclick = (e) => {
+            e.stopPropagation();
+        };
+
+        customUrlGo.onclick = () => {
+            let target = customUrlInput.value.trim();
+            if (target) {
+                if (!target.startsWith('http://') && !target.startsWith('https://')) {
+                    target = 'https://' + target;
+                }
+                window.companionAPI.openUrl(target);
+                customUrlInput.value = '';
+                resourcesMenu.style.display = 'none';
+            }
+        };
+
+        customUrlInput.onkeydown = (e) => {
+            if (e.key === 'Enter') {
+                customUrlGo.click();
+            }
+        };
+
+        // Show alert if the URL is blocked
+        if (window.companionAPI.onUrlBlocked) {
+            window.companionAPI.onUrlBlocked((blockedUrl) => {
+                alert(`Access Blocked:\n"${blockedUrl}" is not on the permitted websites list for this exam.`);
+            });
+        }
+
+        const appsSection = document.getElementById('apps-section');
+        const appsItemsList = document.getElementById('apps-items-list');
+
+        // Load permitted URLs and apps from main process
+        const loadAllowedUrls = () => {
+            window.companionAPI.getAllowedUrls().then(urls => {
+                menuItemsList.innerHTML = '';
+                if (!urls || urls.length === 0) {
+                    const emptyMsg = document.createElement('div');
+                    emptyMsg.style.cssText = 'padding: 8px 10px; font-size: 11px; color: #475569; font-style: italic;';
+                    emptyMsg.innerText = 'No permitted links configured for this exam.';
+                    menuItemsList.appendChild(emptyMsg);
+                } else {
+                    urls.forEach(url => {
+                        const btn = document.createElement('button');
+                        btn.className = 'menu-item';
+                        btn.innerText = url;
+                        btn.onclick = () => {
+                            window.companionAPI.openUrl('https://' + url);
+                            resourcesMenu.style.display = 'none';
+                        };
+                        menuItemsList.appendChild(btn);
+                    });
+                }
+            });
+
+            if (window.companionAPI.getAllowedApps) {
+                window.companionAPI.getAllowedApps().then(apps => {
+                    appsItemsList.innerHTML = '';
+                    if (!apps || apps.length === 0) {
+                        appsSection.style.display = 'none';
+                    } else {
+                        appsSection.style.display = 'block';
+                        apps.forEach(app => {
+                            const btn = document.createElement('button');
+                            btn.className = 'menu-item';
+                            btn.innerText = '🚀 Launch ' + app;
+                            btn.onclick = () => {
+                                window.companionAPI.launchApp(app);
+                                resourcesMenu.style.display = 'none';
+                            };
+                            appsItemsList.appendChild(btn);
+                        });
+                    }
+                });
+            }
+        };
+
+        // Initial load
+        loadAllowedUrls();
+
+        // Listen for monitoring changes to reload allowed URLs dynamically
+        if (window.companionAPI.onMonitoringStarted) {
+            window.companionAPI.onMonitoringStarted(() => {
+                setTimeout(loadAllowedUrls, 500);
+            });
+        }
+
+        webview.addEventListener('ipc-message', (event) => {
+            if (event.channel === 'start-monitoring') {
+                setTimeout(loadAllowedUrls, 1000);
+            }
+        });
+
+        const updateBlocker = document.getElementById('update-blocker-overlay');
+        const forceUpdateBtn = document.getElementById('force-update-btn');
+        const updateProgress = document.getElementById('update-progress-container');
+        const updateStatusText = document.getElementById('update-status-text');
+
+        if (window.companionAPI.onUpdateAvailable) {
+            window.companionAPI.onUpdateAvailable((data) => {
+                updateBlocker.style.display = 'flex';
+                forceUpdateBtn.onclick = () => {
+                    forceUpdateBtn.style.display = 'none';
+                    updateProgress.style.display = 'block';
+                    updateStatusText.innerText = 'Downloading and installing update... The application will restart automatically.';
+                    window.companionAPI.triggerUpdate();
+                };
+            });
+        }
+        
+        if (window.companionAPI.onUpdateFailed) {
+            window.companionAPI.onUpdateFailed((err) => {
+                alert('Update failed: ' + err + '\nPlease download the application manually.');
+                forceUpdateBtn.style.display = 'block';
+                updateProgress.style.display = 'none';
+            });
+        }
+    </script>
+</body>
+</html>

@@ -1624,13 +1624,6 @@ function injectProctorGuardTab(tabNav, quizId) {
     if (!quizId) { err.textContent = 'Cannot save: Quiz ID not found. Save the quiz in Canvas first.'; err.style.display='inline'; return; }
     btn.disabled=true; btn.textContent='Saving...'; ok.style.display='none'; err.style.display='none';
 
-    // Auto-check and trigger native checkbox on the Details tab
-    const nativeCheckbox = document.getElementById('quiz_require_lockdown_browser');
-    if (nativeCheckbox) {
-      nativeCheckbox.checked = true;
-      nativeCheckbox.dispatchEvent(new Event('change'));
-    }
-
     const chk = id => { const el=document.getElementById(id); return el ? el.checked : false; };
     let maxAttempts = 1;
     const maCb = document.getElementById('multiple_attempts_option');

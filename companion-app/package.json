@@ -1,0 +1,35 @@
+{
+  "name": "canvas-proctor-companion",
+  "version": "1.0.0",
+  "author": "Secure Exam Proctor",
+  "description": "Secure Exam Proctor Desktop Companion application for lockdown exam testing.",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "dist": "electron-packager . CanvasProctor --platform=win32 --arch=x64 --overwrite --out=dist",
+    "build": "electron-builder build --win --publish never"
+  },
+  "build": {
+    "appId": "net.siotw.canvas-proctor",
+    "productName": "CanvasProctor",
+    "win": {
+      "target": "msi",
+      "icon": "build/icon.png"
+    },
+    "msi": {
+      "oneClick": true,
+      "shortcutName": "CanvasProctor",
+      "createDesktopShortcut": true,
+      "runAfterFinish": true,
+      "artifactName": "${productName}Setup.${ext}"
+    },
+    "directories": {
+      "output": "dist"
+    }
+  },
+  "devDependencies": {
+    "electron": "^28.2.0",
+    "electron-builder": "^26.15.3",
+    "electron-packager": "^17.1.2"
+  }
+}
