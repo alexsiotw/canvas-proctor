@@ -337,7 +337,19 @@ app.get('/api/canvas-launch', async (req, res) => {
             VALUES ($1, $2, $3, $4, $5, $6)
         `, [sessionToken, user_id, course_id, user_name || 'Student', 'student', 'Direct Canvas integration launch']);
 
-        res.redirect(`/student.html?token=${sessionToken}&exam_id=${exam.id}`);
+        const target = `/student.html?token=${sessionToken}&exam_id=${exam.id}`;
+        // Canvas's own quiz "take" page (configured with this URL as its Secure Proctor
+        // Mode redirect) can itself be loaded inside our own #quiz-iframe once a student
+        // is already mid-exam in student.html. A plain res.redirect() would then only
+        // navigate that inner iframe, nesting a second student.html session inside the
+        // first ("proctor mode within proctor mode"). Breaking out to window.top avoids
+        // that regardless of whether this request came from the top-level window or a
+        // frame nested inside an already-running proctoring session.
+        res.send(`<!DOCTYPE html><html><head><script>
+            var target = ${JSON.stringify(target)};
+            if (window.top !== window.self) { window.top.location.href = target; }
+            else { window.location.href = target; }
+        </script></head><body></body></html>`);
     } catch (err) {
         console.error('Canvas integration launch failed:', err);
         res.status(500).json({ error: err.message });
