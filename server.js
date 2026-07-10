@@ -19,6 +19,23 @@ const ffmpeg = require('fluent-ffmpeg');
 const ffmpegPath = require('ffmpeg-static');
 ffmpeg.setFfmpegPath(ffmpegPath);
 
+// Shared secret used to authenticate requests from the Chrome extension (which cannot
+// hold a real user session). Falls back to the legacy hardcoded value only so existing
+// deployments don't break before PG_SHARED_SECRET is set in the hosting environment —
+// set PG_SHARED_SECRET in Render and rotate this value before/soon after the extension
+// goes out for Chrome Web Store review.
+const PG_SHARED_SECRET = process.env.PG_SHARED_SECRET || 'canvas-proctor-shared-secret-key-998877';
+
+// Best-effort defense in depth: requests carrying the shared secret should still only
+// ever originate from the Canvas instance or the extension itself, not an arbitrary
+// third-party site that got hold of the token.
+const ALLOWED_ORIGINS = [process.env.CANVAS_BASE_URL, 'https://canvas.siotw.net'].filter(Boolean);
+function isAllowedOrigin(req) {
+    const origin = req.headers.origin || req.headers.referer || '';
+    if (!origin) return true; // extension background-script fetches often omit Origin/Referer
+    return ALLOWED_ORIGINS.some(allowed => origin.startsWith(allowed));
+}
+
 // Intercept console output to allow remote logs debugging
 const logFile = path.join(os.tmpdir(), 'server.log');
 const logStream = fs.createWriteStream(logFile, { flags: 'a' });
@@ -202,7 +219,7 @@ app.post('/lti/launch', (req, res) => {
 
 app.get('/api/canvas-launch', async (req, res) => {
     const { user_id, user_name, course_id, quiz_id, secret } = req.query;
-    if (secret !== 'canvas-proctor-shared-secret-key-998877') {
+    if (secret !== PG_SHARED_SECRET) {
         return res.status(403).json({ error: 'Unauthorized Canvas Launch' });
     }
     if (!user_id || !course_id || !quiz_id) {
@@ -356,7 +373,7 @@ function requireInstructor(req, res, next) {
 
 function requireInstructorOrExtensionSecret(req, res, next) {
     const token = req.query.token || req.body.token || req.headers['x-shared-secret'] || (req.session.lti && req.session.lti.sessionToken);
-    if (token === 'canvas-proctor-shared-secret-key-998877') {
+    if (token === PG_SHARED_SECRET) {
         return next();
     }
     return requireInstructor(req, res, next);
@@ -702,7 +719,7 @@ app.patch('/api/exams/:id/status', requireInstructor, async (req, res) => {
 // API: Canvas Native Integration - Get Exam by Quiz ID
 app.get('/api/canvas-native/exam/:quiz_id', async (req, res) => {
     try {
-        if (req.headers['x-shared-secret'] !== 'canvas-proctor-shared-secret-key-998877') {
+        if (req.headers['x-shared-secret'] !== PG_SHARED_SECRET) {
             return res.status(403).json({ error: 'Unauthorized' });
         }
         const { quiz_id } = req.params;
@@ -718,8 +735,11 @@ app.get('/api/canvas-native/exam/:quiz_id', async (req, res) => {
 app.get('/api/canvas-native/session-report', async (req, res) => {
     try {
         const token = req.query.token || req.headers['x-shared-secret'];
-        if (token !== 'canvas-proctor-shared-secret-key-998877') {
+        if (token !== PG_SHARED_SECRET) {
             return res.status(403).json({ error: 'Unauthorized' });
+        }
+        if (!isAllowedOrigin(req)) {
+            console.warn(`[Security] session-report called with valid token but unexpected origin: ${req.headers.origin || req.headers.referer}`);
         }
 
         const { quiz_id, student_id } = req.query;
@@ -790,7 +810,7 @@ app.get('/api/canvas-native/session-report', async (req, res) => {
 // API: Canvas Native Integration - Save Exam Settings
 app.post('/api/canvas-native/exam/:quiz_id', async (req, res) => {
     try {
-        if (req.headers['x-shared-secret'] !== 'canvas-proctor-shared-secret-key-998877') {
+        if (req.headers['x-shared-secret'] !== PG_SHARED_SECRET) {
             return res.status(403).json({ error: 'Unauthorized' });
         }
         const { quiz_id } = req.params;
@@ -910,7 +930,7 @@ app.post('/api/canvas-native/exam/:quiz_id', async (req, res) => {
 
 // API: Canvas Native Integration - Auto Login Redirect
 app.get('/api/canvas-native/auto-login', async (req, res) => {
-    if (req.query.token !== 'canvas-proctor-shared-secret-key-998877') {
+    if (req.query.token !== PG_SHARED_SECRET) {
         return res.status(403).send("Unauthorized");
     }
     const { course_id, quiz_id, view } = req.query;
@@ -1137,7 +1157,7 @@ async function verifyStudentExamAccess(exam, userId, ltiSession) {
     const crypto = require('crypto');
     const auto_login_user_id = userId;
     const auto_login_expires = Math.floor(Date.now() / 1000) + 300; // 5 minutes validity
-    const secret = "canvas-proctor-shared-secret-key-998877";
+    const secret = PG_SHARED_SECRET;
     const signData = `auto_login_user_id=${auto_login_user_id}&expires=${auto_login_expires}`;
     const auto_login_signature = crypto.createHmac('sha256', secret).update(signData).digest('hex');
 
@@ -1460,7 +1480,7 @@ app.post('/api/session/start', requireAuth, async (req, res) => {
         const crypto = require('crypto');
         const auto_login_user_id = userId;
         const auto_login_expires = Math.floor(Date.now() / 1000) + 300; // 5 minutes validity
-        const secret = "canvas-proctor-shared-secret-key-998877";
+        const secret = PG_SHARED_SECRET;
         const signData = `auto_login_user_id=${auto_login_user_id}&expires=${auto_login_expires}`;
         const auto_login_signature = crypto.createHmac('sha256', secret).update(signData).digest('hex');
 

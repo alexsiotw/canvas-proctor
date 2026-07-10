@@ -1,3 +1,11 @@
+// Debug logging is off by default: it's an exam-integrity page, and a student with
+// devtools open should not be able to see detection state, violation events, or
+// what the proctoring system just flagged in real time.
+const PG_DEBUG = false;
+if (!PG_DEBUG) {
+  console.log = function () {};
+}
+
 let examConfig = null;
 let sessionInfo = null;
 let activeVisualFlags = [];

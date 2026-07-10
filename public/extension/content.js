@@ -1,3 +1,19 @@
+// Single source of truth for the ProctorGuard API base/shared secret used throughout
+// this file. NOTE: this token ships inside the extension bundle and is visible to
+// anyone who inspects it — it is not a real secret. It only gates casual/accidental
+// access; server.js additionally checks request origin as defense in depth. Rotating
+// this value requires updating PG_SHARED_SECRET on the server too.
+const PG_API_BASE = 'https://proctor.siotw.net';
+const PG_SECRET = 'canvas-proctor-shared-secret-key-998877';
+
+// Debug logging is off by default so a public release doesn't spam session data,
+// internal URLs, and student info to the console of every Canvas page it runs on.
+// Flip via: chrome.storage.local.set({ pgDebug: true }) from an extension devtools console.
+const PG_DEBUG = false;
+if (!PG_DEBUG) {
+  console.log = function () {};
+}
+
 // Inject extension presence flag in document element
 document.documentElement.dataset.proctorExtensionInstalled = "true";
 
@@ -275,7 +291,7 @@ async function initExamReviewCenterIntegration() {
   let loadError = null;
 
   // Start fetching in background immediately (via service worker to avoid CORS)
-  bgFetch(`https://proctor.siotw.net/api/canvas-native/session-report?quiz_id=${quizId}&token=canvas-proctor-shared-secret-key-998877`)
+  bgFetch(`${PG_API_BASE}/api/canvas-native/session-report?quiz_id=${quizId}&token=${PG_SECRET}`)
     .then(data => {
       sessions = data.sessions || [];
       console.log(`[ProctorGuard RC] Fetched ${sessions.length} sessions.`);
@@ -379,7 +395,7 @@ function injectSidebarFallbackLink(rightSide) {
     
     openExamReviewCenterModal(null, null);
     
-    bgFetch(`https://proctor.siotw.net/api/canvas-native/session-report?quiz_id=${quizId}&token=canvas-proctor-shared-secret-key-998877`)
+    bgFetch(`${PG_API_BASE}/api/canvas-native/session-report?quiz_id=${quizId}&token=${PG_SECRET}`)
       .then(d => {
         const modal = document.getElementById('proctor-review-center-modal');
         if (modal) updateReviewCenterModalBody(modal, d.sessions || [], null);
@@ -754,7 +770,7 @@ async function refreshReviewCenterData(modalEl) {
   if (!idMatch) return;
   const quizId = idMatch[1];
   try {
-    const data = await bgFetch(`https://proctor.siotw.net/api/canvas-native/session-report?quiz_id=${quizId}&token=canvas-proctor-shared-secret-key-998877`);
+    const data = await bgFetch(`${PG_API_BASE}/api/canvas-native/session-report?quiz_id=${quizId}&token=${PG_SECRET}`);
     updateReviewCenterModalBody(modalEl, data.sessions || [], null);
   } catch(e) {
     updateReviewCenterModalBody(modalEl, [], 'Failed to refresh reports from server.');
@@ -1071,8 +1087,8 @@ function loadSessionInModal(modal, session) {
   // ------- VIDEO AREA -------
   const hasVideo   = !!session.drive_file_id;
   const hasMobile  = !!session.mobile_drive_file_id;
-  const videoSrc   = `https://proctor.siotw.net/api/session/video-playback/${session.id}?token=canvas-proctor-shared-secret-key-998877`;
-  const mobileSrc  = `https://proctor.siotw.net/api/session/mobile-video-playback/${session.id}?token=canvas-proctor-shared-secret-key-998877`;
+  const videoSrc   = `${PG_API_BASE}/api/session/video-playback/${session.id}?token=${PG_SECRET}`;
+  const mobileSrc  = `${PG_API_BASE}/api/session/mobile-video-playback/${session.id}?token=${PG_SECRET}`;
 
   if (hasVideo) {
     videoArea.innerHTML = `
@@ -1378,8 +1394,6 @@ function loadSessionInModal(modal, session) {
 // ================================================================
 // Quiz Editor: Inject ProctorGuard Settings Tab (Proctorio-style)
 // ================================================================
-const PG_API_BASE = 'https://proctor.siotw.net';
-const PG_SECRET = 'canvas-proctor-shared-secret-key-998877';
 
 function findQuizTabNav() {
   // Try many selectors in order of specificity
