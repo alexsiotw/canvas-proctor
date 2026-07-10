@@ -1,23 +1,24 @@
 {
   "manifest_version": 3,
   "name": "ProctorGuard Extension",
-  "version": "1.4.0",
+  "version": "1.5.0",
   "description": "Enforces advanced browser lockdown and monitoring during proctored Canvas exams.",
   "permissions": [
     "tabs",
     "webNavigation",
     "storage",
     "system.display",
-    "browsingData"
+    "browsingData",
+    "scripting"
   ],
   "host_permissions": [
     "*://proctor.siotw.net/*",
     "*://canvas.siotw.net/*"
   ],
   "icons": {
-    "16": "icon.png",
-    "48": "icon.png",
-    "128": "icon.png"
+    "16": "icon16.png",
+    "48": "icon48.png",
+    "128": "icon128.png"
   },
   "background": {
     "service_worker": "background.js"
@@ -37,7 +38,11 @@
     }
   ],
   "action": {
-    "default_icon": "icon.png",
+    "default_icon": {
+      "16": "icon16.png",
+      "48": "icon48.png",
+      "128": "icon128.png"
+    },
     "default_title": "ProctorGuard"
   }
 }

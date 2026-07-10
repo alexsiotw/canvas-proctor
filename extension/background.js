@@ -69,6 +69,24 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     });
   }
 
+  else if (message.type === "REQUEST_REVIEW_CENTER_INJECTION") {
+    // content.js only sends this after its own teacher-context probe passes.
+    // We still don't "trust" that check as real security — see comment on
+    // review-center.js — but this keeps the secret-bearing file out of every
+    // tab that never even asks for it (i.e. every student's own exam page).
+    const tabId = sender.tab ? sender.tab.id : null;
+    const frameId = typeof sender.frameId === 'number' ? sender.frameId : 0;
+    if (tabId != null) {
+      chrome.scripting.executeScript({
+        target: { tabId, frameIds: [frameId] },
+        files: ['review-center.js']
+      }).catch((err) => {
+        console.warn('[Extension] Failed to inject review-center.js:', err.message);
+      });
+    }
+    sendResponse({ received: true });
+  }
+
   else if (message.type === "FETCH_URL") {
     // Proxy cross-origin fetch requests from content scripts through the service worker
     fetch(message.url, message.options || {})

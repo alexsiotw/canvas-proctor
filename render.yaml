@@ -22,3 +22,8 @@ services:
         sync: false
       - key: LTI_SECRET
         sync: false
+      # Must match the PG_SECRET constant hardcoded in extension/review-center.js —
+      # don't let Render auto-generate this, it has to be set to the same value the
+      # already-built extension package expects, or every extension API call breaks.
+      - key: PG_SHARED_SECRET
+        sync: false

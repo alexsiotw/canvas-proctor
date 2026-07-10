@@ -1,0 +1,247 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Secondary Camera Companion</title>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&family=Outfit:wght@700&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --bg-gradient: linear-gradient(135deg, #0f172a 0%, #1e1b4b 100%);
+            --card-bg: rgba(30, 41, 59, 0.7);
+            --border: rgba(255, 255, 255, 0.08);
+            --accent: #38bdf8;
+            --success: #10b981;
+            --warning: #f59e0b;
+            --danger: #ef4444;
+            --text-primary: #f8fafc;
+            --text-secondary: #94a3b8;
+            --radius-lg: 16px;
+            --radius-md: 10px;
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+            -webkit-tap-highlight-color: transparent;
+        }
+
+        body {
+            font-family: 'Inter', sans-serif;
+            background: var(--bg-gradient);
+            color: var(--text-primary);
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            overflow-x: hidden;
+            padding: 20px;
+        }
+
+        .container {
+            width: 100%;
+            max-width: 480px;
+            display: flex;
+            flex-direction: column;
+            gap: 20px;
+        }
+
+        header {
+            text-align: center;
+            margin-bottom: 5px;
+        }
+
+        header h1 {
+            font-family: 'Outfit', sans-serif;
+            font-size: 24px;
+            font-weight: 700;
+            letter-spacing: -0.5px;
+            background: linear-gradient(to right, #38bdf8, #818cf8);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+
+        header p {
+            color: var(--text-secondary);
+            font-size: 13px;
+            margin-top: 4px;
+        }
+
+        .status-card {
+            background: var(--card-bg);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-lg);
+            padding: 16px;
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            backdrop-filter: blur(10px);
+        }
+
+        .status-dot {
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            background: var(--warning);
+            box-shadow: 0 0 10px var(--warning);
+            flex-shrink: 0;
+        }
+
+        .status-text {
+            font-weight: 600;
+            font-size: 14px;
+            flex-grow: 1;
+        }
+
+        .preview-card {
+            background: var(--card-bg);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-lg);
+            overflow: hidden;
+            position: relative;
+            aspect-ratio: 4 / 3;
+            box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.3);
+        }
+
+        #mobile-preview {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+            transform: scaleX(1); /* Rear camera doesn't need mirror effect */
+        }
+
+        .recording-badge {
+            position: absolute;
+            top: 15px;
+            left: 15px;
+            background: rgba(239, 68, 68, 0.9);
+            color: white;
+            padding: 6px 12px;
+            border-radius: 20px;
+            font-size: 11px;
+            font-weight: 700;
+            display: none;
+            align-items: center;
+            gap: 6px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.2);
+        }
+
+        @keyframes pulse {
+            0% { opacity: 0.5; }
+            50% { opacity: 1; }
+            100% { opacity: 0.5; }
+        }
+
+        .recording-badge span {
+            width: 8px;
+            height: 8px;
+            background: white;
+            border-radius: 50%;
+            display: inline-block;
+            animation: pulse 1.5s infinite;
+        }
+
+        .instructions-card {
+            background: var(--card-bg);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-lg);
+            padding: 18px;
+            font-size: 13px;
+            line-height: 1.6;
+            color: #cbd5e1;
+        }
+
+        .instructions-card h3 {
+            font-size: 14px;
+            margin-bottom: 10px;
+            color: var(--accent);
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+
+        .instructions-card ul {
+            padding-left: 20px;
+        }
+
+        .instructions-card li {
+            margin-bottom: 6px;
+        }
+
+        .btn-grant {
+            width: 100%;
+            padding: 14px;
+            background: var(--accent);
+            color: #0f172a;
+            border: none;
+            border-radius: var(--radius-md);
+            font-weight: 700;
+            font-size: 14px;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+            transition: all 0.2s;
+        }
+
+        .btn-grant:active {
+            transform: scale(0.98);
+        }
+
+        #setup-error {
+            color: var(--danger);
+            font-size: 13px;
+            font-weight: 600;
+            text-align: center;
+            display: none;
+            padding: 10px;
+            border-radius: 6px;
+            background: rgba(239, 68, 68, 0.1);
+            border: 1px solid rgba(239, 68, 68, 0.2);
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>Secondary Camera</h1>
+            <p>ProctorGuard Companion</p>
+        </header>
+
+        <div class="status-card">
+            <div class="status-dot" id="state-dot"></div>
+            <div class="status-text" id="state-text">Linking to Laptop...</div>
+        </div>
+
+        <div id="setup-error"></div>
+
+        <div class="preview-card">
+            <div class="recording-badge" id="rec-badge">
+                <span></span>
+                RECORDING ACTIVE
+            </div>
+            <video id="mobile-preview" autoplay playsinline muted></video>
+        </div>
+
+        <button class="btn-grant" id="btn-camera-grant" onclick="requestMobileCamera()">
+            📷 Authorize Camera Access
+        </button>
+
+        <div class="instructions-card">
+            <h3>📱 Desk Placement Tips</h3>
+            <ul>
+                <li>Prop your phone up on the side of your desk (e.g. against a book, mug, or stand).</li>
+                <li>Position the camera so it captures your profile, hands, and keyboard clearly.</li>
+                <li>Keep this tab open, and ensure your phone screen stays on (do not lock your phone).</li>
+                <li>Ensure your phone is plugged in or has at least 50% battery remaining.</li>
+            </ul>
+        </div>
+    </div>
+
+    <!-- Socket.IO -->
+    <script src="/socket.io/socket.io.js"></script>
+    <script src="/js/mobile-camera.js"></script>
+</body>
+</html>
