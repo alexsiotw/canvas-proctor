@@ -237,8 +237,9 @@ app.post('/lti/launch', (req, res) => {
             fs.mkdirSync(logDir, { recursive: true });
         }
         const logPath = path.join(logDir, 'launch-log.txt');
-        const logContent = `\n--- LAUNCH AT ${new Date().toISOString()} ---\n` + 
+        const logContent = `\n--- LAUNCH AT ${new Date().toISOString()} ---\n` +
             `URL: ${req.url}\n` +
+            `Referer: ${req.headers.referer || '(none)'}\n` +
             `Body: ${JSON.stringify(req.body, null, 2)}\n`;
         fs.appendFileSync(logPath, logContent);
 
@@ -278,19 +279,81 @@ app.post('/lti/launch', (req, res) => {
             res.redirect(redirectUrl);
         } else {
             const queryExamId = req.query.exam_id || '';
-            res.redirect(`/student.html?v=1.0.7&token=${sessionToken}${resourceLinkId ? '&placement_id=' + encodeURIComponent(resourceLinkId) : ''}${queryExamId ? '&exam_id=' + encodeURIComponent(queryExamId) : ''}`);
+            const target = `/student.html?v=1.0.7&token=${sessionToken}${resourceLinkId ? '&placement_id=' + encodeURIComponent(resourceLinkId) : ''}${queryExamId ? '&exam_id=' + encodeURIComponent(queryExamId) : ''}`;
+
+            // Same de-dup + top-level-breakout treatment as /api/canvas-launch: if this
+            // quiz's "Take the Quiz" is itself an LTI launch (common for LTI-backed quiz
+            // types, or a custom External Tool placement), Canvas can re-launch this
+            // endpoint every time the quiz content renders — including from inside an
+            // already-active student.html session's #quiz-iframe. Without this, that's
+            // an infinite reload loop identical to the canvas-launch one.
+            const launchKey = `lti:${userId}:${resourceLinkId || canvasCourseId}`;
+            const now = Date.now();
+            const lastLaunch = recentCanvasLaunches.get(launchKey);
+            if (lastLaunch && (now - lastLaunch) < CANVAS_LAUNCH_DEDUP_WINDOW_MS) {
+                return res.status(200).send(`<!DOCTYPE html><html><body style="font-family:sans-serif;text-align:center;margin-top:100px;color:#374151;">
+                    <h2>Your secure exam session is already active.</h2>
+                    <p>If you're seeing this in a tab or frame you didn't expect, close it and return to your original exam window.</p>
+                </body></html>`);
+            }
+            recentCanvasLaunches.set(launchKey, now);
+
+            res.send(`<!DOCTYPE html><html><head><script>
+                var target = ${JSON.stringify(target)};
+                if (window.top !== window.self) { window.top.location.href = target; }
+                else { window.location.href = target; }
+            </script></head><body></body></html>`);
         }
     });
 });
 
+// In-memory de-dup guard: Canvas's own "Require Secure Proctor Mode" quiz setting
+// re-triggers this exact redirect every time it renders the quiz's take page —
+// including when that page is already loaded inside an active student.html session's
+// #quiz-iframe. Without this, that becomes an infinite reload loop (each relaunch
+// mints a new session token and reloads the whole page, which reloads the iframe,
+// which gets redirected here again...). This doesn't fix why Canvas keeps asking —
+// see the comment on CANVAS_LAUNCH_SECRET above — it just stops the bleeding.
+const recentCanvasLaunches = new Map(); // `${user_id}:${quiz_id}` -> timestamp
+const CANVAS_LAUNCH_DEDUP_WINDOW_MS = 15000;
+
 app.get('/api/canvas-launch', async (req, res) => {
     const { user_id, user_name, course_id, quiz_id, secret } = req.query;
+
+    // Log every hit (valid or not) to the same file /lti/launch already writes to,
+    // viewable at /api/dev/logs — needed to actually see what's calling this and from
+    // where (Referer shows whether it came from Canvas directly or from inside our
+    // own #quiz-iframe) while diagnosing the reload-loop bug.
+    try {
+        const fs = require('fs');
+        const path = require('path');
+        const logDir = path.join(__dirname, 'scratch');
+        if (!fs.existsSync(logDir)) fs.mkdirSync(logDir, { recursive: true });
+        fs.appendFileSync(path.join(logDir, 'launch-log.txt'),
+            `\n--- CANVAS-LAUNCH AT ${new Date().toISOString()} ---\n` +
+            `Referer: ${req.headers.referer || '(none)'}\n` +
+            `User-Agent: ${req.headers['user-agent'] || '(none)'}\n` +
+            `Query: ${JSON.stringify(req.query)}\n`
+        );
+    } catch (e) { /* logging must never break the actual launch */ }
+
     if (secret !== CANVAS_LAUNCH_SECRET) {
         return res.status(403).json({ error: 'Unauthorized Canvas Launch' });
     }
     if (!user_id || !course_id || !quiz_id) {
         return res.status(400).json({ error: 'Missing launch parameters' });
     }
+
+    const launchKey = `${user_id}:${quiz_id}`;
+    const now = Date.now();
+    const lastLaunch = recentCanvasLaunches.get(launchKey);
+    if (lastLaunch && (now - lastLaunch) < CANVAS_LAUNCH_DEDUP_WINDOW_MS) {
+        return res.status(200).send(`<!DOCTYPE html><html><body style="font-family:sans-serif;text-align:center;margin-top:100px;color:#374151;">
+            <h2>Your secure exam session is already active.</h2>
+            <p>If you're seeing this in a tab or frame you didn't expect, close it and return to your original exam window.</p>
+        </body></html>`);
+    }
+    recentCanvasLaunches.set(launchKey, now);
 
     try {
         const quizPattern = `%/quizzes/${quiz_id}`;
