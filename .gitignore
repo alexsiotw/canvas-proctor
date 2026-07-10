@@ -13,3 +13,10 @@ yarn-error.log*
 Thumbs.db
 companion-app/dist/
 public/companion/*.zip
+
+# Local dev/debug scripts — these contain hardcoded session tokens / ad-hoc queries
+# and must never be committed. Untracked via `git rm --cached`; they remain on disk.
+check_exam.js
+check_token.js
+simulate_placement.js
+test_verify.js

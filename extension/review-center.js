@@ -1049,7 +1049,53 @@ async function loadSessionInModal(modal, session) {
     });
   });
 
+  // Live playhead + active-event highlight: as the recording plays, show a marker
+  // tracking the current position across the timeline, and highlight the log entry
+  // nearest the current time so reviewers can follow evidence hands-free.
+  function ensurePlayheadEl(timelineEl) {
+    let playhead = timelineEl.querySelector('.prm-tl-playhead');
+    if (!playhead) {
+      timelineEl.style.position = 'relative';
+      playhead = document.createElement('div');
+      playhead.className = 'prm-tl-playhead';
+      playhead.style.cssText = 'position:absolute;top:0;bottom:18px;width:2px;background:#2563eb;box-shadow:0 0 4px rgba(37,99,235,0.8);pointer-events:none;z-index:5;left:0;transition:left 0.15s linear;';
+      timelineEl.appendChild(playhead);
+    }
+    return playhead;
+  }
+
+  function attachPlayheadTracking(videoEl, timelineEl) {
+    if (!videoEl || !timelineEl) return;
+    ensurePlayheadEl(timelineEl);
+    // Guard so the timeline rebuild in loadedmetadata can re-create the marker without
+    // stacking a second timeupdate listener. The handler re-queries the marker each
+    // tick, so it survives innerHTML rebuilds.
+    if (videoEl.dataset.pgPlayheadWired === 'true') return;
+    videoEl.dataset.pgPlayheadWired = 'true';
+    videoEl.addEventListener('timeupdate', () => {
+      const dur = videoEl.duration;
+      if (!dur || isNaN(dur) || dur <= 0) return;
+      const playhead = ensurePlayheadEl(timelineEl);
+      const pct = Math.min(100, (videoEl.currentTime / dur) * 100);
+      playhead.style.left = pct + '%';
+
+      // Highlight the log item closest to (but not after) the current time.
+      const items = Array.from(modal.querySelectorAll('.prm-log-item'));
+      let active = null;
+      for (const el of items) {
+        const off = parseInt(el.dataset.rawOff, 10);
+        if (!isNaN(off) && off <= videoEl.currentTime + 0.5) active = el;
+      }
+      items.forEach(el => {
+        const on = el === active;
+        el.style.background = on ? '#eff6ff' : '';
+        el.style.borderLeft = on ? '3px solid #2563eb' : '';
+      });
+    });
+  }
+
   if (mainVid) {
+    attachPlayheadTracking(mainVid, timeline);
     mainVid.addEventListener('loadedmetadata', function() {
       const realDur = this.duration;
       if (realDur && realDur > 0) {

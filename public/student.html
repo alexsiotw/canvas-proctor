@@ -312,6 +312,26 @@
           <button class="btn btn-primary" style="width: 100%; justify-content: center; padding: 14px; font-size: 16px;" onclick="verifyExamCode()">Verify Code</button>
           <div id="code-error-msg" style="color: var(--danger); margin-top: 15px; display: none;"></div>
       </div>
+
+      <!-- Privacy / monitoring disclosure. Sets clear expectations before any recording
+           starts — reduces support tickets and is an increasingly standard legal courtesy. -->
+      <div class="check-card" style="margin-top: 18px; max-width: 520px; text-align: left;">
+          <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 12px;">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+              <h2 style="font-size: 16px; margin: 0; color: var(--text-primary);">Your privacy during this exam</h2>
+          </div>
+          <p style="color: var(--text-secondary); font-size: 13px; line-height: 1.6; margin-bottom: 12px;">
+              This is a proctored exam. Depending on your instructor's settings, the following may be recorded for the duration of your attempt and shared only with your instructor and institution for academic-integrity review:
+          </p>
+          <ul style="color: var(--text-secondary); font-size: 13px; line-height: 1.8; margin: 0 0 12px 20px; padding: 0;">
+              <li>Your webcam, microphone, and/or screen</li>
+              <li>Tab/window focus changes and fullscreen exits</li>
+              <li>Automated flags for phones, additional people, or loud audio</li>
+          </ul>
+          <p style="color: var(--text-muted); font-size: 12px; line-height: 1.6; margin: 0;">
+              Recording begins only after you complete the setup checks and click <strong>Begin Exam</strong>, and stops the moment you submit. Monitoring is limited to this exam session — nothing outside it is captured. You can review exactly what's active from the status indicators shown throughout your exam.
+          </p>
+      </div>
   </div>
 
   <div id="setup-container">

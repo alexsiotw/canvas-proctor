@@ -424,26 +424,35 @@ app.get('/dev-launch', (req, res) => {
     res.redirect('/index.html');
 });
 
-app.get('/dev-student', (req, res) => {
+// Gate for all /dev* and /api/dev/* endpoints. These are diagnostic-only and were
+// previously WIDE OPEN to the public internet — /dev-student minted a student session
+// with no auth, and /api/dev/* leaked config/logs/tmp listings. They're now off unless
+// ENABLE_DEV_ENDPOINTS=true is explicitly set in the environment, so production is
+// closed by default but you can flip the flag on the VPS when you genuinely need them.
+function requireDevEndpoints(req, res, next) {
+    if (process.env.ENABLE_DEV_ENDPOINTS === 'true') return next();
+    return res.status(404).send('Not found');
+}
+
+app.get('/dev-student', requireDevEndpoints, (req, res) => {
     req.session.lti = { userId: req.query.userId || 'dev_student_1', canvasCourseId: req.query.courseId || 'demo_course', userName: 'Dev Student', role: 'student' };
     res.redirect('/student.html');
 });
 
-app.get('/api/dev/check-config', (req, res) => {
+app.get('/api/dev/check-config', requireDevEndpoints, (req, res) => {
     const key = process.env.LTI_KEY || 'NOT_SET';
     const secret = process.env.LTI_SECRET || 'NOT_SET';
+    // Only report presence/length — never echo the actual key or secret substrings,
+    // even behind the dev gate, so an accidentally-enabled flag can't leak credentials.
     res.json({
         has_key: key !== 'NOT_SET',
-        key_value: key,
         has_secret: secret !== 'NOT_SET',
-        secret_length: secret.length,
-        secret_start: secret.substring(0, 3),
-        secret_end: secret.substring(secret.length - 3),
+        secret_length: secret === 'NOT_SET' ? 0 : secret.length,
         base_url: process.env.BASE_URL || 'NOT_SET'
     });
 });
 
-app.get('/api/dev/logs', (req, res) => {
+app.get('/api/dev/logs', requireDevEndpoints, (req, res) => {
     const fs = require('fs');
     const path = require('path');
     const logPath = path.join(__dirname, 'scratch', 'launch-log.txt');
@@ -455,7 +464,7 @@ app.get('/api/dev/logs', (req, res) => {
     }
 });
 
-app.get('/api/dev/debug-tmp', (req, res) => {
+app.get('/api/dev/debug-tmp', requireDevEndpoints, (req, res) => {
     const fs = require('fs');
     const path = require('path');
     const os = require('os');
@@ -559,10 +568,16 @@ async function getCanvasCredentials(ltiSession) {
         await attendancePool.end();
     }
     
-    // Fallback default Canvas credentials for testing and development
+    // Fallback Canvas credentials, now sourced from env vars instead of a hardcoded
+    // admin token baked into source. CANVAS_API_TOKEN must be set in the VPS .env.
+    // The old literal token that used to live here has been REMOVED and must be
+    // rotated in Canvas (Account > Settings > Approved Integrations) since it was
+    // previously committed to source. If the env var is unset we return no token and
+    // let callers degrade gracefully (they all null-check canvas_api_token) rather
+    // than fall back to a leaked secret.
     return {
-        canvas_api_url: 'https://canvas.siotw.net/api/v1',
-        canvas_api_token: '7VYaRtuTa9rU3k9uGwyrZWexaNYuyRKARu7CHLLyW7t22acEBM8WDyHh3Nervx2P'
+        canvas_api_url: process.env.CANVAS_API_URL || 'https://canvas.siotw.net/api/v1',
+        canvas_api_token: process.env.CANVAS_API_TOKEN || null
     };
 }
 
@@ -2927,7 +2942,37 @@ app.post('/api/client-error', (req, res) => {
 });
 
 
+// Startup security self-check. Warns loudly (never hard-fails, so a missing env var
+// can't take the server down) when a secret is still at its insecure built-in default
+// or a required credential is unset. In production these warnings mean forgeable tokens
+// or a broken Canvas integration and should be treated as must-fix.
+function auditSecretsAtStartup() {
+    const isProd = process.env.NODE_ENV === 'production';
+    const problems = [];
+    if (JWT_SIGNING_KEY === 'dev-only-insecure-signing-key-DO-NOT-USE-IN-PRODUCTION') {
+        problems.push('JWT_SIGNING_KEY is unset — extension tokens are forgeable. Set a long random value.');
+    }
+    if (AUTO_LOGIN_SIGNING_SECRET === 'dev-only-insecure-auto-login-secret') {
+        problems.push('AUTO_LOGIN_SIGNING_SECRET is unset — student auto-login HMACs are forgeable. Set a long random value.');
+    }
+    if (CANVAS_LAUNCH_SECRET === 'canvas-proctor-shared-secret-key-998877') {
+        problems.push('CANVAS_LAUNCH_SECRET is at its legacy default — rotate it (and every quiz launch URL + the Canvas quizzes_controller.rb patch) when convenient.');
+    }
+    if (!process.env.CANVAS_API_TOKEN) {
+        problems.push('CANVAS_API_TOKEN is unset — Canvas API calls (setting Require-Proctor mode, syncing attempts) will no-op. Set the freshly-rotated token in .env.');
+    }
+    if (problems.length) {
+        const banner = isProd ? '🔴 PRODUCTION SECURITY WARNINGS' : '🟠 dev security notes';
+        console.warn(`\n${'='.repeat(60)}\n${banner}\n${'='.repeat(60)}`);
+        problems.forEach(p => console.warn('  • ' + p));
+        console.warn('='.repeat(60) + '\n');
+    } else {
+        console.log('[Startup] Secret audit passed — all signing keys and credentials are configured.');
+    }
+}
+
 initDatabase().then(() => {
+    auditSecretsAtStartup();
     server.listen(PORT, () => {
         console.log(`Secure Exam Proctor running on port ${PORT}`);
     });
