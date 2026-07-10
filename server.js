@@ -33,7 +33,7 @@ const jwt = require('jsonwebtoken');
 // expires quickly and is scoped to the specific teacher/course it was issued for.
 // ================================================================
 const JWT_SIGNING_KEY = process.env.JWT_SIGNING_KEY || 'dev-only-insecure-signing-key-DO-NOT-USE-IN-PRODUCTION';
-const EXTENSION_TOKEN_TTL_SECONDS = 20 * 60; // 20 minutes
+const EXTENSION_TOKEN_TTL_SECONDS = 60 * 60; // 60 minutes — background.js also silently refreshes this before it expires (see refreshExtensionToken in background.js), so this mainly bounds how stale a token can get if that refresh ever fails
 
 // Separate, unrelated signing secret used only for the legacy auto-login HMAC below —
 // kept distinct from JWT_SIGNING_KEY on purpose so rotating one never affects the other.
@@ -1838,6 +1838,12 @@ async function assembleAndUploadSessionVideo(exam_session_id, total_chunks) {
                         .outputOptions('-crf 30')          // Lower quality/high compression to speed up transcoding
                         .outputOptions('-threads 2')        // Limit CPU threads to protect Canvas LMS resources
                         .outputOptions('-vsync vfr')
+                        // The recorded WebM mixes a real-time mic track with a canvas video track
+                        // throttled to a fixed fps — their clocks drift. Without correcting that
+                        // drift, -vsync vfr can leave ffmpeg to stretch/compress the audio timeline
+                        // to match, which is heard as pitch-shifted ("chipmunk"/slowed) audio.
+                        .outputOptions('-af aresample=async=1000')
+                        .outputOptions('-ar 44100')
                         .outputOptions('-c:a aac')
                         .on('start', (commandLine) => {
                             console.log(`Spawned FFmpeg with command: ${commandLine}`);

@@ -122,6 +122,26 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true; // keep message channel open for async response
   }
 
+  else if (message.type === "REFRESH_EXTENSION_TOKEN") {
+    // Silent re-mint using the teacher's existing proctor.siotw.net session cookie —
+    // no dashboard tab needed. requireInstructor on the server checks req.session.lti,
+    // which the cookie carries automatically via credentials:'include'. If the teacher
+    // never has an active session there (or it expired too), this just fails quietly
+    // and callers fall back to their normal "reconnect" prompt.
+    fetch('https://proctor.siotw.net/api/extension/token', { credentials: 'include' })
+      .then(async (res) => {
+        if (!res.ok) { sendResponse({ success: false }); return; }
+        const data = await res.json();
+        if (!data.token) { sendResponse({ success: false }); return; }
+        const expiresAt = Date.now() + (data.expiresIn * 1000);
+        chrome.storage.local.set({ pgExtToken: data.token, pgExtTokenExpiresAt: expiresAt }, () => {
+          sendResponse({ success: true, token: data.token });
+        });
+      })
+      .catch(() => sendResponse({ success: false }));
+    return true; // keep channel open for the async fetch
+  }
+
   else if (message.type === "PG_SET_TOKEN") {
     const { token, expiresAt } = message;
     if (!token || !expiresAt) {

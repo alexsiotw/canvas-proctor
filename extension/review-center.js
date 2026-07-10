@@ -29,17 +29,25 @@ if (!PG_DEBUG) {
   console.log = function () {};
 }
 
-// Reads the current extension auth token from storage. Returns null if missing or
-// expired — callers must treat that as "prompt the teacher to reconnect", not retry
-// with anything else.
+// Reads the current extension auth token from storage. If it's missing or expired,
+// asks background.js to silently re-mint one (it can do this with the teacher's existing
+// proctor.siotw.net session cookie, no dashboard tab required) before giving up — so
+// editing quiz settings from Canvas doesn't force a "go reconnect on the dashboard" trip
+// just because the last-issued token's TTL ran out in the background.
 function getExtensionToken() {
   return new Promise((resolve) => {
     chrome.storage.local.get(['pgExtToken', 'pgExtTokenExpiresAt'], (r) => {
-      if (!r.pgExtToken || !r.pgExtTokenExpiresAt || Date.now() >= r.pgExtTokenExpiresAt) {
-        resolve(null);
-      } else {
+      if (r.pgExtToken && r.pgExtTokenExpiresAt && Date.now() < r.pgExtTokenExpiresAt) {
         resolve(r.pgExtToken);
+        return;
       }
+      chrome.runtime.sendMessage({ type: 'REFRESH_EXTENSION_TOKEN' }, (response) => {
+        if (chrome.runtime.lastError || !response || !response.success) {
+          resolve(null);
+          return;
+        }
+        resolve(response.token);
+      });
     });
   });
 }

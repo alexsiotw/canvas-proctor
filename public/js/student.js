@@ -1,7 +1,7 @@
 // Debug logging is off by default: it's an exam-integrity page, and a student with
 // devtools open should not be able to see detection state, violation events, or
 // what the proctoring system just flagged in real time.
-const PG_DEBUG = true; // TEMPORARY — flip back to false once the setup-wizard-reappearing bug is found
+const PG_DEBUG = false;
 if (!PG_DEBUG) {
   console.log = function () {};
 }
@@ -2314,21 +2314,39 @@ function sendSnapshot() {
         screenshot_data_url: dataUrl
     });
 }
+let pendingFullscreenReentry = false;
+
 function handleViolation(type, message) {
     if (isExamCompleted) return;
     violationCount++;
     logProctorEvent(type, `${message} (Violation #${violationCount})`);
-    
+
     if (examConfig.max_violations > 0 && violationCount >= examConfig.max_violations) {
         bootStudent();
     } else if (type !== 'display_violation') {
-        let msg = 'You have left the exam tab or lost focus of the window. This action has been logged and flagged for your instructor to review.';
+        let msg = type === 'fullscreen_exit'
+            ? 'You have exited fullscreen mode. This exam requires fullscreen — click below to return.'
+            : 'You have left the exam tab or lost focus of the window. This action has been logged and flagged for your instructor to review.';
         if (examConfig.max_violations > 0) {
             msg += ` Warning: You have ${violationCount} / ${examConfig.max_violations} focus violations. Exceeding this limit will automatically terminate your exam session.`;
         }
-        document.getElementById('focus-violation-overlay').querySelector('p').innerText = msg;
-        document.getElementById('focus-violation-overlay').style.display = 'flex';
+        pendingFullscreenReentry = (type === 'fullscreen_exit');
+        const overlay = document.getElementById('focus-violation-overlay');
+        overlay.querySelector('p').innerText = msg;
+        const btn = overlay.querySelector('button');
+        if (btn) btn.innerText = pendingFullscreenReentry ? 'Return to Fullscreen' : 'I Acknowledge, Return to Exam';
+        overlay.style.display = 'flex';
     }
+}
+
+// Fired by the overlay's button click — a real user gesture, so requestFullscreen() is
+// allowed here even though the fullscreen exit itself was detected asynchronously.
+function acknowledgeViolationOverlay() {
+    document.getElementById('focus-violation-overlay').style.display = 'none';
+    if (pendingFullscreenReentry && !document.fullscreenElement) {
+        document.documentElement.requestFullscreen().catch(err => console.log('Fullscreen re-entry failed:', err));
+    }
+    pendingFullscreenReentry = false;
 }
 
 let dualScreenOverlay = null;
@@ -2440,12 +2458,13 @@ function setupFocusTracking() {
         wasFocused = isFocused;
     }, 500);
 
-    window.addEventListener('resize', () => {
-        if (isExamCompleted) return;
-        if (examConfig.require_fullscreen && typeof document.documentElement.requestFullscreen === 'function' && !document.fullscreenElement) {
+    if (examConfig.require_fullscreen && typeof document.documentElement.requestFullscreen === 'function') {
+        document.addEventListener('fullscreenchange', () => {
+            if (isExamCompleted) return;
+            if (document.fullscreenElement) return;
             handleViolation('fullscreen_exit', 'Student exited fullscreen mode');
-        }
-    });
+        });
+    }
 }
 
 async function bootStudent() {
