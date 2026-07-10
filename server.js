@@ -39,6 +39,19 @@ const EXTENSION_TOKEN_TTL_SECONDS = 20 * 60; // 20 minutes
 // kept distinct from JWT_SIGNING_KEY on purpose so rotating one never affects the other.
 const AUTO_LOGIN_SIGNING_SECRET = process.env.AUTO_LOGIN_SIGNING_SECRET || 'dev-only-insecure-auto-login-secret';
 
+// /api/canvas-launch (below) is invoked directly by Canvas itself — some quizzes are
+// configured with this URL as an external redirect/launch link, with Canvas
+// variable-substituting user_id/course_id/etc. into the query string server-side.
+// Canvas's plain "external URL" redirect config can't compute a signature, so this
+// has to stay a simple shared value embedded in that Canvas-side URL configuration —
+// unlike the extension's auth (a real client we control end-to-end), there's no
+// short-lived-token trick available here without migrating the quiz to a proper
+// signed LTI placement (see /lti/launch for how that looks once it's worth doing).
+// Defaults to the value already baked into existing Canvas quiz configurations so
+// this doesn't break the moment it's redeployed — rotate deliberately, and only after
+// updating every quiz's configured launch URL to match.
+const CANVAS_LAUNCH_SECRET = process.env.CANVAS_LAUNCH_SECRET || 'canvas-proctor-shared-secret-key-998877';
+
 function signExtensionToken(ltiSession) {
     return jwt.sign({
         sub: ltiSession.userId,
@@ -270,10 +283,66 @@ app.post('/lti/launch', (req, res) => {
     });
 });
 
-// NOTE: a `/api/canvas-launch` endpoint (static-secret-gated, student session bootstrap)
-// used to live here. Removed during the PG_SHARED_SECRET retirement — grep across
-// extension/ and public/ turned up zero callers, so it was dead code, not a live
-// integration path. Re-add properly (with real auth) if you find a use for it.
+app.get('/api/canvas-launch', async (req, res) => {
+    const { user_id, user_name, course_id, quiz_id, secret } = req.query;
+    if (secret !== CANVAS_LAUNCH_SECRET) {
+        return res.status(403).json({ error: 'Unauthorized Canvas Launch' });
+    }
+    if (!user_id || !course_id || !quiz_id) {
+        return res.status(400).json({ error: 'Missing launch parameters' });
+    }
+
+    try {
+        const quizPattern = `%/quizzes/${quiz_id}`;
+        const quizPatternWithParams = `%/quizzes/${quiz_id}?%`;
+        const examResult = await pool.query(
+            'SELECT * FROM exams WHERE canvas_course_id = $1 AND (canvas_quiz_url LIKE $2 OR canvas_quiz_url LIKE $3) ORDER BY id DESC LIMIT 1',
+            [course_id, quizPattern, quizPatternWithParams]
+        );
+
+        if (examResult.rows.length === 0) {
+            const fallbackResult = await pool.query(
+                'SELECT * FROM exams WHERE canvas_quiz_url LIKE $1 OR canvas_quiz_url LIKE $2 ORDER BY id DESC LIMIT 1',
+                [quizPattern, quizPatternWithParams]
+            );
+            if (fallbackResult.rows.length > 0) {
+                examResult.rows = fallbackResult.rows;
+            }
+        }
+
+        if (examResult.rows.length === 0) {
+            return res.status(404).send(`
+                <div style="font-family: sans-serif; text-align: center; margin-top: 100px; color: #374151;">
+                    <h2>Secure Proctor Mode Error</h2>
+                    <p>This quiz is not yet configured for Secure Proctor Mode. Please ask your instructor to link this Canvas placement to an exam.</p>
+                </div>
+            `);
+        }
+
+        const exam = examResult.rows[0];
+        const sessionToken = uuidv4();
+
+        req.session.lti = {
+            userId: user_id,
+            canvasCourseId: course_id,
+            alternativeCourseId: '',
+            userName: user_name || 'Student',
+            role: 'student',
+            sessionToken: sessionToken,
+            resourceLinkId: ''
+        };
+
+        await pool.query(`
+            INSERT INTO lti_sessions (session_token, canvas_user_id, canvas_course_id, user_name, user_role, debug_info)
+            VALUES ($1, $2, $3, $4, $5, $6)
+        `, [sessionToken, user_id, course_id, user_name || 'Student', 'student', 'Direct Canvas integration launch']);
+
+        res.redirect(`/student.html?token=${sessionToken}&exam_id=${exam.id}`);
+    } catch (err) {
+        console.error('Canvas integration launch failed:', err);
+        res.status(500).json({ error: err.message });
+    }
+});
 
 app.get('/dev-launch', (req, res) => {
     req.session.lti = { userId: 'dev_instructor', canvasCourseId: 'demo_course', userName: 'Dev Instructor', role: 'instructor' };
