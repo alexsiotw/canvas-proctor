@@ -46,6 +46,17 @@ window.addEventListener("message", (event) => {
       console.log("[Content Script] Background response:", response);
     });
   }
+
+  else if (data.type === "PG_SET_TOKEN") {
+    console.log("[Content Script] Relaying PG_SET_TOKEN to background worker...");
+    chrome.runtime.sendMessage({
+      type: "PG_SET_TOKEN",
+      token: data.token,
+      expiresAt: data.expiresAt
+    }, (response) => {
+      console.log("[Content Script] Relaying token response:", response);
+    });
+  }
 });
 
 // Check status from background and sync exam settings

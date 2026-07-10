@@ -29,6 +29,7 @@
   "content_scripts": [
     {
       "matches": [
+        "*://proctor.siotw.net/*",
         "*://proctor.siotw.net/student.html*",
         "*://canvas.siotw.net/courses/*/quizzes/*",
         "*://canvas.siotw.net/courses/*/quizzes/*/edit",

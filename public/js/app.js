@@ -20,19 +20,23 @@ let socket = io();
 const PG_EXTENSION_ID = 'REPLACE_WITH_PUBLISHED_EXTENSION_ID';
 
 async function syncExtensionAuthToken() {
-    if (!window.chrome || !chrome.runtime || !chrome.runtime.sendMessage || PG_EXTENSION_ID.startsWith('REPLACE_WITH')) {
-        return; // no extension APIs available (non-Chrome browser), or ID not configured yet
-    }
     try {
         const res = await fetch('/api/extension/token');
         if (!res.ok) return; // not an instructor session (e.g. student dashboard view) — nothing to hand off
         const { token, expiresIn } = await res.json();
         const expiresAt = Date.now() + expiresIn * 1000;
-        chrome.runtime.sendMessage(PG_EXTENSION_ID, { type: 'PG_SET_TOKEN', token, expiresAt }, () => {
-            if (chrome.runtime.lastError) {
-                console.warn('[ProctorGuard] Extension not installed or unreachable:', chrome.runtime.lastError.message);
-            }
-        });
+
+        // Post message so the extension's content script running on the page can relay it
+        window.postMessage({ type: 'PG_SET_TOKEN', token, expiresAt }, "*");
+
+        // Direct extension message fallback (if ID is configured)
+        if (window.chrome && chrome.runtime && chrome.runtime.sendMessage && !PG_EXTENSION_ID.startsWith('REPLACE_WITH')) {
+            chrome.runtime.sendMessage(PG_EXTENSION_ID, { type: 'PG_SET_TOKEN', token, expiresAt }, () => {
+                if (chrome.runtime.lastError) {
+                    console.warn('[ProctorGuard] Extension not installed or unreachable via external message:', chrome.runtime.lastError.message);
+                }
+            });
+        }
     } catch (e) {
         console.warn('[ProctorGuard] Failed to sync extension auth token:', e.message);
     }

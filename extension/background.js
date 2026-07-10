@@ -122,6 +122,19 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true; // keep message channel open for async response
   }
 
+  else if (message.type === "PG_SET_TOKEN") {
+    const { token, expiresAt } = message;
+    if (!token || !expiresAt) {
+      sendResponse({ success: false, error: 'Missing token/expiresAt' });
+      return;
+    }
+    chrome.storage.local.set({ pgExtToken: token, pgExtTokenExpiresAt: expiresAt }, () => {
+      console.log('[Extension background] Received refreshed ProctorGuard auth token from content script.');
+      sendResponse({ success: true });
+    });
+    return true; // keep channel open
+  }
+
   return true;
 });
 
