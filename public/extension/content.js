@@ -702,7 +702,7 @@ function updateReviewCenterModalBody(modalEl, sessions, loadError) {
     tr.innerHTML = `
       <td class="icon-col"><input type="checkbox" class="prc-row-check" /></td>
       <td class="icon-col">
-        <button class="prc-eye-btn prc-open-detail" data-student-id="${s.student_canvas_id}" title="View session detail">
+        <button class="prc-eye-btn prc-open-detail" data-student-id="${s.student_canvas_id}" data-session-id="${s.id}" title="View session detail">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path><circle cx="12" cy="12" r="3"></circle></svg>
         </button>
       </td>
@@ -730,7 +730,7 @@ function updateReviewCenterModalBody(modalEl, sessions, loadError) {
         </div>
       </td>
       <td style="text-align:right;">
-        <button class="prc-review-btn prc-open-detail" data-student-id="${s.student_canvas_id}" style="background:none; color:#2563eb; font-weight:700; border:none; padding:4px 8px; cursor:pointer;">Review</button>
+        <button class="prc-review-btn prc-open-detail" data-student-id="${s.student_canvas_id}" data-session-id="${s.id}" style="background:none; color:#2563eb; font-weight:700; border:none; padding:4px 8px; cursor:pointer;">Review</button>
       </td>
     `;
     tbody.appendChild(tr);
@@ -741,8 +741,9 @@ function updateReviewCenterModalBody(modalEl, sessions, loadError) {
     el.addEventListener('click', (e) => {
       e.preventDefault();
       const studentId = el.getAttribute('data-student-id');
+      const sessionId = el.getAttribute('data-session-id');
       const studentSessions = sessions.filter(s => s.student_canvas_id === studentId);
-      openInlineStudentDetail(modalEl, studentSessions);
+      openInlineStudentDetail(modalEl, studentSessions, sessionId);
     });
   });
 }
@@ -763,7 +764,7 @@ async function refreshReviewCenterData(modalEl) {
 // ============================================================
 // INLINE STUDENT DETAIL — embeds below the Review Center table
 // ============================================================
-function openInlineStudentDetail(rcModal, sessions) {
+function openInlineStudentDetail(rcModal, sessions, initialSessionId) {
   if (!sessions || sessions.length === 0) return;
 
   const shell = rcModal.querySelector('.prc-shell');
@@ -791,9 +792,13 @@ function openInlineStudentDetail(rcModal, sessions) {
   // Ensure styles are injected
   injectPrmStyles();
 
-  // Build the shell inside the inline container
-  const firstSession = sessions.sort((a,b) => b.attempt_number - a.attempt_number)[0];
-  const attemptOptions = sessions.map(s => `<option value="${s.id}">Attempt ${s.attempt_number}</option>`).join('');
+  // Build the shell inside the inline container. Open the specific attempt the user
+  // clicked on (initialSessionId), falling back to the most recent attempt only if
+  // no specific row was targeted.
+  const sortedSessions = sessions.slice().sort((a, b) => b.attempt_number - a.attempt_number);
+  const firstSession = (initialSessionId && sessions.find(s => String(s.id) === String(initialSessionId)))
+    || sortedSessions[0];
+  const attemptOptions = sortedSessions.map(s => `<option value="${s.id}" ${String(s.id) === String(firstSession.id) ? 'selected' : ''}>Attempt ${s.attempt_number}</option>`).join('');
 
   container.innerHTML = `
     <div class="prm-header">
