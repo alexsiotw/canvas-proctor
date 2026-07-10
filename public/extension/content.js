@@ -503,6 +503,7 @@ function openExamReviewCenterModal(sessions, loadError) {
         transition: background .1s;
         cursor: default;
       }
+      .prc-data-table tbody tr:nth-child(even) { background: #fafbfc; }
       .prc-data-table tbody tr:hover { background: #f7fafc; }
       .prc-data-table td {
         padding: 12px 16px;
@@ -573,18 +574,26 @@ function openExamReviewCenterModal(sessions, loadError) {
       .prc-empty-state p { margin: 0; font-size: 14px; }
       .prc-empty-state small { color: #d69e2e; font-size: 12px; }
 
-      /* Inline Detail layout adjustments */
+      /* Inline Detail layout adjustments — detail view takes over the whole shell */
       .prc-shell {
         transition: height 0.2s ease, max-width 0.2s ease;
       }
       .prc-shell.prc-detail-open {
-        height: 95vh;
-        max-width: 1200px;
+        height: 96vh;
+        max-width: 1400px;
       }
+      .prc-shell.prc-detail-open .prc-section-header,
       .prc-shell.prc-detail-open .prc-table-area {
-        flex: 0 0 200px;
-        border-bottom: 2px solid #e2e8f0;
+        display: none;
       }
+      .prc-back-btn {
+        display: flex; align-items: center; gap: 6px;
+        background: none; border: none; cursor: pointer;
+        color: #4a5568; font-size: 13px; font-weight: 600;
+        padding: 6px 10px; border-radius: 6px;
+        transition: background .15s, color .15s;
+      }
+      .prc-back-btn:hover { background: #f0f4fa; color: #2563eb; }
     `;
     document.head.appendChild(style);
   }
@@ -683,7 +692,7 @@ function updateReviewCenterModalBody(modalEl, sessions, loadError) {
     const annotCount = _prcAnnotationCount(s.logs);
     const abnormCount = _prcAbnormalCount(s.logs);
     const calcScore = (alertCount * 5) + (abnormCount * 2);
-    const suspPct = s.riskScore || Math.min(100, calcScore);
+    const suspPct = Math.min(100, s.riskScore || calcScore);
     const suspClass = suspPct >= 70 ? 'high' : suspPct >= 30 ? 'medium' : 'low';
     const suspColor = suspPct >= 70 ? '#e53e3e' : suspPct >= 30 ? '#d69e2e' : '#38a169';
     const iconRow = _prcIconRowHtml(s);
@@ -787,14 +796,17 @@ function openInlineStudentDetail(rcModal, sessions) {
   const attemptOptions = sessions.map(s => `<option value="${s.id}">Attempt ${s.attempt_number}</option>`).join('');
 
   container.innerHTML = `
-    <div class="prm-header" style="border-top: 1px solid #e2e8f0;">
+    <div class="prm-header">
+      <button id="prm-close-btn" class="prc-back-btn">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="19" y1="12" x2="5" y2="12"></line><polyline points="12 19 5 12 12 5"></polyline></svg>
+        Back to list
+      </button>
       <strong style="font-size:14px; color:#1a1a2e; display:flex; align-items:center; gap:6px;">
         <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path><circle cx="12" cy="12" r="3"></circle></svg>
         Proctored Exam Report
       </strong>
       <div style="flex:1"></div>
-      <select id="prm-attempt-select" class="prm-attempt-select" style="margin-right:12px;">${attemptOptions}</select>
-      <button id="prm-close-btn" class="prc-close-btn" style="font-size: 18px;">&times;</button>
+      <select id="prm-attempt-select" class="prm-attempt-select">${attemptOptions}</select>
     </div>
     <div class="prm-stats-row" id="prm-stats-row"><!-- filled dynamically --></div>
     <div class="prm-body" style="flex: 1; min-height: 0;">
