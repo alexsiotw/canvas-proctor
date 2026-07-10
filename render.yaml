@@ -22,8 +22,12 @@ services:
         sync: false
       - key: LTI_SECRET
         sync: false
-      # Must match the PG_SECRET constant hardcoded in extension/review-center.js —
-      # don't let Render auto-generate this, it has to be set to the same value the
-      # already-built extension package expects, or every extension API call breaks.
-      - key: PG_SHARED_SECRET
-        sync: false
+      # Signs the short-lived extension auth JWTs (see /api/extension/token in
+      # server.js). Server-only — never shipped to the extension or dashboard.
+      # Safe to auto-generate/rotate; rotating just forces existing extension
+      # tokens to expire early (they're already ~20min TTL) and re-mint.
+      - key: JWT_SIGNING_KEY
+        generateValue: true
+      # Unrelated legacy HMAC secret (auto-login link signing) — also server-only.
+      - key: AUTO_LOGIN_SIGNING_SECRET
+        generateValue: true

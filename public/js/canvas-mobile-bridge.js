@@ -18,7 +18,6 @@
 
   // ─── Configuration ──────────────────────────────────────────
   const PROCTOR_SERVER = 'https://proctor.siotw.net';
-  const SHARED_SECRET  = 'canvas-proctor-shared-secret-key-998877';
 
   // ─── State ──────────────────────────────────────────────────
   let socket           = null;

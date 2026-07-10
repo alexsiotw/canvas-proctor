@@ -1,9 +1,47 @@
 let exams = [];
-let liveStudents = {}; 
+let liveStudents = {};
 let currentLiveExamId = null;
 let currentFullscreenSessionId = null;
 let currentSessionsList = [];
 let socket = io();
+
+// ================================================================
+// Hand off a short-lived extension auth token to the ProctorGuard Chrome
+// extension. This page only reaches this code while running inside a real,
+// LTI-verified instructor session (that's what /api/extension/token itself
+// requires — see server.js), so the extension never has to trust anything
+// static. See extension/background.js's onMessageExternal listener and
+// extension/manifest.json's externally_connectable for the receiving end.
+//
+// TODO: once ProctorGuard is published to the Chrome Web Store, replace this
+// placeholder with the real extension ID from its Web Store listing page
+// (chrome://extensions in developer mode also shows it for a locally-loaded
+// copy, but that ID is only stable once the item is actually published).
+const PG_EXTENSION_ID = 'REPLACE_WITH_PUBLISHED_EXTENSION_ID';
+
+async function syncExtensionAuthToken() {
+    if (!window.chrome || !chrome.runtime || !chrome.runtime.sendMessage || PG_EXTENSION_ID.startsWith('REPLACE_WITH')) {
+        return; // no extension APIs available (non-Chrome browser), or ID not configured yet
+    }
+    try {
+        const res = await fetch('/api/extension/token');
+        if (!res.ok) return; // not an instructor session (e.g. student dashboard view) — nothing to hand off
+        const { token, expiresIn } = await res.json();
+        const expiresAt = Date.now() + expiresIn * 1000;
+        chrome.runtime.sendMessage(PG_EXTENSION_ID, { type: 'PG_SET_TOKEN', token, expiresAt }, () => {
+            if (chrome.runtime.lastError) {
+                console.warn('[ProctorGuard] Extension not installed or unreachable:', chrome.runtime.lastError.message);
+            }
+        });
+    } catch (e) {
+        console.warn('[ProctorGuard] Failed to sync extension auth token:', e.message);
+    }
+}
+
+// Refresh well before the ~20 minute token expiry so a teacher who leaves the
+// dashboard tab open never sees a stale/expired token in the extension.
+syncExtensionAuthToken();
+setInterval(syncExtensionAuthToken, 10 * 60 * 1000);
 
 async function apiFetch(url, options = {}) {
     const res = await fetch(url, options);

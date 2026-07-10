@@ -18,22 +18,75 @@ const webmDurationFix = require('webm-duration-fix').default;
 const ffmpeg = require('fluent-ffmpeg');
 const ffmpegPath = require('ffmpeg-static');
 ffmpeg.setFfmpegPath(ffmpegPath);
+const jwt = require('jsonwebtoken');
 
-// Shared secret used to authenticate requests from the Chrome extension (which cannot
-// hold a real user session). Falls back to the legacy hardcoded value only so existing
-// deployments don't break before PG_SHARED_SECRET is set in the hosting environment —
-// set PG_SHARED_SECRET in Render and rotate this value before/soon after the extension
-// goes out for Chrome Web Store review.
-const PG_SHARED_SECRET = process.env.PG_SHARED_SECRET || 'canvas-proctor-shared-secret-key-998877';
+// ================================================================
+// Extension authentication: short-lived JWTs, not a static secret.
+//
+// The Chrome extension has no way to hold a real Canvas-authenticated session by
+// itself, but the ProctorGuard dashboard already does (teachers reach it via a real,
+// signed LTI launch — see /lti/launch and requireInstructor below). So instead of a
+// permanent shared string baked into the extension bundle, the dashboard mints a
+// short-lived signed token from that real session, hands it to the extension (see
+// externally_connectable in manifest.json + the onMessageExternal listener in
+// background.js), and the extension attaches it to its own API calls. The token
+// expires quickly and is scoped to the specific teacher/course it was issued for.
+// ================================================================
+const JWT_SIGNING_KEY = process.env.JWT_SIGNING_KEY || 'dev-only-insecure-signing-key-DO-NOT-USE-IN-PRODUCTION';
+const EXTENSION_TOKEN_TTL_SECONDS = 20 * 60; // 20 minutes
 
-// Best-effort defense in depth: requests carrying the shared secret should still only
-// ever originate from the Canvas instance or the extension itself, not an arbitrary
-// third-party site that got hold of the token.
-const ALLOWED_ORIGINS = [process.env.CANVAS_BASE_URL, 'https://canvas.siotw.net'].filter(Boolean);
-function isAllowedOrigin(req) {
-    const origin = req.headers.origin || req.headers.referer || '';
-    if (!origin) return true; // extension background-script fetches often omit Origin/Referer
-    return ALLOWED_ORIGINS.some(allowed => origin.startsWith(allowed));
+// Separate, unrelated signing secret used only for the legacy auto-login HMAC below —
+// kept distinct from JWT_SIGNING_KEY on purpose so rotating one never affects the other.
+const AUTO_LOGIN_SIGNING_SECRET = process.env.AUTO_LOGIN_SIGNING_SECRET || 'dev-only-insecure-auto-login-secret';
+
+function signExtensionToken(ltiSession) {
+    return jwt.sign({
+        sub: ltiSession.userId,
+        course: ltiSession.canvasCourseId,
+        altCourse: ltiSession.alternativeCourseId || '',
+        role: ltiSession.role
+    }, JWT_SIGNING_KEY, { expiresIn: EXTENSION_TOKEN_TTL_SECONDS });
+}
+
+// Reads a bearer/query/legacy-header token, verifies signature + expiry, and requires
+// the instructor role. Replaces every former `token === PG_SHARED_SECRET` check.
+function verifyExtensionToken(req, res, next) {
+    const authHeader = req.headers.authorization || '';
+    const bearerToken = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : null;
+    const token = bearerToken || req.query.token || req.headers['x-shared-secret'] || req.body.token;
+
+    if (!token) {
+        return res.status(401).json({ error: 'Missing extension token. Reconnect ProctorGuard from your dashboard.' });
+    }
+    try {
+        const payload = jwt.verify(token, JWT_SIGNING_KEY);
+        if (payload.role !== 'instructor') {
+            return res.status(403).json({ error: 'Instructor role required.' });
+        }
+        req.extensionAuth = payload;
+        next();
+    } catch (err) {
+        return res.status(401).json({ error: 'Extension token expired or invalid. Reconnect ProctorGuard from your dashboard.' });
+    }
+}
+
+// For endpoints reachable either from the authenticated dashboard (real session cookie)
+// or from the extension (short-lived JWT) — tries the JWT first, falls back to the
+// normal instructor session check.
+function requireInstructorOrExtensionToken(req, res, next) {
+    const authHeader = req.headers.authorization || '';
+    const bearerToken = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : null;
+    const token = bearerToken || req.query.token || req.headers['x-shared-secret'];
+    if (token) {
+        try {
+            const payload = jwt.verify(token, JWT_SIGNING_KEY);
+            if (payload.role === 'instructor') {
+                req.extensionAuth = payload;
+                return next();
+            }
+        } catch (err) { /* fall through to session check below */ }
+    }
+    return requireInstructor(req, res, next);
 }
 
 // Intercept console output to allow remote logs debugging
@@ -217,66 +270,10 @@ app.post('/lti/launch', (req, res) => {
     });
 });
 
-app.get('/api/canvas-launch', async (req, res) => {
-    const { user_id, user_name, course_id, quiz_id, secret } = req.query;
-    if (secret !== PG_SHARED_SECRET) {
-        return res.status(403).json({ error: 'Unauthorized Canvas Launch' });
-    }
-    if (!user_id || !course_id || !quiz_id) {
-        return res.status(400).json({ error: 'Missing launch parameters' });
-    }
-
-    try {
-        const quizPattern = `%/quizzes/${quiz_id}`;
-        const quizPatternWithParams = `%/quizzes/${quiz_id}?%`;
-        const examResult = await pool.query(
-            'SELECT * FROM exams WHERE canvas_course_id = $1 AND (canvas_quiz_url LIKE $2 OR canvas_quiz_url LIKE $3) ORDER BY id DESC LIMIT 1',
-            [course_id, quizPattern, quizPatternWithParams]
-        );
-
-        if (examResult.rows.length === 0) {
-            const fallbackResult = await pool.query(
-                'SELECT * FROM exams WHERE canvas_quiz_url LIKE $1 OR canvas_quiz_url LIKE $2 ORDER BY id DESC LIMIT 1',
-                [quizPattern, quizPatternWithParams]
-            );
-            if (fallbackResult.rows.length > 0) {
-                examResult.rows = fallbackResult.rows;
-            }
-        }
-
-        if (examResult.rows.length === 0) {
-            return res.status(404).send(`
-                <div style="font-family: sans-serif; text-align: center; margin-top: 100px; color: #374151;">
-                    <h2>Secure Proctor Mode Error</h2>
-                    <p>This quiz is not yet configured for Secure Proctor Mode. Please ask your instructor to link this Canvas placement to an exam.</p>
-                </div>
-            `);
-        }
-
-        const exam = examResult.rows[0];
-        const sessionToken = uuidv4();
-
-        req.session.lti = {
-            userId: user_id,
-            canvasCourseId: course_id,
-            alternativeCourseId: '',
-            userName: user_name || 'Student',
-            role: 'student',
-            sessionToken: sessionToken,
-            resourceLinkId: ''
-        };
-
-        await pool.query(`
-            INSERT INTO lti_sessions (session_token, canvas_user_id, canvas_course_id, user_name, user_role, debug_info)
-            VALUES ($1, $2, $3, $4, $5, $6)
-        `, [sessionToken, user_id, course_id, user_name || 'Student', 'student', 'Direct Canvas integration launch']);
-
-        res.redirect(`/student.html?token=${sessionToken}&exam_id=${exam.id}`);
-    } catch (err) {
-        console.error('Canvas integration launch failed:', err);
-        res.status(500).json({ error: err.message });
-    }
-});
+// NOTE: a `/api/canvas-launch` endpoint (static-secret-gated, student session bootstrap)
+// used to live here. Removed during the PG_SHARED_SECRET retirement — grep across
+// extension/ and public/ turned up zero callers, so it was dead code, not a live
+// integration path. Re-add properly (with real auth) if you find a use for it.
 
 app.get('/dev-launch', (req, res) => {
     req.session.lti = { userId: 'dev_instructor', canvasCourseId: 'demo_course', userName: 'Dev Instructor', role: 'instructor' };
@@ -369,14 +366,6 @@ async function requireAuth(req, res, next) {
 function requireInstructor(req, res, next) {
     if (!req.session.lti || req.session.lti.role !== 'instructor') return res.status(403).json({ error: 'Instructor access required.' });
     next();
-}
-
-function requireInstructorOrExtensionSecret(req, res, next) {
-    const token = req.query.token || req.body.token || req.headers['x-shared-secret'] || (req.session.lti && req.session.lti.sessionToken);
-    if (token === PG_SHARED_SECRET) {
-        return next();
-    }
-    return requireInstructor(req, res, next);
 }
 
 app.post('/api/verify-passcode', (req, res) => {
@@ -477,6 +466,15 @@ async function setCanvasQuizProctorMode(ltiSession, canvasQuizUrl, requireProcto
         console.error('Error in setCanvasQuizProctorMode:', err);
     }
 }
+
+// API: Mint a short-lived token the dashboard hands off to the Chrome extension
+// (see externally_connectable in the extension's manifest.json + background.js).
+// Gated by the real, already-established LTI-verified instructor session — no new
+// Canvas admin config needed, this reuses the exact login the dashboard already has.
+app.get('/api/extension/token', requireInstructor, (req, res) => {
+    const token = signExtensionToken(req.session.lti);
+    res.json({ token, expiresIn: EXTENSION_TOKEN_TTL_SECONDS });
+});
 
 // API: Fetch Canvas Quizzes (Teacher)
 app.get('/api/canvas-quizzes', requireInstructor, async (req, res) => {
@@ -717,11 +715,8 @@ app.patch('/api/exams/:id/status', requireInstructor, async (req, res) => {
 });
 
 // API: Canvas Native Integration - Get Exam by Quiz ID
-app.get('/api/canvas-native/exam/:quiz_id', async (req, res) => {
+app.get('/api/canvas-native/exam/:quiz_id', verifyExtensionToken, async (req, res) => {
     try {
-        if (req.headers['x-shared-secret'] !== PG_SHARED_SECRET) {
-            return res.status(403).json({ error: 'Unauthorized' });
-        }
         const { quiz_id } = req.params;
         const result = await pool.query("SELECT * FROM exams WHERE canvas_quiz_url LIKE $1 LIMIT 1", [`%/quizzes/${quiz_id}%`]);
         if (result.rows.length === 0) return res.status(404).json({ error: 'Not configured yet' });
@@ -732,26 +727,27 @@ app.get('/api/canvas-native/exam/:quiz_id', async (req, res) => {
 });
 
 // API: Canvas Native Integration - Get Session Report by Quiz ID and Student ID (For Extension)
-app.get('/api/canvas-native/session-report', async (req, res) => {
+app.get('/api/canvas-native/session-report', verifyExtensionToken, async (req, res) => {
     try {
-        const token = req.query.token || req.headers['x-shared-secret'];
-        if (token !== PG_SHARED_SECRET) {
-            return res.status(403).json({ error: 'Unauthorized' });
-        }
-        if (!isAllowedOrigin(req)) {
-            console.warn(`[Security] session-report called with valid token but unexpected origin: ${req.headers.origin || req.headers.referer}`);
-        }
-
         const { quiz_id, student_id } = req.query;
         if (!quiz_id) {
             return res.status(400).json({ error: 'quiz_id is required' });
         }
 
-        const examResult = await pool.query("SELECT id FROM exams WHERE canvas_quiz_url LIKE $1 LIMIT 1", [`%/quizzes/${quiz_id}%`]);
+        const examResult = await pool.query("SELECT id, canvas_course_id FROM exams WHERE canvas_quiz_url LIKE $1 LIMIT 1", [`%/quizzes/${quiz_id}%`]);
         if (examResult.rows.length === 0) {
             return res.status(404).json({ error: 'Exam not found for this quiz ID' });
         }
         const exam_id = examResult.rows[0].id;
+
+        // Authorization, not just authentication: the token proves *a* teacher is asking,
+        // this proves they're a teacher *for this course*. Closes the gap where a valid
+        // token could previously be replayed against any quiz_id in any course.
+        const examCourseId = examResult.rows[0].canvas_course_id;
+        const { course, altCourse } = req.extensionAuth;
+        if (examCourseId && course && examCourseId !== course && examCourseId !== altCourse) {
+            return res.status(403).json({ error: 'This token is not authorized for that course.' });
+        }
 
         let sessionsResult;
         if (student_id) {
@@ -808,11 +804,8 @@ app.get('/api/canvas-native/session-report', async (req, res) => {
 });
 
 // API: Canvas Native Integration - Save Exam Settings
-app.post('/api/canvas-native/exam/:quiz_id', async (req, res) => {
+app.post('/api/canvas-native/exam/:quiz_id', verifyExtensionToken, async (req, res) => {
     try {
-        if (req.headers['x-shared-secret'] !== PG_SHARED_SECRET) {
-            return res.status(403).json({ error: 'Unauthorized' });
-        }
         const { quiz_id } = req.params;
         const body = req.body;
         
@@ -928,34 +921,11 @@ app.post('/api/canvas-native/exam/:quiz_id', async (req, res) => {
     }
 });
 
-// API: Canvas Native Integration - Auto Login Redirect
-app.get('/api/canvas-native/auto-login', async (req, res) => {
-    if (req.query.token !== PG_SHARED_SECRET) {
-        return res.status(403).send("Unauthorized");
-    }
-    const { course_id, quiz_id, view } = req.query;
-    
-    // Lookup the correct LTI course hash from the database based on the course URL
-    let actualCourseId = course_id;
-    try {
-        const result = await pool.query('SELECT canvas_course_id FROM exams WHERE canvas_quiz_url LIKE $1 LIMIT 1', [`%/courses/${course_id}/%`]);
-        if (result.rows.length > 0) {
-            actualCourseId = result.rows[0].canvas_course_id;
-        }
-    } catch (err) {
-        console.error('Auto-login course lookup failed', err);
-    }
-
-    req.session.lti = {
-        userId: 'canvas_native_instructor',
-        canvasCourseId: actualCourseId,
-        alternativeCourseId: course_id,
-        userName: 'Canvas Instructor',
-        role: 'instructor'
-    };
-    req.session.passcodeVerified = true;
-    res.redirect(`/index.html?course_id=${course_id}&quiz_id=${quiz_id}&view=${view || ''}`);
-});
+// NOTE: a `/api/canvas-native/auto-login` endpoint used to live here — it granted a
+// full `role: 'instructor'` session from nothing but the static secret plus an
+// attacker-controlled course_id, and was never called anywhere in extension/ or
+// public/. Removed during the PG_SHARED_SECRET retirement; this was a real
+// privilege-escalation risk even though unused, not just dead weight.
 
 // API: Update Exam Settings
 app.patch('/api/exams/:id', requireInstructor, async (req, res) => {
@@ -1157,7 +1127,7 @@ async function verifyStudentExamAccess(exam, userId, ltiSession) {
     const crypto = require('crypto');
     const auto_login_user_id = userId;
     const auto_login_expires = Math.floor(Date.now() / 1000) + 300; // 5 minutes validity
-    const secret = PG_SHARED_SECRET;
+    const secret = AUTO_LOGIN_SIGNING_SECRET;
     const signData = `auto_login_user_id=${auto_login_user_id}&expires=${auto_login_expires}`;
     const auto_login_signature = crypto.createHmac('sha256', secret).update(signData).digest('hex');
 
@@ -1480,7 +1450,7 @@ app.post('/api/session/start', requireAuth, async (req, res) => {
         const crypto = require('crypto');
         const auto_login_user_id = userId;
         const auto_login_expires = Math.floor(Date.now() / 1000) + 300; // 5 minutes validity
-        const secret = PG_SHARED_SECRET;
+        const secret = AUTO_LOGIN_SIGNING_SECRET;
         const signData = `auto_login_user_id=${auto_login_user_id}&expires=${auto_login_expires}`;
         const auto_login_signature = crypto.createHmac('sha256', secret).update(signData).digest('hex');
 
@@ -2188,7 +2158,7 @@ app.patch('/api/session/:id/format', requireAuth, async (req, res) => {
 });
 
 // API: Get Video Chunks for Playback (Binary Stream)
-app.get('/api/session/video-playback/:session_id', requireInstructorOrExtensionSecret, async (req, res) => {
+app.get('/api/session/video-playback/:session_id', requireInstructorOrExtensionToken, async (req, res) => {
     try {
         const { session_id } = req.params;
         const sessionInfo = (await pool.query('SELECT mime_type, drive_file_id FROM exam_sessions WHERE id = $1', [session_id])).rows[0];
@@ -2256,7 +2226,7 @@ app.get('/api/session/video-playback/:session_id', requireInstructorOrExtensionS
 });
 
 // API: Get Mobile Video for Playback (Binary Stream)
-app.get('/api/session/mobile-video-playback/:session_id', requireInstructorOrExtensionSecret, async (req, res) => {
+app.get('/api/session/mobile-video-playback/:session_id', requireInstructorOrExtensionToken, async (req, res) => {
     try {
         const { session_id } = req.params;
         const sessionInfo = (await pool.query('SELECT mime_type, mobile_drive_file_id FROM exam_sessions WHERE id = $1', [session_id])).rows[0];
@@ -2839,7 +2809,7 @@ app.post('/api/session/room-scan', requireAuth, async (req, res) => {
 });
 
 // API: Room Scan Playback
-app.get('/api/session/room-scan-playback/:session_id', requireInstructorOrExtensionSecret, async (req, res) => {
+app.get('/api/session/room-scan-playback/:session_id', requireInstructorOrExtensionToken, async (req, res) => {
     try {
         const { session_id } = req.params;
         const scanPath = path.join(os.tmpdir(), `roomscans`, `scan-${session_id}.webm`);
@@ -2897,7 +2867,7 @@ app.post('/api/session/upload-id', requireAuth, async (req, res) => {
 });
 
 // API: View ID Verification Image
-app.get('/api/session/view-id/:session_id', requireInstructorOrExtensionSecret, async (req, res) => {
+app.get('/api/session/view-id/:session_id', requireInstructorOrExtensionToken, async (req, res) => {
     try {
         const { session_id } = req.params;
         const idPath = path.join(os.tmpdir(), `id_images`, `id-${session_id}.png`);
@@ -2951,7 +2921,7 @@ app.post('/api/session/upload-signature', requireAuth, async (req, res) => {
 });
 
 // API: View Signature Image
-app.get('/api/session/view-signature/:session_id', requireInstructorOrExtensionSecret, async (req, res) => {
+app.get('/api/session/view-signature/:session_id', requireInstructorOrExtensionToken, async (req, res) => {
     try {
         const { session_id } = req.params;
         const sigPath = path.join(os.tmpdir(), `signatures`, `sig-${session_id}.png`);

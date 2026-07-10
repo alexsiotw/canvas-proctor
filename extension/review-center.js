@@ -3,9 +3,17 @@
 // content_scripts. It is injected programmatically by background.js,
 // only after content.js's teacher-context probe reports this tab looks
 // like a teacher/TA/admin viewing a quiz/gradebook page. This is where
-// the ProctorGuard shared secret and all review-center/quiz-settings
-// networking lives — keeping it out of static injection means a
-// student's own exam page never receives this file's source at all.
+// all review-center/quiz-settings networking lives — keeping it out of
+// static injection means a student's own exam page never receives this
+// file's source at all.
+//
+// AUTH: there is no static secret anywhere in this file. Every API call
+// attaches a short-lived JWT (chrome.storage.local: pgExtToken) that the
+// ProctorGuard dashboard mints from a real, LTI-verified instructor
+// session and hands to the extension via externally_connectable (see
+// background.js's onMessageExternal listener). If no valid token is
+// stored, callers must prompt the teacher to open the dashboard rather
+// than silently failing or falling back to anything static.
 // ================================================================
 (function () {
 // Idempotency guard: background.js may attempt injection more than once
@@ -14,18 +22,31 @@
 if (window.__pgReviewCenterLoaded) return;
 window.__pgReviewCenterLoaded = true;
 
-// NOTE: this token ships inside the extension bundle and is visible to
-// anyone who inspects it — it is not a real secret. It only gates casual/
-// accidental access; server.js additionally checks request origin as
-// defense in depth. Rotating this value requires updating
-// PG_SHARED_SECRET on the server too.
 const PG_API_BASE = 'https://proctor.siotw.net';
-const PG_SECRET = 'canvas-proctor-shared-secret-key-998877';
 
 const PG_DEBUG = false;
 if (!PG_DEBUG) {
   console.log = function () {};
 }
+
+// Reads the current extension auth token from storage. Returns null if missing or
+// expired — callers must treat that as "prompt the teacher to reconnect", not retry
+// with anything else.
+function getExtensionToken() {
+  return new Promise((resolve) => {
+    chrome.storage.local.get(['pgExtToken', 'pgExtTokenExpiresAt'], (r) => {
+      if (!r.pgExtToken || !r.pgExtTokenExpiresAt || Date.now() >= r.pgExtTokenExpiresAt) {
+        resolve(null);
+      } else {
+        resolve(r.pgExtToken);
+      }
+    });
+  });
+}
+
+// Thrown/returned by callers when getExtensionToken() comes back null, so the UI can
+// show a clear "reconnect" prompt instead of a generic failure.
+const PG_NO_TOKEN = Symbol('PG_NO_TOKEN');
 
 // Proxy fetch through background service worker to avoid cross-origin issues in content scripts
 function bgFetch(url) {
@@ -46,6 +67,19 @@ function bgFetch(url) {
       }
     });
   });
+}
+
+// Shared helper for every session-report call site below. Throws a clearly-flagged
+// error (err.pgNoToken) when there's no valid extension token, so callers can render
+// a "reconnect ProctorGuard" prompt instead of a generic fetch-failure message.
+async function fetchSessionReport(quizId) {
+  const token = await getExtensionToken();
+  if (!token) {
+    const err = new Error('ProctorGuard needs to reconnect — open your dashboard at proctor.siotw.net, then try again.');
+    err.pgNoToken = true;
+    throw err;
+  }
+  return bgFetch(`${PG_API_BASE}/api/canvas-native/session-report?quiz_id=${quizId}&token=${encodeURIComponent(token)}`);
 }
 // --- Exam Review Center Integration ---
 async function initExamReviewCenterIntegration() {
@@ -76,7 +110,7 @@ async function initExamReviewCenterIntegration() {
   let loadError = null;
 
   // Start fetching in background immediately (via service worker to avoid CORS)
-  bgFetch(`${PG_API_BASE}/api/canvas-native/session-report?quiz_id=${quizId}&token=${PG_SECRET}`)
+  fetchSessionReport(quizId)
     .then(data => {
       sessions = data.sessions || [];
       console.log(`[ProctorGuard RC] Fetched ${sessions.length} sessions.`);
@@ -180,7 +214,7 @@ function injectSidebarFallbackLink(rightSide) {
     
     openExamReviewCenterModal(null, null);
     
-    bgFetch(`${PG_API_BASE}/api/canvas-native/session-report?quiz_id=${quizId}&token=${PG_SECRET}`)
+    fetchSessionReport(quizId)
       .then(d => {
         const modal = document.getElementById('proctor-review-center-modal');
         if (modal) updateReviewCenterModalBody(modal, d.sessions || [], null);
@@ -471,7 +505,11 @@ function updateReviewCenterModalBody(modalEl, sessions, loadError) {
   if (!tbody) return;
 
   if (loadError) {
-    tbody.innerHTML = `<tr><td colspan="8"><div class="prc-empty-state"><svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg><p>${loadError}</p><small>Check ProctorGuard server connection</small></div></td></tr>`;
+    const isReconnect = /reconnect/i.test(loadError);
+    const hint = isReconnect
+      ? `<a href="https://proctor.siotw.net" target="_blank" rel="noopener">Open proctor.siotw.net</a> to reconnect, then reopen this Review Center.`
+      : 'Check ProctorGuard server connection';
+    tbody.innerHTML = `<tr><td colspan="8"><div class="prc-empty-state"><svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg><p>${loadError}</p><small>${hint}</small></div></td></tr>`;
     return;
   }
   if (sessions === null) {
@@ -555,10 +593,10 @@ async function refreshReviewCenterData(modalEl) {
   if (!idMatch) return;
   const quizId = idMatch[1];
   try {
-    const data = await bgFetch(`${PG_API_BASE}/api/canvas-native/session-report?quiz_id=${quizId}&token=${PG_SECRET}`);
+    const data = await fetchSessionReport(quizId);
     updateReviewCenterModalBody(modalEl, data.sessions || [], null);
   } catch(e) {
-    updateReviewCenterModalBody(modalEl, [], 'Failed to refresh reports from server.');
+    updateReviewCenterModalBody(modalEl, [], e.message || 'Failed to refresh reports from server.');
   }
 }
 
@@ -862,18 +900,27 @@ function injectPrmStyles() {
   document.head.appendChild(style);
 }
 
-function loadSessionInModal(modal, session) {
+async function loadSessionInModal(modal, session) {
   const videoArea    = modal.querySelector('#prm-video-area');
   const statsRow     = modal.querySelector('#prm-stats-row');
   const timeline     = modal.querySelector('#prm-timeline');
 
   if (!videoArea) return;
 
+  // <video src="..."> can't carry an Authorization header, so the token has to ride
+  // in the URL here — acceptable specifically because it's short-lived and scoped,
+  // unlike the old static secret this replaces.
+  const token = await getExtensionToken();
+  if (!token) {
+    videoArea.innerHTML = `<div class="prm-no-video">ProctorGuard needs to reconnect — open your dashboard at proctor.siotw.net, then reopen this review.</div>`;
+    return;
+  }
+
   // ------- VIDEO AREA -------
   const hasVideo   = !!session.drive_file_id;
   const hasMobile  = !!session.mobile_drive_file_id;
-  const videoSrc   = `${PG_API_BASE}/api/session/video-playback/${session.id}?token=${PG_SECRET}`;
-  const mobileSrc  = `${PG_API_BASE}/api/session/mobile-video-playback/${session.id}?token=${PG_SECRET}`;
+  const videoSrc   = `${PG_API_BASE}/api/session/video-playback/${session.id}?token=${encodeURIComponent(token)}`;
+  const mobileSrc  = `${PG_API_BASE}/api/session/mobile-video-playback/${session.id}?token=${encodeURIComponent(token)}`;
 
   if (hasVideo) {
     videoArea.innerHTML = `
@@ -1609,8 +1656,10 @@ function injectProctorGuardTab(tabNav, quizId) {
       canvas_course_id: cMatch ? cMatch[1] : ''
     };
     try {
+      const token = await getExtensionToken();
+      if (!token) throw new Error('ProctorGuard needs to reconnect — open your dashboard at proctor.siotw.net, then try saving again.');
       const res = await fetch(`${PG_API_BASE}/api/canvas-native/exam/${quizId}`, {
-        method:'POST', headers:{'Content-Type':'application/json','x-shared-secret':PG_SECRET}, body:JSON.stringify(payload)
+        method:'POST', headers:{'Content-Type':'application/json','Authorization':`Bearer ${token}`}, body:JSON.stringify(payload)
       });
       if (res.ok) { ok.style.display='inline'; setTimeout(()=>{ ok.style.display='none'; }, 4000); }
       else { const d=await res.json().catch(()=>{}); throw new Error((d&&d.error)||`Server error ${res.status}`); }
@@ -1623,7 +1672,9 @@ function injectProctorGuardTab(tabNav, quizId) {
 
 async function loadPGSettings(quizId) {
   try {
-    const res = await fetch(`${PG_API_BASE}/api/canvas-native/exam/${quizId}`, { headers:{'x-shared-secret':PG_SECRET} });
+    const token = await getExtensionToken();
+    if (!token) { console.log('[ProctorGuard] No extension token yet — open the dashboard once to connect.'); return; }
+    const res = await fetch(`${PG_API_BASE}/api/canvas-native/exam/${quizId}`, { headers:{'Authorization':`Bearer ${token}`} });
     if (!res.ok) return;
     const d = await res.json();
     if (d.error) return;

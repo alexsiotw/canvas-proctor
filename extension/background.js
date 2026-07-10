@@ -1,6 +1,28 @@
 let activeExamSession = null;
 let heartbeatInterval = null;
 
+// ----------------------------------------------------------------
+// Receive the short-lived extension auth token from the ProctorGuard dashboard.
+// This is the ONLY path that can hand ProctorGuard a token: it's restricted by
+// externally_connectable in manifest.json to https://proctor.siotw.net/*, and the
+// dashboard only fetches a token for a page it reached via a real, LTI-verified
+// instructor session (see /api/extension/token in server.js). Nothing here trusts
+// a static string anymore — replaces the old PG_SHARED_SECRET model entirely.
+// ----------------------------------------------------------------
+chrome.runtime.onMessageExternal.addListener((message, sender, sendResponse) => {
+  if (!message || message.type !== 'PG_SET_TOKEN') return;
+  const { token, expiresAt } = message;
+  if (!token || !expiresAt) {
+    sendResponse({ success: false, error: 'Missing token/expiresAt' });
+    return;
+  }
+  chrome.storage.local.set({ pgExtToken: token, pgExtTokenExpiresAt: expiresAt }, () => {
+    console.log('[Extension] Received refreshed ProctorGuard auth token from dashboard.');
+    sendResponse({ success: true });
+  });
+  return true; // keep the message channel open for the async storage callback
+});
+
 // Listen for messages from content scripts
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.type === "START_EXAM") {

@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "ProctorGuard Extension",
-  "version": "1.5.0",
+  "version": "2.0.0",
   "description": "Enforces advanced browser lockdown and monitoring during proctored Canvas exams.",
   "permissions": [
     "tabs",
@@ -15,6 +15,9 @@
     "*://proctor.siotw.net/*",
     "*://canvas.siotw.net/*"
   ],
+  "externally_connectable": {
+    "matches": ["https://proctor.siotw.net/*"]
+  },
   "icons": {
     "16": "icon16.png",
     "48": "icon48.png",
