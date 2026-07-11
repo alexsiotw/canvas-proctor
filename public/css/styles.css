@@ -1354,7 +1354,7 @@ body::before {
 }
 
 
-/* ===== PROCTORIO CONFIG GRID ===== */
+/* ===== PROCTORGUARD CONFIG GRID (legacy class names kept for stability) ===== */
 .proctorio-grid {
   display: grid;
   grid-template-columns: repeat(6, 1fr);
@@ -1382,23 +1382,23 @@ body::before {
 }
 
 .proctorio-card:hover {
-  border-color: #2ebd59;
-  background: rgba(46, 189, 89, 0.02);
+  border-color: var(--accent);
+  background: var(--accent-glow);
   transform: translateY(-2px);
 }
 
 .proctorio-card.selected {
-  border: 2px solid #2ebd59 !important;
-  background: #333333 !important;
-  color: #2ebd59 !important;
+  border: 2px solid var(--accent) !important;
+  background: #eff6ff !important;
+  color: var(--accent) !important;
 }
 
 .proctorio-card.selected .proctorio-title {
-  color: #2ebd59 !important;
+  color: var(--accent) !important;
 }
 
 .proctorio-card.selected .proctorio-icon img {
-  filter: invert(53%) sepia(81%) saturate(417%) hue-rotate(90deg) brightness(97%) contrast(89%) !important;
+  filter: invert(32%) sepia(98%) saturate(1800%) hue-rotate(210deg) brightness(95%) contrast(95%) !important;
 }
 
 .proctorio-check {
@@ -1419,7 +1419,7 @@ body::before {
 }
 
 .proctorio-card.selected .proctorio-check {
-  display: none; /* Hide check badge in favor of clean Proctorio look */
+  display: none;
 }
 
 .proctorio-icon {
@@ -1445,7 +1445,7 @@ body::before {
   color: var(--text-primary);
 }
 
-/* Proctorio Accordion / Section styling */
+/* Settings accordion */
 .proctorio-section {
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);

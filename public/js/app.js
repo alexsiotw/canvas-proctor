@@ -3,7 +3,97 @@ let liveStudents = {};
 let currentLiveExamId = null;
 let currentFullscreenSessionId = null;
 let currentSessionsList = [];
+let liveViewFilter = 'all'; // all | online | flagged
+let liveViewLayout = 'grid'; // grid | large
 let socket = io();
+
+// Shared flag taxonomy + risk scoring (one source of truth for live, list, and detail views)
+const FLAG_EVENT_TYPES = [
+    'tab_blur', 'window_blur', 'fullscreen_exit', 'tab_switched', 'tab_blurred',
+    'audio_violation', 'mic_muted', 'audio_threshold_exceeded',
+    'error', 'fail', 'booted',
+    'phone_detected', 'multiple_faces', 'no_face', 'gaze_off_screen',
+    'clipboard', 'copy', 'paste', 'window_resize', 'browser_resize'
+];
+
+function isFlagEvent(type) {
+    if (!type) return false;
+    if (type.startsWith('AI_')) return true;
+    if (FLAG_EVENT_TYPES.includes(type)) return true;
+    const t = type.toLowerCase();
+    return t.includes('clipboard') || t.includes('copy') || t.includes('paste') ||
+        t.includes('resize') || t.includes('blur') || t.includes('tab_switch');
+}
+
+function getEventWeightCategory(type) {
+    if (!type) return null;
+    if (type.startsWith('AI_GAZE') || type === 'gaze_off_screen') return 'head';
+    if (type.startsWith('AI_DEVICE') || type === 'phone_detected') return 'device';
+    if (type.startsWith('AI_PEOPLE') || type === 'multiple_faces' || type === 'no_face') return 'face';
+    if (type === 'audio_violation' || type === 'mic_muted' || type === 'audio_threshold_exceeded') return 'audio';
+    if (['tab_blur', 'window_blur', 'fullscreen_exit', 'tab_switched', 'tab_blurred'].includes(type) ||
+        (type.includes('blur') || type.includes('tab_switch'))) return 'away';
+    if (type.includes('clipboard') || type.includes('copy') || type.includes('paste')) return 'copy';
+    if (type.includes('resize')) return 'resize';
+    if (type.includes('keystroke') || type.includes('key_')) return 'key';
+    if (type.includes('leaving') || type.includes('room_left')) return 'room';
+    if (isFlagEvent(type)) return 'other';
+    return null;
+}
+
+/**
+ * Unified risk model. Uses exam behavior weights when available.
+ * Returns { score, tier, category, html, totalWarnings, focusWarnings, aiWarnings, audioWarnings, trustScore }
+ */
+function computeSessionRisk(session, exam = null) {
+    const logs = Array.isArray(session.logs) ? session.logs : [];
+    const weights = {
+        away: exam && exam.weight_navigating_away != null ? Number(exam.weight_navigating_away) : 3,
+        key: exam && exam.weight_keystrokes != null ? Number(exam.weight_keystrokes) : 1,
+        copy: exam && exam.weight_copy_paste != null ? Number(exam.weight_copy_paste) : 4,
+        resize: exam && exam.weight_browser_resize != null ? Number(exam.weight_browser_resize) : 2,
+        head: exam && exam.weight_head_movement != null ? Number(exam.weight_head_movement) : 2,
+        face: exam && exam.weight_multi_face != null ? Number(exam.weight_multi_face) : 3,
+        room: exam && exam.weight_leaving_room != null ? Number(exam.weight_leaving_room) : 3,
+        device: 5,
+        audio: 3,
+        other: 2
+    };
+
+    let score = 0;
+    let focusWarnings = 0, aiWarnings = 0, audioWarnings = 0, totalWarnings = 0;
+
+    logs.forEach(l => {
+        const cat = getEventWeightCategory(l.event_type);
+        if (!cat) return;
+        totalWarnings++;
+        if (cat === 'away') focusWarnings++;
+        if (l.event_type && l.event_type.startsWith('AI_')) aiWarnings++;
+        if (cat === 'audio') audioWarnings++;
+        score += (weights[cat] != null ? weights[cat] : weights.other) * 4;
+    });
+
+    // Cap and tier
+    score = Math.min(100, Math.round(score));
+    let tier = 'Low';
+    let category = 'low';
+    let html = '<span class="badge badge-success">Low Risk</span>';
+    if (score >= 50 || aiWarnings > 0 || audioWarnings > 2) {
+        tier = 'High'; category = 'high';
+        html = `<span class="badge badge-danger">High Risk (${totalWarnings} flags)</span>`;
+    } else if (score >= 20 || totalWarnings > 0) {
+        tier = 'Moderate'; category = 'moderate';
+        html = `<span class="badge badge-warning">Mod Risk (${totalWarnings} flags)</span>`;
+    }
+
+    const trustScore = Math.max(0, 100 - score);
+    return { score, tier, category, html, totalWarnings, focusWarnings, aiWarnings, audioWarnings, trustScore };
+}
+
+function getRiskInfo(session) {
+    const exam = currentLiveExamId ? exams.find(e => e.id == currentLiveExamId) : null;
+    return computeSessionRisk(session, exam);
+}
 
 // ================================================================
 // Hand off a short-lived extension auth token to the ProctorGuard Chrome
@@ -95,7 +185,7 @@ socket.on('proctor_log', (data) => {
         const s = liveStudents[data.exam_session_id];
         if (!s.flagCount) s.flagCount = 0;
         
-        const isFlag = ['tab_blur', 'window_blur', 'fullscreen_exit', 'audio_violation', 'mic_muted', 'error', 'fail'].includes(data.event_type) || data.event_type.startsWith('AI_');
+        const isFlag = isFlagEvent(data.event_type);
         if (isFlag) {
             s.flagCount++;
             s.hasFlags = true;
@@ -389,21 +479,9 @@ function renderExams() {
         </div>
 
         <div class="card" style="padding: 24px; background:var(--bg-secondary); border:1px solid var(--border); border-radius:var(--radius-lg); box-shadow:var(--shadow);">
-            <!-- Schoolyear-style pagination header bar -->
             <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom: 20px; border-bottom: 1px solid var(--border); padding-bottom: 15px;">
                 <div style="font-size:14px; font-weight:700; color:var(--text-secondary); font-family:'Outfit',sans-serif;">
-                    Course Quizzes List
-                </div>
-                <div style="display:flex; align-items:center; gap:12px; font-size:13px; color:var(--text-secondary);">
-                    <button class="btn btn-secondary btn-sm" disabled style="padding: 5px 12px; opacity:0.6;">Previous</button>
-                    <span>Page 1 of 1</span>
-                    <button class="btn btn-secondary btn-sm" disabled style="padding: 5px 12px; opacity:0.6;">Next</button>
-                    <div style="display:flex; align-items:center; margin-left: 8px;">
-                        <span>Items per page:</span>
-                        <select class="filter-select" style="padding: 4px 8px; font-size:12px; margin-left: 5px; background:var(--bg-secondary); border:1px solid var(--border); border-radius:var(--radius-sm); color:var(--text-primary);">
-                            <option>100</option>
-                        </select>
-                    </div>
+                    Course Quizzes (${quizzes.length})
                 </div>
             </div>
 
@@ -450,27 +528,27 @@ function loadExamDashboard(examId) {
                         ${exam.is_open ? '🔓 Exam is OPEN' : '🔒 Exam is CLOSED'}
                     </button>
                 </div>
-                <p class="page-subtitle">Managing exam LTI placements with Access Code: <strong style="color:var(--accent); font-family:monospace;">${exam.exam_code}</strong></p>
+                <p class="page-subtitle">Access code: <strong style="color:var(--accent); font-family:monospace;">${exam.exam_code}</strong>
+                    · <a href="/student.html?practice=1" target="_blank" style="color:var(--accent); font-weight:600;">Open practice system check</a>
+                    <span style="color:var(--text-muted); font-size:12px;"> (share with students · not graded)</span>
+                </p>
             </div>
         </div>
 
         <!-- ProctorGuard Navigation Tabbar -->
         <div style="background: #ffffff; border: 1px solid var(--border); border-radius: var(--radius-lg); margin-bottom: 25px; padding: 0 16px;">
             <div style="display: flex; gap: 20px; align-items: center; height: 50px; font-size: 14px;">
-                <div class="proctor-tab active" style="font-weight: 700; color: var(--accent); border-bottom: 3px solid var(--accent); height: 100%; display: flex; align-items: center; padding: 0 4px; cursor: pointer;">
-                    📊 ProctorGuard Review Center
+                <div class="proctor-tab active" style="font-weight: 700; color: var(--accent); border-bottom: 3px solid var(--accent); height: 100%; display: flex; align-items: center; padding: 0 4px; cursor: default;">
+                    Review Center
                 </div>
                 <div class="proctor-tab" onclick="showCreateExamModal(${exam.id})" style="font-weight: 500; color: var(--text-secondary); height: 100%; display: flex; align-items: center; padding: 0 4px; cursor: pointer;" onmouseenter="this.style.color='var(--text-primary)'" onmouseleave="this.style.color='var(--text-secondary)'">
-                    ⚙️ ProctorGuard Settings
+                    Settings
                 </div>
-                <div class="proctor-tab" style="font-weight: 500; color: var(--text-secondary); height: 100%; display: flex; align-items: center; padding: 0 4px; cursor: pointer;" onmouseenter="this.style.color='var(--text-primary)'" onmouseleave="this.style.color='var(--text-secondary)'">
-                    📍 ProctorGuard Map
+                <div class="proctor-tab" onclick="showAccommodationsPanel(${exam.id})" style="font-weight: 500; color: var(--text-secondary); height: 100%; display: flex; align-items: center; padding: 0 4px; cursor: pointer;" onmouseenter="this.style.color='var(--text-primary)'" onmouseleave="this.style.color='var(--text-secondary)'">
+                    Accommodations
                 </div>
-                <div class="proctor-tab" style="font-weight: 500; color: var(--text-secondary); height: 100%; display: flex; align-items: center; padding: 0 4px; cursor: pointer;" onmouseenter="this.style.color='var(--text-primary)'" onmouseleave="this.style.color='var(--text-secondary)'">
-                    🎛️ Display Options
-                </div>
-                <div class="proctor-tab" style="font-weight: 500; color: var(--text-secondary); height: 100%; display: flex; align-items: center; padding: 0 4px; cursor: pointer;" onmouseenter="this.style.color='var(--text-primary)'" onmouseleave="this.style.color='var(--text-secondary)'">
-                    📤 Export Options
+                <div class="proctor-tab" onclick="exportExamReportsCsv(${exam.id})" style="font-weight: 500; color: var(--text-secondary); height: 100%; display: flex; align-items: center; padding: 0 4px; cursor: pointer;" onmouseenter="this.style.color='var(--text-primary)'" onmouseleave="this.style.color='var(--text-secondary)'">
+                    Export CSV
                 </div>
             </div>
         </div>
@@ -498,16 +576,25 @@ function loadExamDashboard(examId) {
         <div style="display: flex; flex-direction: column; gap: 30px; margin-top: 10px;">
             <!-- Live Monitoring Block -->
             <div class="card" style="padding: 24px;">
-                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom: 20px; border-bottom: 1px solid var(--border); padding-bottom: 12px;">
+                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom: 20px; border-bottom: 1px solid var(--border); padding-bottom: 12px; flex-wrap: wrap; gap: 12px;">
                     <h2 style="font-size: 18px; font-weight: 700; margin: 0;">Live Monitoring Feed</h2>
-                    <div style="display:flex; align-items:center; gap:12px;">
+                    <div style="display:flex; align-items:center; gap:10px; flex-wrap: wrap;">
+                        <div class="live-filter-group" style="display:flex; gap:4px; background:#f1f5f9; padding:3px; border-radius:8px;">
+                            <button type="button" class="btn btn-sm live-filter-btn ${liveViewFilter==='all'?'btn-primary':'btn-secondary'}" data-filter="all" onclick="setLiveViewFilter('all')" style="padding:4px 10px; font-size:12px;">All</button>
+                            <button type="button" class="btn btn-sm live-filter-btn ${liveViewFilter==='online'?'btn-primary':'btn-secondary'}" data-filter="online" onclick="setLiveViewFilter('online')" style="padding:4px 10px; font-size:12px;">Online</button>
+                            <button type="button" class="btn btn-sm live-filter-btn ${liveViewFilter==='flagged'?'btn-primary':'btn-secondary'}" data-filter="flagged" onclick="setLiveViewFilter('flagged')" style="padding:4px 10px; font-size:12px;">Flagged first</button>
+                        </div>
+                        <div class="live-filter-group" style="display:flex; gap:4px; background:#f1f5f9; padding:3px; border-radius:8px;">
+                            <button type="button" class="btn btn-sm ${liveViewLayout==='grid'?'btn-primary':'btn-secondary'}" onclick="setLiveViewLayout('grid')" style="padding:4px 10px; font-size:12px;" title="Compact grid">Grid</button>
+                            <button type="button" class="btn btn-sm ${liveViewLayout==='large'?'btn-primary':'btn-secondary'}" onclick="setLiveViewLayout('large')" style="padding:4px 10px; font-size:12px;" title="Larger tiles">Large</button>
+                        </div>
                         <button class="btn btn-warning-action btn-sm" onclick="sendBroadcastAnnouncement(${exam.id})">
-                            📢 Broadcast Alert
+                            Broadcast Alert
                         </button>
-                        <span style="font-size:12px; color:var(--text-secondary);">Click webcam to expand.</span>
+                        <span style="font-size:12px; color:var(--text-secondary);">Click feed to expand</span>
                     </div>
                 </div>
-                <div id="live-grid" class="session-grid"></div>
+                <div id="live-grid" class="session-grid ${liveViewLayout==='large' ? 'live-grid-large' : ''}"></div>
             </div>
             
             <!-- Reports Block -->
@@ -560,6 +647,20 @@ function getShortFlagLabel(type) {
     return type.toUpperCase();
 }
 
+function setLiveViewFilter(filter) {
+    liveViewFilter = filter;
+    updateLiveGrid();
+}
+
+function setLiveViewLayout(layout) {
+    liveViewLayout = layout;
+    const grid = document.getElementById('live-grid');
+    if (grid) {
+        grid.classList.toggle('live-grid-large', layout === 'large');
+    }
+    updateLiveGrid();
+}
+
 function updateLiveGrid() {
     if (!document.getElementById('live-pulse-style')) {
         const style = document.createElement('style');
@@ -570,6 +671,9 @@ function updateLiveGrid() {
                 50% { border-color: rgba(239, 68, 68, 1); box-shadow: 0 0 15px rgba(239, 68, 68, 0.5); }
                 100% { border-color: rgba(239, 68, 68, 0.4); box-shadow: 0 0 5px rgba(239, 68, 68, 0.2); }
             }
+            .live-grid-large { grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)) !important; }
+            .live-grid-large .card-screenshot-container img,
+            .live-grid-large .card-screenshot-container > div { height: 200px !important; }
         `;
         document.head.appendChild(style);
     }
@@ -577,42 +681,66 @@ function updateLiveGrid() {
     const grid = document.getElementById('live-grid');
     if(!grid) return;
 
-    const sessionIds = Object.keys(liveStudents);
+    grid.classList.toggle('live-grid-large', liveViewLayout === 'large');
+
+    let sessionIds = Object.keys(liveStudents);
+
+    // Filter
+    if (liveViewFilter === 'online') {
+        sessionIds = sessionIds.filter(id => liveStudents[id].status === 'online');
+    } else if (liveViewFilter === 'flagged') {
+        sessionIds = sessionIds.filter(id => liveStudents[id].hasFlags || liveStudents[id].status === 'online');
+    }
+
+    // Sort: flagged first, then online, then by name
+    sessionIds.sort((a, b) => {
+        const sa = liveStudents[a], sb = liveStudents[b];
+        const fa = sa.hasFlags ? 1 : 0, fb = sb.hasFlags ? 1 : 0;
+        if (fa !== fb) return fb - fa;
+        const oa = sa.status === 'online' ? 1 : 0, ob = sb.status === 'online' ? 1 : 0;
+        if (oa !== ob) return ob - oa;
+        return (sa.name || '').localeCompare(sb.name || '');
+    });
     
     if (sessionIds.length === 0) {
-        grid.innerHTML = '<div id="empty-grid-msg" style="color: var(--text-muted); font-size: 14px; grid-column:1/-1; padding:20px 0; text-align:center;">Live queue is currently empty. Waiting for students to authenticate...</div>';
+        const emptyLabel = Object.keys(liveStudents).length === 0
+            ? 'Live queue is empty. Waiting for students to authenticate...'
+            : 'No students match this filter.';
+        grid.innerHTML = `<div id="empty-grid-msg" style="color: var(--text-muted); font-size: 14px; grid-column:1/-1; padding:20px 0; text-align:center;">${emptyLabel}</div>`;
         const activeMetric = document.getElementById('stat-active-sessions');
-        if (activeMetric) activeMetric.innerText = 0;
+        if (activeMetric) activeMetric.innerText = Object.keys(liveStudents).filter(id => liveStudents[id].status === 'online').length;
         return;
     }
 
-    // Remove empty message if it exists
     const emptyMsg = document.getElementById('empty-grid-msg');
     if (emptyMsg) emptyMsg.remove();
 
-    // Clean up cards for student sessions that are no longer active
+    // Remove cards not in filtered set or no longer live
     const cards = grid.querySelectorAll('.student-live-card');
     cards.forEach(card => {
         const id = card.id.replace('student-card-', '');
-        if (!liveStudents[id]) {
+        if (!liveStudents[id] || !sessionIds.includes(id)) {
             card.remove();
         }
     });
 
+    const imgH = liveViewLayout === 'large' ? 200 : 140;
+
     sessionIds.forEach(sessionId => {
         const s = liveStudents[sessionId];
         const statusColor = s.status === 'online' ? 'var(--success)' : 'var(--text-muted)';
+        const safeName = (s.name || 'Student').replace(/'/g, "\\'");
         
         let content = '';
         if(s.screenshot) {
-            content = `<img src="${s.screenshot}" style="width:100%; height:140px; object-fit:cover; border-radius: var(--radius-sm); cursor: pointer;" onclick="openFullscreenImg('${s.screenshot}', ${sessionId})" />`;
+            content = `<img src="${s.screenshot}" style="width:100%; height:${imgH}px; object-fit:cover; border-radius: var(--radius-sm); cursor: pointer;" onclick="openFullscreenImg(this.src, ${sessionId})" />`;
         } else {
-            content = `<div style="width:100%; height:140px; background:rgba(0,0,0,0.3); border-radius: var(--radius-sm); display:flex; align-items:center; justify-content:center; color:var(--text-muted); border:1px dashed var(--border);">No Signal</div>`;
+            content = `<div style="width:100%; height:${imgH}px; background:rgba(0,0,0,0.3); border-radius: var(--radius-sm); display:flex; align-items:center; justify-content:center; color:var(--text-muted); border:1px dashed var(--border);">No Signal</div>`;
         }
 
         const warningBtn = s.status === 'online' ? `
-            <button class="btn btn-warning-action btn-xs" style="margin-top:10px; width:100%; justify-content:center;" onclick="sendStudentWarning(${sessionId}, '${s.name || 'Student'}')">
-                💬 Send Alert
+            <button class="btn btn-warning-action btn-xs" style="margin-top:10px; width:100%; justify-content:center;" onclick="openAlertComposer(${sessionId}, '${safeName}')">
+                Send Alert
             </button>
         ` : '';
 
@@ -626,13 +754,12 @@ function updateLiveGrid() {
 
         const flagText = (s.status === 'online' && s.lastFlagType) ? `
             <div style="margin-top: 8px; font-size: 11px; padding: 6px 8px; border-radius: 4px; background: rgba(239, 68, 68, 0.15); border: 1px solid rgba(239, 68, 68, 0.3); color: #ef4444; display: flex; align-items: center; gap: 4px;">
-                ⚠️ <strong>Alert:</strong> ${getShortFlagLabel(s.lastFlagType)}
+                <strong>Alert:</strong> ${getShortFlagLabel(s.lastFlagType)}
             </div>
         ` : '';
 
         let card = document.getElementById('student-card-' + sessionId);
         if (!card) {
-            // Create a brand new card for this student
             card = document.createElement('div');
             card.id = 'student-card-' + sessionId;
             card.className = `card student-live-card ${ringClass}`;
@@ -648,10 +775,12 @@ function updateLiveGrid() {
             `;
             grid.appendChild(card);
         } else {
-            // Highly efficient in-place DOM patching
             card.className = `card student-live-card ${ringClass}`;
             card.setAttribute('style', cardStyle);
             
+            const nameEl = card.querySelector('strong');
+            if (nameEl && s.name) nameEl.textContent = s.name;
+
             const dot = card.querySelector('.status-dot');
             if (dot) {
                 dot.style.background = statusColor;
@@ -662,9 +791,10 @@ function updateLiveGrid() {
             if (screenshotContainer) {
                 const img = screenshotContainer.querySelector('img');
                 if (s.screenshot) {
-                    // Only update the image if the screenshot URL has changed to prevent browser image flickering/flashing
                     if (!img || img.src !== s.screenshot) {
                         screenshotContainer.innerHTML = content;
+                    } else if (img && img.style.height !== imgH + 'px') {
+                        img.style.height = imgH + 'px';
                     }
                 } else {
                     if (img || screenshotContainer.innerHTML === '') {
@@ -674,39 +804,96 @@ function updateLiveGrid() {
             }
             
             const flagContainer = card.querySelector('.card-flag-container');
-            if (flagContainer) {
-                // Only write if changed to prevent repaint cycles
-                if (flagContainer.innerHTML !== flagText) {
-                    flagContainer.innerHTML = flagText;
-                }
+            if (flagContainer && flagContainer.innerHTML !== flagText) {
+                flagContainer.innerHTML = flagText;
             }
             
             const buttonContainer = card.querySelector('.card-button-container');
-            if (buttonContainer) {
-                if (buttonContainer.innerHTML !== warningBtn) {
-                    buttonContainer.innerHTML = warningBtn;
-                }
+            if (buttonContainer && buttonContainer.innerHTML !== warningBtn) {
+                buttonContainer.innerHTML = warningBtn;
             }
         }
+        // Keep DOM order: re-append in sorted order
+        grid.appendChild(card);
     });
 
-    // Refresh active count in metrics
     const activeVal = Object.keys(liveStudents).filter(id => liveStudents[id].status === 'online').length;
     const activeMetric = document.getElementById('stat-active-sessions');
     if (activeMetric) activeMetric.innerText = activeVal;
 }
 
-function sendStudentWarning(sessionId, studentName) {
-    const warningText = prompt(`Send real-time warning alert to ${studentName}:`, "Please keep your eyes on the screen and remain in fullscreen mode.");
-    if (warningText === null) return;
-    const msg = warningText.trim();
-    if (!msg) return;
+function openAlertComposer(sessionId, studentName, broadcast = false, examId = null) {
+    const templates = [
+        'Please keep your eyes on the screen and remain in fullscreen mode.',
+        'Your face is not clearly visible — please adjust your camera.',
+        'Please return to the exam tab immediately.',
+        'Background noise detected — please find a quieter space.',
+        'Please put away any unauthorized devices or materials.'
+    ];
+    const title = broadcast ? 'Broadcast to all online students' : `Alert: ${studentName || 'Student'}`;
+    const html = `
+        <div class="modal-header">
+            <h2 class="modal-title">${title}</h2>
+            <button class="modal-close" onclick="closeModal()">&times;</button>
+        </div>
+        <div style="padding: 8px 0 16px;">
+            <label class="form-label">Message</label>
+            <textarea id="alert-message-input" class="form-input" style="width:100%; min-height:90px; resize:vertical;" placeholder="Type an alert message...">${templates[0]}</textarea>
+            <div style="margin-top:12px;">
+                <div style="font-size:12px; font-weight:600; color:var(--text-secondary); margin-bottom:6px;">Quick templates</div>
+                <div style="display:flex; flex-wrap:wrap; gap:6px;">
+                    ${templates.map((t, i) => `<button type="button" class="btn btn-secondary btn-sm" style="font-size:11px;" onclick="document.getElementById('alert-message-input').value=${JSON.stringify(t)}">${t.slice(0, 36)}${t.length>36?'…':''}</button>`).join('')}
+                </div>
+            </div>
+        </div>
+        <div style="display:flex; justify-content:flex-end; gap:10px; border-top:1px solid var(--border); padding-top:14px;">
+            <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+            <button class="btn btn-primary" id="btn-send-alert">Send Alert</button>
+        </div>
+    `;
+    const modalContainer = document.getElementById('modal-content');
+    modalContainer.style.maxWidth = '520px';
+    modalContainer.style.width = '92%';
+    modalContainer.style.padding = '';
+    modalContainer.style.background = '';
+    modalContainer.style.border = '';
+    modalContainer.style.height = '';
+    modalContainer.style.display = '';
+    modalContainer.style.flexDirection = '';
+    modalContainer.style.overflow = '';
+    modalContainer.innerHTML = html;
+    document.getElementById('modal-overlay').classList.add('active');
+    const sendBtn = document.getElementById('btn-send-alert');
+    if (sendBtn) {
+        sendBtn.onclick = () => submitAlertComposer(!!broadcast, sessionId, examId, studentName || 'Student');
+    }
+}
 
-    socket.emit('instructor_warning', {
-        exam_session_id: sessionId,
-        message: msg
-    });
-    showToast(`Warning sent to ${studentName}`, 'success');
+function submitAlertComposer(broadcast, sessionId, examId, studentName) {
+    const input = document.getElementById('alert-message-input');
+    const msg = input ? input.value.trim() : '';
+    if (!msg) {
+        showToast('Please enter a message', 'warning');
+        return;
+    }
+    if (broadcast) {
+        socket.emit('instructor_broadcast', {
+            exam_id: examId || currentLiveExamId,
+            message: msg
+        });
+        showToast('Broadcast sent to all active students.', 'success');
+    } else {
+        socket.emit('instructor_warning', {
+            exam_session_id: sessionId,
+            message: msg
+        });
+        showToast(`Alert sent to ${studentName || 'student'}`, 'success');
+    }
+    closeModal();
+}
+
+function sendStudentWarning(sessionId, studentName) {
+    openAlertComposer(sessionId, studentName, false, null);
 }
 
 function openFullscreenImg(src, sessionId) {
@@ -722,40 +909,10 @@ function closeImage() {
 
 // BROADCAST ANNOUNCEMENT
 function sendBroadcastAnnouncement(examId) {
-    const msgText = prompt("Enter an announcement or warning to broadcast to ALL online students currently taking this exam:", "Please remain focused. Ensure your webcam is clear and you do not leave the browser tab.");
-    if (msgText === null) return;
-    const msg = msgText.trim();
-    if (!msg) return;
-
-    socket.emit('instructor_broadcast', {
-        exam_id: examId,
-        message: msg
-    });
-    showToast("Broadcast message sent to all active students.", "success");
+    openAlertComposer(null, null, true, examId);
 }
 
-function getRiskInfo(session) {
-    const logs = Array.isArray(session.logs) ? session.logs : [];
-    const focusWarnings = logs.filter(l => ['tab_blur', 'window_blur', 'fullscreen_exit'].includes(l.event_type)).length;
-    const aiWarnings = logs.filter(l => l.event_type.startsWith('AI_')).length;
-    const audioWarnings = logs.filter(l => l.event_type === 'audio_violation' || l.event_type === 'mic_muted').length;
-    const totalWarnings = focusWarnings + aiWarnings + audioWarnings;
-
-    let category = 'low';
-    let html = '<span class="badge badge-success">🟢 Low Risk</span>';
-
-    if (totalWarnings > 2 || aiWarnings > 0 || audioWarnings > 0) {
-        category = 'high';
-        html = `<span class="badge badge-danger" style="box-shadow: 0 0 8px rgba(239, 68, 68, 0.2);">🔴 High Risk (${totalWarnings} flags)</span>`;
-    } else if (totalWarnings > 0) {
-        category = 'moderate';
-        html = `<span class="badge badge-warning">🟡 Mod Risk (${totalWarnings} flags)</span>`;
-    }
-
-    return { category, html, totalWarnings, focusWarnings, aiWarnings, audioWarnings };
-}
-
-// Proctorio-inspired visual assets
+// Report table icon assets
 const attemptIcon = `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="color:var(--text-secondary);" title="Attempt"><line x1="9" y1="6" x2="20" y2="6"></line><line x1="9" y1="12" x2="20" y2="12"></line><line x1="9" y1="18" x2="20" y2="18"></line><path d="M4 6h.01"></path><path d="M4 12h.01"></path><path d="M4 18h.01"></path><path d="M5 21H3a2 2 0 0 1-2-2v-4a2 2 0 0 1 2-2h2"></path></svg>`;
 const scoreIcon = `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="color:var(--text-secondary);" title="Score"><circle cx="12" cy="8" r="7"></circle><polyline points="8.21 13.89 7 23 12 20 17 23 15.79 13.88"></polyline></svg>`;
 const annotationsIcon = `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="color:var(--text-secondary);" title="Annotations"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path><path d="M18.5 2.5a2.121 2.121 0 1 1 3 3L12 15l-4 1 1-4z"></path></svg>`;
@@ -796,33 +953,30 @@ function filterReports(examId) {
         });
     }
 
+    const exam = exams.find(e => e.id == examId);
     let tbodyHtml = '';
     filtered.forEach(s => {
-        const riskInfo = getRiskInfo(s);
-        
-        // Trust Score calculation
-        const trustScore = Math.max(0, 100 - (riskInfo.totalWarnings * 12));
+        const riskInfo = computeSessionRisk(s, exam);
+        const trustScore = riskInfo.trustScore;
         let trustBarColor = 'var(--success)';
         if (trustScore < 40) trustBarColor = 'var(--danger)';
         else if (trustScore < 75) trustBarColor = 'var(--warning)';
         
         const trustBarHtml = `<span style="height: 14px; width: 4px; background: ${trustBarColor}; display: inline-block; border-radius: 2px; margin-left: 6px; vertical-align: middle;"></span>`;
         
-        // Formatted Submission Date
         const submissionDate = new Date(s.started_at).toLocaleDateString('en-US', {
             month: '2-digit',
             day: '2-digit',
             year: 'numeric'
         });
         
-        // Custom Alert Badges aggregation
         const logsList = s.logs || [];
         let alertIconsHtml = '';
         
-        const hasCopyPaste = logsList.some(l => l.event_type.includes('clipboard') || l.event_type.includes('copy') || l.event_type.includes('paste'));
-        const hasResize = logsList.some(l => l.event_type.includes('resize') || l.event_type.includes('window_resize'));
-        const hasUnfocus = logsList.some(l => l.event_type.includes('blur') || l.event_type.includes('tab_switched') || l.event_type.includes('fullscreen_exit'));
-        const hasAI = logsList.some(l => l.event_type.startsWith('AI_'));
+        const hasCopyPaste = logsList.some(l => (l.event_type || '').includes('clipboard') || (l.event_type || '').includes('copy') || (l.event_type || '').includes('paste'));
+        const hasResize = logsList.some(l => (l.event_type || '').includes('resize'));
+        const hasUnfocus = logsList.some(l => (l.event_type || '').includes('blur') || (l.event_type || '').includes('tab_switch') || l.event_type === 'fullscreen_exit');
+        const hasAI = logsList.some(l => (l.event_type || '').startsWith('AI_'));
         const hasAudio = logsList.some(l => l.event_type === 'audio_violation' || l.event_type === 'mic_muted');
         
         if (hasCopyPaste) alertIconsHtml += clipboardSvg;
@@ -832,26 +986,26 @@ function filterReports(examId) {
         if (hasAudio) alertIconsHtml += audioSvg;
         
         if (!alertIconsHtml) {
-            alertIconsHtml = `<span style="color: var(--text-muted); font-size: 12px;">--</span>`;
+            alertIconsHtml = `<span style="color: var(--text-muted); font-size: 12px;">—</span>`;
         } else {
             alertIconsHtml = `<div style="display: flex; gap: 8px; align-items: center;">${alertIconsHtml}</div>`;
         }
 
-        // Available Annotations count
         const annCount = s.annotations ? s.annotations.length : 0;
+        const statusLabel = s.status === 'completed' ? 'Completed' : (s.status || '—');
         
         tbodyHtml += `
             <tr style="border-bottom: 1px solid var(--border); transition: background 0.15s;" onmouseenter="this.style.background='#f8fafc'" onmouseleave="this.style.background='transparent'">
-                <td style="padding: 12px 16px;"><input type="checkbox" style="cursor:pointer;" /></td>
-                <td style="padding: 12px 16px; cursor: pointer; text-align: center; color: var(--text-secondary);" onclick="viewStudentReport(${s.id}, ${examId})">👁️</td>
+                <td style="padding: 12px 16px; cursor: pointer; text-align: center;" onclick="viewStudentReport(${s.id}, ${examId})" title="Open report">
+                    <span style="color: var(--accent); font-weight:700;">View</span>
+                </td>
                 <td style="padding: 12px 16px; font-weight: 700; color: var(--text-primary);">${s.student_name || s.student_canvas_id}</td>
                 <td style="padding: 12px 16px; color: var(--text-secondary);">${submissionDate}</td>
-                <td style="padding: 12px 16px; color: var(--text-secondary);">6 Months</td>
                 <td style="padding: 12px 16px; text-align: center; font-weight: 600;">${s.attempt_number || 1}</td>
-                <td style="padding: 12px 16px; text-align: center;">1</td>
+                <td style="padding: 12px 16px; text-align: center; color: var(--text-secondary); font-size:12px;">${statusLabel}</td>
                 <td style="padding: 12px 16px; text-align: center; font-weight: 600; color: ${annCount > 0 ? 'var(--accent)' : 'var(--text-muted)'};">${annCount}</td>
                 <td style="padding: 12px 16px; text-align: center; font-weight: 600; color: ${riskInfo.totalWarnings > 0 ? 'var(--danger)' : 'var(--text-muted)'};">${riskInfo.totalWarnings}</td>
-                <td style="padding: 12px 16px; text-align: center; font-weight: 600;">
+                <td style="padding: 12px 16px; text-align: center; font-weight: 600;" title="Risk score: ${riskInfo.score}">
                     ${trustScore}% ${trustBarHtml}
                 </td>
                 <td style="padding: 12px 16px;">${alertIconsHtml}</td>
@@ -860,7 +1014,7 @@ function filterReports(examId) {
     });
 
     if (filtered.length === 0) {
-        tbodyHtml = '<tr><td colspan="11" style="text-align:center; padding: 30px; color:var(--text-muted);">No student reports match your filters.</td></tr>';
+        tbodyHtml = '<tr><td colspan="9" style="text-align:center; padding: 30px; color:var(--text-muted);">No student reports match your filters.</td></tr>';
     }
 
     tableBody.innerHTML = tbodyHtml;
@@ -891,11 +1045,11 @@ async function fetchReportData(examId) {
         let totalViolationsVal = 0;
         let flaggedAttemptsCount = 0;
         
+        const examForRisk = exams.find(e => e.id == examId);
         sessions.forEach(s => {
-            const logs = s.logs || [];
-            const studentFlags = logs.filter(l => ['tab_blur', 'window_blur', 'fullscreen_exit', 'audio_violation', 'error', 'fail'].includes(l.event_type) || l.event_type.startsWith('AI_')).length;
-            totalViolationsVal += studentFlags;
-            if (studentFlags > 0) flaggedAttemptsCount++;
+            const risk = computeSessionRisk(s, examForRisk);
+            totalViolationsVal += risk.totalWarnings;
+            if (risk.totalWarnings > 0) flaggedAttemptsCount++;
         });
 
         const integrityRateVal = totalAttemptsVal > 0 ? Math.round(((totalAttemptsVal - flaggedAttemptsCount) / totalAttemptsVal) * 100) : 100;
@@ -910,28 +1064,18 @@ async function fetchReportData(examId) {
             ratioBadge.innerText = `Submissions: ${submittedCount} of ${enrolledCount || submittedCount} enrolled completed`;
         }
 
-        // Proctorio-inspired Exam Results UI rendering
         tableContainer.innerHTML = `
             <div style="margin-top: 15px; margin-bottom: 25px;">
-                <h2 style="font-size: 22px; font-weight: 800; color: var(--text-primary); margin-bottom: 15px;">ProctorGuard Exam Results</h2>
+                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom: 15px; flex-wrap:wrap; gap:10px;">
+                    <h2 style="font-size: 22px; font-weight: 800; color: var(--text-primary); margin: 0;">Exam Results</h2>
+                    <button class="btn btn-secondary btn-sm" onclick="exportExamReportsCsv(${examId})">Export CSV</button>
+                </div>
                 
-                <!-- Completed Attempts Table Panel -->
                 <div style="background: #ffffff; border: 1px solid var(--border); border-radius: var(--radius-lg); margin-bottom: 30px; box-shadow: var(--shadow);">
                     <div style="display: flex; justify-content: space-between; align-items: center; padding: 16px 20px; border-bottom: 1px solid var(--border);">
                         <div>
-                            <strong style="font-size: 15px; color: var(--text-primary);">Completed Attempts</strong>
-                            <span style="font-size: 12px; color: var(--text-muted); margin-left: 8px;">(Retention Period: 6 months)</span>
-                        </div>
-                        <div style="display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--text-secondary);">
-                            <span>Rows per page:</span>
-                            <select class="filter-select" style="padding: 4px 8px; border-radius: 4px; font-size: 12px; background: transparent; border: 1px solid var(--border); outline: none;">
-                                <option>25</option>
-                                <option>50</option>
-                                <option>100</option>
-                            </select>
-                            <span style="margin-left: 8px; font-weight: 500;">1-${totalAttemptsVal} of ${totalAttemptsVal}</span>
-                            <span style="cursor: pointer; opacity: 0.5; font-weight: 700; margin-left: 5px;">&lt;</span>
-                            <span style="cursor: pointer; opacity: 0.5; font-weight: 700;">&gt;</span>
+                            <strong style="font-size: 15px; color: var(--text-primary);">Attempts</strong>
+                            <span style="font-size: 12px; color: var(--text-muted); margin-left: 8px;">${totalAttemptsVal} total</span>
                         </div>
                     </div>
                     
@@ -939,17 +1083,15 @@ async function fetchReportData(examId) {
                         <table style="width: 100%; border-collapse: collapse; text-align: left; font-size: 13px;">
                             <thead>
                                 <tr style="border-bottom: 2px solid var(--border); background: #f8fafc; font-weight: 700; color: var(--text-secondary);">
-                                    <th style="padding: 12px 16px; width: 40px;"><input type="checkbox" style="cursor:pointer;" /></th>
-                                    <th style="padding: 12px 16px; width: 40px; text-align: center;">👁️</th>
+                                    <th style="padding: 12px 16px; width: 60px; text-align: center;">Report</th>
                                     <th style="padding: 12px 16px;">Name</th>
-                                    <th style="padding: 12px 16px;">Submission</th>
-                                    <th style="padding: 12px 16px;">Availability</th>
-                                    <th style="padding: 12px 16px; text-align: center; width: 70px;">${attemptIcon}</th>
-                                    <th style="padding: 12px 16px; text-align: center; width: 70px;">${scoreIcon}</th>
-                                    <th style="padding: 12px 16px; text-align: center; width: 70px;">${annotationsIcon}</th>
-                                    <th style="padding: 12px 16px; text-align: center; width: 70px;">${abnormalitiesIcon}</th>
-                                    <th style="padding: 12px 16px; text-align: center; width: 95px;">${trustScoreIcon}</th>
-                                    <th style="padding: 12px 16px; width: 150px;">${alertsIcon}</th>
+                                    <th style="padding: 12px 16px;">Started</th>
+                                    <th style="padding: 12px 16px; text-align: center; width: 70px;" title="Attempt #">${attemptIcon}</th>
+                                    <th style="padding: 12px 16px; text-align: center; width: 90px;">Status</th>
+                                    <th style="padding: 12px 16px; text-align: center; width: 70px;" title="Annotations">${annotationsIcon}</th>
+                                    <th style="padding: 12px 16px; text-align: center; width: 70px;" title="Flags">${abnormalitiesIcon}</th>
+                                    <th style="padding: 12px 16px; text-align: center; width: 95px;" title="Trust score">${trustScoreIcon}</th>
+                                    <th style="padding: 12px 16px; width: 150px;" title="Alert types">${alertsIcon}</th>
                                 </tr>
                             </thead>
                             <tbody id="report-table-body">
@@ -959,23 +1101,7 @@ async function fetchReportData(examId) {
                     </div>
                 </div>
 
-                <!-- Deleted Attempts Section -->
-                <div style="background: #ffffff; border: 1px solid var(--border); border-radius: var(--radius-lg); box-shadow: var(--shadow);">
-                    <div style="display: flex; justify-content: space-between; align-items: center; padding: 16px 20px; border-bottom: 1px solid var(--border);">
-                        <div>
-                            <strong style="font-size: 15px; color: var(--text-primary);">Deleted Attempts</strong>
-                            <span style="font-size: 12px; color: var(--text-muted); margin-left: 8px;">(Restoration Period: 24 hours)</span>
-                        </div>
-                        <div style="display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--text-secondary);">
-                            <span>Rows per page:</span>
-                            <select class="filter-select" style="padding: 4px 8px; border-radius: 4px; font-size: 12px; background: transparent; border: 1px solid var(--border); outline: none;">
-                                <option>25</option>
-                            </select>
-                            <span style="margin-left: 8px; font-weight: 500;">0-0 of 0</span>
-                            <span style="cursor: pointer; opacity: 0.3; font-weight: 700; margin-left: 5px;">&lt;</span>
-                            <span style="cursor: pointer; opacity: 0.3; font-weight: 700;">&gt;</span>
-                        </div>
-                    </div>
+                <div style="display:none;">
                     <div style="padding: 40px; text-align: center; color: var(--text-muted); font-size: 13px;">
                         <div style="font-size: 24px; margin-bottom: 10px;">🗑️</div>
                         <strong style="color: var(--text-primary); font-size: 14px;">No Deleted attempts</strong><br>
@@ -1020,53 +1146,46 @@ function viewStudentReport(sessionId, examId) {
     activeLogFilterSearch = '';
 
     const logs = Array.isArray(session.logs) ? session.logs : [];
-
-    // Compute Risk Tier and Score
-    let riskScore = 0;
-    logs.forEach(log => {
-        if (log.event_type === 'phone_detected') riskScore += 50;
-        else if (log.event_type === 'multiple_faces') riskScore += 30;
-        else if (log.event_type === 'tab_switched' || log.event_type === 'tab_blurred') riskScore += 15;
-        else if (log.event_type === 'audio_threshold_exceeded') riskScore += 10;
-        else if (log.event_type === 'no_face' || log.event_type === 'AI_PEOPLE') riskScore += 10;
-        else if (log.event_type === 'gaze_off_screen') riskScore += 10;
-    });
-    let riskTier = 'Low';
+    const riskInfo = computeSessionRisk(session, exam);
+    const riskScore = riskInfo.score;
+    const riskTier = riskInfo.tier;
     let riskBadgeBg = 'rgba(16, 185, 129, 0.15)';
     let riskBadgeColor = '#10b981';
     let riskBadgeBorder = 'rgba(16, 185, 129, 0.3)';
-    if (riskScore >= 70) { riskTier = 'High'; riskBadgeBg = 'rgba(239, 68, 68, 0.15)'; riskBadgeColor = '#ef4444'; riskBadgeBorder = 'rgba(239, 68, 68, 0.3)'; }
-    else if (riskScore >= 30) { riskTier = 'Medium'; riskBadgeBg = 'rgba(245, 158, 11, 0.15)'; riskBadgeColor = '#f59e0b'; riskBadgeBorder = 'rgba(245, 158, 11, 0.3)'; }
+    if (riskTier === 'High') { riskBadgeBg = 'rgba(239, 68, 68, 0.15)'; riskBadgeColor = '#ef4444'; riskBadgeBorder = 'rgba(239, 68, 68, 0.3)'; }
+    else if (riskTier === 'Moderate') { riskBadgeBg = 'rgba(245, 158, 11, 0.15)'; riskBadgeColor = '#f59e0b'; riskBadgeBorder = 'rgba(245, 158, 11, 0.3)'; }
 
-    // Build video layout
+    // Native player enables timeline seek; Drive link offered as fallback
     const showVideo = (session.status === 'completed' || session.status === 'abandoned') && !session.video_archived;
     let videoContainerHtml = '';
     if (showVideo) {
-        let primaryHtml = '';
-        if (session.drive_file_id) {
-            primaryHtml = `<iframe src="https://drive.google.com/file/d/${session.drive_file_id}/preview" style="width:100%; height:100%; border:none;" allow="autoplay"></iframe>`;
-        } else {
-            primaryHtml = `<video src="/api/session/video-playback/${session.id}" controls style="width:100%; height:100%; object-fit:contain;"></video>`;
-        }
+        const primaryHtml = `<video id="report-video-player" src="/api/session/video-playback/${session.id}" controls style="width:100%; height:100%; object-fit:contain; background:#000;"></video>`;
+        const driveLink = session.drive_file_id
+            ? `<a href="https://drive.google.com/file/d/${session.drive_file_id}/view" target="_blank" style="font-size:11px; color:#60a5fa; margin-left:8px;">Open in Drive</a>`
+            : '';
 
-        if (session.mobile_drive_file_id) {
-            let mobileHtml = `<iframe src="https://drive.google.com/file/d/${session.mobile_drive_file_id}/preview" style="width:100%; height:100%; border:none;" allow="autoplay"></iframe>`;
-            videoContainerHtml = `
-                <div style="display: flex; gap: 15px; flex-wrap: wrap; width: 100%; margin-bottom: 20px;">
+        if (session.mobile_drive_file_id || true) {
+            let mobileBlock = '';
+            if (session.mobile_drive_file_id) {
+                mobileBlock = `
                     <div style="flex: 1; min-width: 280px;">
-                        <div style="font-size: 11px; font-weight: 600; color: #94a3b8; margin-bottom: 6px; text-transform: uppercase; letter-spacing: 0.05em; display: flex; align-items: center; gap: 5px;"><img src="icons/record-screen.svg" style="width:14px; height:14px; filter: brightness(0.7);" /> Primary Laptop Screen / Webcam</div>
+                        <div style="font-size: 11px; font-weight: 600; color: #94a3b8; margin-bottom: 6px; text-transform: uppercase; letter-spacing: 0.05em;">Secondary Mobile Room View</div>
+                        <div style="background: #000; border-radius: 8px; overflow: hidden; aspect-ratio: 16/9; border: 1px solid #334155;">
+                            <iframe src="https://drive.google.com/file/d/${session.mobile_drive_file_id}/preview" style="width:100%; height:100%; border:none;" allow="autoplay"></iframe>
+                        </div>
+                    </div>`;
+            }
+            videoContainerHtml = `
+                <div style="display: flex; gap: 15px; flex-wrap: wrap; width: 100%; margin-bottom: 12px;">
+                    <div style="flex: 1; min-width: 280px;">
+                        <div style="font-size: 11px; font-weight: 600; color: #94a3b8; margin-bottom: 6px; text-transform: uppercase; letter-spacing: 0.05em; display: flex; align-items: center; gap: 5px;">
+                            Webcam / Screen Recording ${driveLink}
+                            <span style="font-weight:400; text-transform:none; color:#64748b;">— click timeline flags to seek</span>
+                        </div>
                         <div style="background: #000; border-radius: 8px; overflow: hidden; aspect-ratio: 16/9; border: 1px solid #334155;">${primaryHtml}</div>
+                        <div id="report-flag-markers" style="position:relative; height:10px; margin-top:6px; background:#1e293b; border-radius:4px; overflow:hidden;"></div>
                     </div>
-                    <div style="flex: 1; min-width: 280px;">
-                        <div style="font-size: 11px; font-weight: 600; color: #94a3b8; margin-bottom: 6px; text-transform: uppercase; letter-spacing: 0.05em; display: flex; align-items: center; gap: 5px;"><img src="icons/secondary-mobile-camera.svg" style="width:14px; height:14px; filter: brightness(0.7);" /> Secondary Mobile Room View</div>
-                        <div style="background: #000; border-radius: 8px; overflow: hidden; aspect-ratio: 16/9; border: 1px solid #334155;">${mobileHtml}</div>
-                    </div>
-                </div>`;
-        } else {
-            videoContainerHtml = `
-                <div style="width: 100%; margin-bottom: 20px;">
-                    <div style="font-size: 11px; font-weight: 600; color: #94a3b8; margin-bottom: 6px; text-transform: uppercase; letter-spacing: 0.05em; display: flex; align-items: center; gap: 5px;"><img src="icons/record-screen.svg" style="width:14px; height:14px; filter: brightness(0.7);" /> Webcam / Screen Recording</div>
-                    <div style="background: #000; border-radius: 8px; overflow: hidden; aspect-ratio: 16/9; border: 1px solid #334155;">${primaryHtml}</div>
+                    ${mobileBlock}
                 </div>`;
         }
     } else {
@@ -1221,7 +1340,8 @@ function viewStudentReport(sessionId, examId) {
             </div>
         </div>
         <div style="background: #0f172a; border-top: 1px solid #334155; padding: 12px 24px; display: flex; justify-content: space-between; align-items: center; border-radius: 0 0 12px 12px;">
-            <div style="display:flex; gap: 8px;">
+            <div style="display:flex; gap: 8px; flex-wrap:wrap;">
+                <button class="btn btn-secondary btn-sm" onclick="exportSessionReport(${session.id}, ${exam.id})" style="background: rgba(59, 130, 246, 0.15); color: #60a5fa; border: 1px solid #334155;">Export Report</button>
                 <button class="btn btn-secondary btn-sm" onclick="grantExtraAttempt(${exam.id}, '${session.student_canvas_id}')" style="background: rgba(100, 116, 139, 0.15); color: #94a3b8; border: 1px solid #475569;">+1 Override Pass</button>
                 <button class="btn btn-danger btn-sm" onclick="deleteStudentAttempt(${session.id}, ${exam.id})" style="background: rgba(239, 68, 68, 0.1); color: #ef4444; border: 1px solid rgba(239, 68, 68, 0.2);">Delete Session</button>
             </div>
@@ -1444,6 +1564,24 @@ function viewStudentReport(sessionId, examId) {
     // Initial log timeline draw
     renderLogsTimeline();
 
+    // Paint flag markers on scrubber once video metadata loads
+    const reportVideo = document.getElementById('report-video-player');
+    if (reportVideo) {
+        const paintMarkers = () => {
+            const bar = document.getElementById('report-flag-markers');
+            if (!bar || !reportVideo.duration || !isFinite(reportVideo.duration)) return;
+            const startMs = new Date(session.started_at).getTime();
+            const flagLogs = logs.filter(l => isFlagEvent(l.event_type));
+            bar.innerHTML = flagLogs.map(l => {
+                const offset = Math.max(0, (new Date(l.event_timestamp).getTime() - startMs) / 1000);
+                const pct = Math.min(100, (offset / reportVideo.duration) * 100);
+                return `<div title="${(l.event_type || '').replace(/"/g, '')}" onclick="seekVideo(${Math.floor(offset)})" style="position:absolute; left:${pct}%; top:0; width:3px; height:100%; background:#ef4444; cursor:pointer; transform:translateX(-50%);"></div>`;
+            }).join('');
+        };
+        reportVideo.addEventListener('loadedmetadata', paintMarkers);
+        if (reportVideo.readyState >= 1) paintMarkers();
+    }
+
     // Bind log filter inputs
     const searchInput = document.getElementById('log-search-input');
     const severitySelect = document.getElementById('log-severity-select');
@@ -1460,6 +1598,141 @@ function viewStudentReport(sessionId, examId) {
             activeLogFilterSeverity = e.target.value;
             renderLogsTimeline();
         });
+    }
+}
+
+function exportExamReportsCsv(examId) {
+    const exam = exams.find(e => e.id == examId);
+    if (!currentSessionsList || currentSessionsList.length === 0) {
+        showToast('No reports to export yet', 'warning');
+        return;
+    }
+    const rows = [
+        ['Student', 'Canvas ID', 'Attempt', 'Status', 'Started', 'Flags', 'Trust %', 'Risk Tier', 'Risk Score', 'Annotations']
+    ];
+    currentSessionsList.forEach(s => {
+        const r = computeSessionRisk(s, exam);
+        rows.push([
+            s.student_name || '',
+            s.student_canvas_id || '',
+            s.attempt_number || 1,
+            s.status || '',
+            s.started_at || '',
+            r.totalWarnings,
+            r.trustScore,
+            r.tier,
+            r.score,
+            (s.annotations && s.annotations.length) || 0
+        ]);
+    });
+    const csv = rows.map(row => row.map(cell => {
+        const str = String(cell).replace(/"/g, '""');
+        return `"${str}"`;
+    }).join(',')).join('\n');
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `ProctorGuard_${(exam && exam.title) || examId}_reports.csv`;
+    a.click();
+    URL.revokeObjectURL(a.href);
+    showToast('CSV export downloaded', 'success');
+}
+
+function exportSessionReport(sessionId, examId) {
+    const exam = exams.find(e => e.id == examId);
+    const session = currentSessionsList.find(s => s.id == sessionId);
+    if (!session) return;
+    const r = computeSessionRisk(session, exam);
+    const logs = Array.isArray(session.logs) ? session.logs : [];
+    const lines = [
+        `ProctorGuard Session Report`,
+        `Exam: ${(exam && exam.title) || examId}`,
+        `Student: ${session.student_name || session.student_canvas_id}`,
+        `Canvas ID: ${session.student_canvas_id || ''}`,
+        `Attempt: ${session.attempt_number || 1}`,
+        `Status: ${session.status || ''}`,
+        `Started: ${session.started_at || ''}`,
+        `Risk: ${r.tier} (score ${r.score}) | Trust: ${r.trustScore}% | Flags: ${r.totalWarnings}`,
+        ``,
+        `--- Event Timeline ---`
+    ];
+    logs.forEach(l => {
+        if (l.event_type === 'room_scan_video') return;
+        lines.push(`[${l.event_timestamp || ''}] ${l.event_type}: ${l.event_message || ''}`);
+    });
+    if (session.annotations && session.annotations.length) {
+        lines.push(``, `--- Annotations ---`);
+        session.annotations.forEach(a => {
+            lines.push(`[${a.timestamp_seconds}s] ${a.note}`);
+        });
+    }
+    const blob = new Blob([lines.join('\n')], { type: 'text/plain;charset=utf-8;' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `ProctorGuard_session_${sessionId}.txt`;
+    a.click();
+    URL.revokeObjectURL(a.href);
+    showToast('Session report exported', 'success');
+}
+
+function showAccommodationsPanel(examId) {
+    const exam = exams.find(e => e.id == examId);
+    if (!exam) return;
+    const modalContainer = document.getElementById('modal-content');
+    modalContainer.style.maxWidth = '520px';
+    modalContainer.style.width = '92%';
+    modalContainer.style.padding = '';
+    modalContainer.style.background = '';
+    modalContainer.style.border = '';
+    modalContainer.style.height = '';
+    modalContainer.style.display = '';
+    modalContainer.style.flexDirection = '';
+    modalContainer.style.overflow = '';
+    modalContainer.innerHTML = `
+        <div class="modal-header">
+            <h2 class="modal-title">Accommodations — ${exam.title}</h2>
+            <button class="modal-close" onclick="closeModal()">&times;</button>
+        </div>
+        <p style="color:var(--text-secondary); font-size:13px; line-height:1.5; margin-bottom:16px;">
+            Grant extra attempts for individual students (e.g. technical failure or accessibility needs).
+            Enter the student's Canvas user ID as shown in Canvas gradebook / people.
+        </p>
+        <div class="form-group">
+            <label class="form-label">Student Canvas ID</label>
+            <input type="text" id="accommodation-student-id" class="form-input" placeholder="e.g. 12345" />
+        </div>
+        <div class="form-group">
+            <label class="form-label">Notes (optional, for your records)</label>
+            <textarea id="accommodation-notes" class="form-input" style="min-height:70px;" placeholder="e.g. Approved extra attempt — network outage"></textarea>
+        </div>
+        <div style="display:flex; justify-content:flex-end; gap:10px; border-top:1px solid var(--border); padding-top:14px;">
+            <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+            <button class="btn btn-primary" onclick="submitAccommodation(${examId})">Grant +1 Attempt</button>
+        </div>
+    `;
+    document.getElementById('modal-overlay').classList.add('active');
+}
+
+async function submitAccommodation(examId) {
+    const studentId = (document.getElementById('accommodation-student-id') || {}).value;
+    if (!studentId || !studentId.trim()) {
+        showToast('Enter a Canvas student ID', 'warning');
+        return;
+    }
+    try {
+        await apiFetch('/api/exams/' + examId + '/overrides', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                student_canvas_id: studentId.trim(),
+                notes: (document.getElementById('accommodation-notes') || {}).value || ''
+            })
+        });
+        closeModal();
+        showToast('Extra attempt granted for student ' + studentId.trim(), 'success');
+    } catch (err) {
+        console.error(err);
+        showToast('Error granting accommodation', 'warning');
     }
 }
 
@@ -1541,26 +1814,39 @@ function showCreateExamModal(examId = null) {
                 <input type="text" id="quiz-password" class="form-input" placeholder="e.g. SECURE-WWI-QUIZ" value="${exam && exam.canvas_quiz_password ? exam.canvas_quiz_password : ''}">
                 <div class="form-hint">If your Canvas quiz requires a password/access code to start, enter it here.</div>
             </div>
+
+            <!-- Quick exam presets -->
+            <div class="form-group" style="background:#f8fafc; border:1px solid var(--border); border-radius:8px; padding:14px;">
+                <label class="form-label" style="margin-bottom:8px;">Quick preset (optional)</label>
+                <p style="font-size:11px; color:var(--text-muted); margin:0 0 10px 0;">Applies a recommended set of recording, lockdown, and behavior options. You can still customize below.</p>
+                <div style="display:grid; grid-template-columns:repeat(auto-fill,minmax(110px,1fr)); gap:8px;">
+                    <button type="button" class="btn btn-secondary btn-sm" onclick="applyExamPreset('standard')">Standard</button>
+                    <button type="button" class="btn btn-secondary btn-sm" onclick="applyExamPreset('strict')">Strict</button>
+                    <button type="button" class="btn btn-secondary btn-sm" onclick="applyExamPreset('open')">Open book</button>
+                    <button type="button" class="btn btn-secondary btn-sm" onclick="applyExamPreset('seb')">SEB only</button>
+                    <button type="button" class="btn btn-secondary btn-sm" onclick="applyExamPreset('companion')">Companion</button>
+                </div>
+            </div>
             
-            <!-- Accordion Section 1: Proctorio Exam Settings -->
+            <!-- Accordion Section 1: Exam Settings -->
             <div class="proctorio-section" id="section-exam-settings">
                 <div class="proctorio-section-header" onclick="toggleProctorioSection('section-exam-settings')">
                     <div class="proctorio-section-title-container">
                         <span class="proctorio-toggle-icon">▼</span>
                         <div>
-                            <div class="proctorio-section-title">Proctorio Exam Settings</div>
-                            <div class="proctorio-section-subtitle">Exam settings cannot be changed once the first candidate has started the exam.</div>
+                            <div class="proctorio-section-title">Exam Settings</div>
+                            <div class="proctorio-section-subtitle">Recording, lockdown, and pre-exam verification. Prefer leaving these fixed once students begin.</div>
                         </div>
                     </div>
                 </div>
                 <div class="proctorio-section-content">
                     <!-- Recording Options -->
-                    <h4 style="margin: 0 0 6px 0; font-family:'Outfit',sans-serif; font-size:13px; font-weight:700; color:var(--text-primary);">Recording Options</h4>
-                    <p style="font-size:11px; color:var(--text-muted); margin-bottom: 12px;">Select what student activities will be recorded during the exam.</p>
+                    <h4 style="margin: 0 0 6px 0; font-family:'Outfit',sans-serif; font-size:13px; font-weight:700; color:var(--text-primary);">What to record during the exam</h4>
+                    <p style="font-size:11px; color:var(--text-muted); margin-bottom: 12px;">Streams captured while the student is in the quiz.</p>
                     <div class="proctorio-grid">
                         <div class="proctorio-card ${!exam || exam.require_camera ? 'selected' : ''}" id="card-camera" onclick="toggleProctorioOption('chk-camera', 'card-camera')" title="Record student webcam">
                             <div class="proctorio-icon"><img src="icons/record-video.svg" alt="" /></div>
-                            <div class="proctorio-title">Record Video</div>
+                            <div class="proctorio-title">Record Webcam</div>
                             <input type="checkbox" id="chk-camera" ${!exam || exam.require_camera ? 'checked' : ''} style="display:none;" />
                         </div>
                         <div class="proctorio-card ${!exam || exam.require_mic ? 'selected' : ''}" id="card-mic" onclick="toggleProctorioOption('chk-mic', 'card-mic')" title="Record student microphone">
@@ -1580,8 +1866,13 @@ function showCreateExamModal(examId = null) {
                         </div>
                         <div class="proctorio-card ${exam && exam.require_room_scan ? 'selected' : ''}" id="card-room-scan" onclick="toggleProctorioOption('chk-room-scan', 'card-room-scan')" title="Require environment check video before starting">
                             <div class="proctorio-icon"><img src="icons/room-scan.svg" alt="" /></div>
-                            <div class="proctorio-title">Record Desk</div>
+                            <div class="proctorio-title">Room / Desk Scan</div>
                             <input type="checkbox" id="chk-room-scan" ${exam && exam.require_room_scan ? 'checked' : ''} style="display:none;" />
+                        </div>
+                        <div class="proctorio-card ${exam && exam.require_mobile_camera ? 'selected' : ''}" id="card-mobile" onclick="toggleProctorioOption('chk-mobile', 'card-mobile')" title="Require secondary phone camera during exam">
+                            <div class="proctorio-icon"><img src="icons/secondary-mobile-camera.svg" alt="" /></div>
+                            <div class="proctorio-title">Mobile Camera</div>
+                            <input type="checkbox" id="chk-mobile" ${exam && exam.require_mobile_camera ? 'checked' : ''} style="display:none;" />
                         </div>
                     </div>
 
@@ -1642,32 +1933,32 @@ function showCreateExamModal(examId = null) {
                     </div>
 
                     <!-- Verification Options -->
-                    <h4 style="margin: 20px 0 6px 0; font-family:'Outfit',sans-serif; font-size:13px; font-weight:700; color:var(--text-primary);">Verification Options</h4>
-                    <p style="font-size:11px; color:var(--text-muted); margin-bottom: 12px;">Confirm candidate identities and system functionality before exam begins.</p>
+                    <h4 style="margin: 20px 0 6px 0; font-family:'Outfit',sans-serif; font-size:13px; font-weight:700; color:var(--text-primary);">Pre-exam checks (before recording starts)</h4>
+                    <p style="font-size:11px; color:var(--text-muted); margin-bottom: 12px;">Hardware and identity steps students complete in the setup wizard.</p>
                     <div class="proctorio-grid">
-                        <div class="proctorio-card ${verifyVideo ? 'selected' : ''}" id="card-verify-video" onclick="toggleProctorioOption('chk-verify-video', 'card-verify-video')" title="Verify camera feed">
+                        <div class="proctorio-card ${verifyVideo ? 'selected' : ''}" id="card-verify-video" onclick="toggleProctorioOption('chk-verify-video', 'card-verify-video')" title="Check camera feed before start">
                             <div class="proctorio-icon"><img src="icons/record-video.svg" alt="" /></div>
-                            <div class="proctorio-title">Verify Video</div>
+                            <div class="proctorio-title">Check Webcam</div>
                             <input type="checkbox" id="chk-verify-video" ${verifyVideo ? 'checked' : ''} style="display:none;" />
                         </div>
-                        <div class="proctorio-card ${verifyAudio ? 'selected' : ''}" id="card-verify-audio" onclick="toggleProctorioOption('chk-verify-audio', 'card-verify-audio')" title="Verify microphone level">
+                        <div class="proctorio-card ${verifyAudio ? 'selected' : ''}" id="card-verify-audio" onclick="toggleProctorioOption('chk-verify-audio', 'card-verify-audio')" title="Check microphone level before start">
                             <div class="proctorio-icon"><img src="icons/record-audio.svg" alt="" /></div>
-                            <div class="proctorio-title">Verify Audio</div>
+                            <div class="proctorio-title">Check Mic</div>
                             <input type="checkbox" id="chk-verify-audio" ${verifyAudio ? 'checked' : ''} style="display:none;" />
                         </div>
-                        <div class="proctorio-card ${verifyDesktop ? 'selected' : ''}" id="card-verify-desktop" onclick="toggleProctorioOption('chk-verify-desktop', 'card-verify-desktop')" title="Verify screen sharing">
+                        <div class="proctorio-card ${verifyDesktop ? 'selected' : ''}" id="card-verify-desktop" onclick="toggleProctorioOption('chk-verify-desktop', 'card-verify-desktop')" title="Check screen share before start">
                             <div class="proctorio-icon"><img src="icons/record-screen.svg" alt="" /></div>
-                            <div class="proctorio-title">Verify Desktop</div>
+                            <div class="proctorio-title">Check Screen Share</div>
                             <input type="checkbox" id="chk-verify-desktop" ${verifyDesktop ? 'checked' : ''} style="display:none;" />
                         </div>
-                        <div class="proctorio-card ${verifyId ? 'selected' : ''}" id="card-verify-id" onclick="toggleProctorioOption('chk-verify-id', 'card-verify-id')" title="Verify candidate photo ID card">
+                        <div class="proctorio-card ${verifyId ? 'selected' : ''}" id="card-verify-id" onclick="toggleProctorioOption('chk-verify-id', 'card-verify-id')" title="Capture photo ID before start">
                             <div class="proctorio-icon"><img src="icons/secondary-mobile-camera.svg" alt="" /></div>
-                            <div class="proctorio-title">Verify ID</div>
+                            <div class="proctorio-title">Photo ID</div>
                             <input type="checkbox" id="chk-verify-id" ${verifyId ? 'checked' : ''} style="display:none;" />
                         </div>
-                        <div class="proctorio-card ${verifySignature ? 'selected' : ''}" id="card-verify-signature" onclick="toggleProctorioOption('chk-verify-signature', 'card-verify-signature')" title="Verify candidate digital signature">
+                        <div class="proctorio-card ${verifySignature ? 'selected' : ''}" id="card-verify-signature" onclick="toggleProctorioOption('chk-verify-signature', 'card-verify-signature')" title="Digital integrity signature before start">
                             <div class="proctorio-icon"><img src="icons/block-navigation.svg" alt="" /></div>
-                            <div class="proctorio-title">Verify Signature</div>
+                            <div class="proctorio-title">Signature</div>
                             <input type="checkbox" id="chk-verify-signature" ${verifySignature ? 'checked' : ''} style="display:none;" />
                         </div>
                     </div>
@@ -1690,14 +1981,14 @@ function showCreateExamModal(examId = null) {
                 </div>
             </div>
 
-            <!-- Accordion Section 2: Proctorio Behavior Settings -->
+            <!-- Accordion Section 2: Behavior Settings -->
             <div class="proctorio-section collapsed" id="section-behavior-settings">
                 <div class="proctorio-section-header" onclick="toggleProctorioSection('section-behavior-settings')">
                     <div class="proctorio-section-title-container">
                         <span class="proctorio-toggle-icon">▼</span>
                         <div>
-                            <div class="proctorio-section-title">Proctorio Behavior Settings</div>
-                            <div class="proctorio-section-subtitle">Set weights and parameters for suspect behaviour metrics.</div>
+                            <div class="proctorio-section-title">Behavior & Risk Weights</div>
+                            <div class="proctorio-section-subtitle">How heavily each flag type counts toward trust score and risk tier.</div>
                         </div>
                     </div>
                 </div>
@@ -1707,32 +1998,26 @@ function showCreateExamModal(examId = null) {
                     <!-- Presets Grid -->
                     <div style="display: grid; grid-template-columns: repeat(6, 1fr); gap: 10px; margin-bottom: 24px;">
                         <div class="proctorio-card ${behaviorPreset === 'Recommended' ? 'selected' : ''} preset-card" id="preset-recommended" onclick="selectBehaviorPreset('Recommended')" style="aspect-ratio: auto; padding: 12px 6px;">
-                            <div style="font-size: 18px; margin-bottom: 4px;">👍</div>
                             <div class="proctorio-title">Recommended</div>
                         </div>
                         <div class="proctorio-card ${behaviorPreset === 'Lenient' ? 'selected' : ''} preset-card" id="preset-lenient" onclick="selectBehaviorPreset('Lenient')" style="aspect-ratio: auto; padding: 12px 6px;">
-                            <div style="font-size: 18px; margin-bottom: 4px;">🟢</div>
                             <div class="proctorio-title">Lenient</div>
                         </div>
                         <div class="proctorio-card ${behaviorPreset === 'Moderate' ? 'selected' : ''} preset-card" id="preset-moderate" onclick="selectBehaviorPreset('Moderate')" style="aspect-ratio: auto; padding: 12px 6px;">
-                            <div style="font-size: 18px; margin-bottom: 4px;">🟡</div>
                             <div class="proctorio-title">Moderate</div>
                         </div>
                         <div class="proctorio-card ${behaviorPreset === 'Group Exam' ? 'selected' : ''} preset-card" id="preset-group-exam" onclick="selectBehaviorPreset('Group Exam')" style="aspect-ratio: auto; padding: 12px 6px;">
-                            <div style="font-size: 18px; margin-bottom: 4px;">👥</div>
                             <div class="proctorio-title">Group Exam</div>
                         </div>
                         <div class="proctorio-card ${behaviorPreset === 'Open Note' ? 'selected' : ''} preset-card" id="preset-open-note" onclick="selectBehaviorPreset('Open Note')" style="aspect-ratio: auto; padding: 12px 6px;">
-                            <div style="font-size: 18px; margin-bottom: 4px;">📝</div>
                             <div class="proctorio-title">Open Note</div>
                         </div>
                         <div class="proctorio-card ${behaviorPreset === 'Custom' ? 'selected' : ''} preset-card" id="preset-custom" onclick="selectBehaviorPreset('Custom')" style="aspect-ratio: auto; padding: 12px 6px;">
-                            <div style="font-size: 18px; margin-bottom: 4px;">🛠️</div>
                             <div class="proctorio-title">Custom</div>
                         </div>
                     </div>
 
-                    <h4 style="margin: 0 0 12px 0; font-family:'Outfit',sans-serif; font-size:13px; font-weight:700; color:var(--text-primary);">Proctorio Frame Metrics</h4>
+                    <h4 style="margin: 0 0 12px 0; font-family:'Outfit',sans-serif; font-size:13px; font-weight:700; color:var(--text-primary);">Flag sensitivity (1 = light, 5 = heavy)</h4>
                     
                     <!-- Sliders / Segments list -->
                     <div id="metrics-sliders-container">
@@ -1851,80 +2136,21 @@ function showCreateExamModal(examId = null) {
                 </div>
             </div>
 
-            <!-- Accordion Section 3: Proctorio Exam Metrics -->
-            <div class="proctorio-section collapsed" id="section-exam-metrics">
-                <div class="proctorio-section-header" onclick="toggleProctorioSection('section-exam-metrics')">
-                    <div class="proctorio-section-title-container">
-                        <span class="proctorio-toggle-icon">▼</span>
-                        <div>
-                            <div class="proctorio-section-title">Proctorio Exam Metrics</div>
-                            <div class="proctorio-section-subtitle">Enable system flags for tracking candidate abnormal behavior.</div>
-                        </div>
-                    </div>
-                </div>
-                <div class="proctorio-section-content">
-                    <h4 style="margin: 0 0 6px 0; font-family:'Outfit',sans-serif; font-size:13px; font-weight:700; color:var(--text-primary);">Computer Based Abnormalities</h4>
-                    <div class="proctorio-grid" style="grid-template-columns: repeat(5, 1fr); margin-bottom: 20px;">
-                        <div class="proctorio-card selected" style="aspect-ratio: auto; padding: 12px 6px;">
-                            <div class="proctorio-title">Navigating Away</div>
-                        </div>
-                        <div class="proctorio-card selected" style="aspect-ratio: auto; padding: 12px 6px;">
-                            <div class="proctorio-title">Keystrokes</div>
-                        </div>
-                        <div class="proctorio-card selected" style="aspect-ratio: auto; padding: 12px 6px;">
-                            <div class="proctorio-title">Copy & Paste</div>
-                        </div>
-                        <div class="proctorio-card selected" style="aspect-ratio: auto; padding: 12px 6px;">
-                            <div class="proctorio-title">Browser Resize</div>
-                        </div>
-                        <div class="proctorio-card selected" style="aspect-ratio: auto; padding: 12px 6px;">
-                            <div class="proctorio-title">Mouse Movement</div>
-                        </div>
-                    </div>
-
-                    <h4 style="margin: 0 0 6px 0; font-family:'Outfit',sans-serif; font-size:13px; font-weight:700; color:var(--text-primary);">Environmental Abnormalities</h4>
-                    <div class="proctorio-grid" style="grid-template-columns: repeat(5, 1fr); margin-bottom: 20px;">
-                        <div class="proctorio-card selected" style="aspect-ratio: auto; padding: 12px 6px;">
-                            <div class="proctorio-title">Head Movement</div>
-                        </div>
-                        <div class="proctorio-card selected" style="aspect-ratio: auto; padding: 12px 6px;">
-                            <div class="proctorio-title">Leaving the Room</div>
-                        </div>
-                        <div class="proctorio-card selected" style="aspect-ratio: auto; padding: 12px 6px;">
-                            <div class="proctorio-title">Multi-Face</div>
-                        </div>
-                    </div>
-
-                    <h4 style="margin: 0 0 6px 0; font-family:'Outfit',sans-serif; font-size:13px; font-weight:700; color:var(--text-primary);">Technical Abnormalities</h4>
-                    <div class="proctorio-grid" style="grid-template-columns: repeat(5, 1fr);">
-                        <div class="proctorio-card selected" style="aspect-ratio: auto; padding: 12px 6px;">
-                            <div class="proctorio-title">Exam Duration</div>
-                        </div>
-                        <div class="proctorio-card selected" style="aspect-ratio: auto; padding: 12px 6px;">
-                            <div class="proctorio-title">Start Times</div>
-                        </div>
-                        <div class="proctorio-card selected" style="aspect-ratio: auto; padding: 12px 6px;">
-                            <div class="proctorio-title">End Times</div>
-                        </div>
-                        <div class="proctorio-card selected" style="aspect-ratio: auto; padding: 12px 6px;">
-                            <div class="proctorio-title">Exam Collusion</div>
-                        </div>
-                    </div>
-                </div>
-            </div>
-
-            <!-- Accordion Section 4: Advanced Integrations & Custom Instructions -->
+            <!-- Accordion Section 3: Advanced Integrations & Custom Instructions -->
             <div class="proctorio-section collapsed" id="section-advanced">
                 <div class="proctorio-section-header" onclick="toggleProctorioSection('section-advanced')">
                     <div class="proctorio-section-title-container">
                         <span class="proctorio-toggle-icon">▼</span>
                         <div>
-                            <div class="proctorio-section-title">Advanced Integrations & Custom Instructions</div>
-                            <div class="proctorio-section-subtitle">Configure Safe Exam Browser, companion apps, and candidate instructions.</div>
+                            <div class="proctorio-section-title">Lockdown Environment & Instructions</div>
+                            <div class="proctorio-section-subtitle">SEB, Chrome extension, companion app, and student instructions. Prefer one primary lockdown path.</div>
                         </div>
                     </div>
                 </div>
                 <div class="proctorio-section-content">
+                    <p style="font-size:12px; color:var(--text-secondary); background:#eff6ff; border:1px solid #bfdbfe; border-radius:6px; padding:10px 12px; margin:0 0 16px 0;">
+                        Tip: SEB, the Chrome extension, and the desktop companion overlap. Enable the one that matches your policy (or extension + companion for max lockdown). Requiring all three increases support load.
+                    </p>
                     <!-- Safe Exam Browser -->
                     <div style="margin-top: 10px; background: #f8fafc; border: 1px solid #cbd5e1; border-radius: 8px; padding: 16px; margin-bottom: 16px;">
                         <div style="display: flex; align-items: center; justify-content: space-between;">
@@ -1941,12 +2167,7 @@ function showCreateExamModal(examId = null) {
                         </div>
                         
                         <div id="seb-options-container" style="display: ${exam && exam.require_seb ? 'block' : 'none'}; margin-top: 16px; border-top: 1px solid #cbd5e1; padding-top: 12px;">
-                            <div class="proctorio-grid">
-                                <div class="proctorio-card ${exam && exam.block_downloads ? 'selected' : ''}" id="card-downloads-seb" onclick="toggleProctorioOption('chk-downloads', 'card-downloads-seb')" title="Block file downloading">
-                                    <div class="proctorio-icon"><img src="icons/block-downloads.svg" alt="" /></div>
-                                    <div class="proctorio-title">Block Downloads</div>
-                                </div>
-                            </div>
+                            <p style="font-size:12px; color:var(--text-muted); margin:0;">SEB enforces its own lockdown. Use Lock Down Options above for download/clipboard rules that apply outside SEB.</p>
                         </div>
                     </div>
 
@@ -2158,6 +2379,105 @@ function toggleProctorioOption(checkboxId, cardId) {
         }
     }
 }
+
+function setOptionChecked(checkboxId, cardId, checked) {
+    const chk = document.getElementById(checkboxId);
+    const card = document.getElementById(cardId);
+    if (chk) chk.checked = !!checked;
+    if (card) {
+        if (checked) card.classList.add('selected');
+        else card.classList.remove('selected');
+    }
+}
+
+/** Apply a full exam configuration preset (recording + lockdown + behavior + environment). */
+function applyExamPreset(name) {
+    const presets = {
+        standard: {
+            camera: true, mic: true, screen: true, traffic: false, room: false, mobile: false,
+            fs: true, oneScreen: true, newTabs: true, closeTabs: true, printing: true, clipboard: true,
+            downloads: true, cache: false, rc: true, reentry: false,
+            verifyVideo: true, verifyAudio: true, verifyDesktop: true, verifyId: false, verifySig: false,
+            seb: false, extension: true, companion: false,
+            behavior: 'Recommended'
+        },
+        strict: {
+            camera: true, mic: true, screen: true, traffic: true, room: true, mobile: true,
+            fs: true, oneScreen: true, newTabs: true, closeTabs: true, printing: true, clipboard: true,
+            downloads: true, cache: true, rc: true, reentry: true,
+            verifyVideo: true, verifyAudio: true, verifyDesktop: true, verifyId: true, verifySig: true,
+            seb: false, extension: true, companion: true,
+            behavior: 'Moderate'
+        },
+        open: {
+            camera: true, mic: false, screen: false, traffic: false, room: false, mobile: false,
+            fs: false, oneScreen: false, newTabs: false, closeTabs: false, printing: false, clipboard: false,
+            downloads: false, cache: false, rc: false, reentry: false,
+            verifyVideo: true, verifyAudio: false, verifyDesktop: false, verifyId: false, verifySig: false,
+            seb: false, extension: true, companion: false,
+            behavior: 'Open Note'
+        },
+        seb: {
+            camera: true, mic: true, screen: false, traffic: false, room: false, mobile: false,
+            fs: true, oneScreen: true, newTabs: true, closeTabs: true, printing: true, clipboard: true,
+            downloads: true, cache: false, rc: true, reentry: false,
+            verifyVideo: true, verifyAudio: true, verifyDesktop: false, verifyId: false, verifySig: false,
+            seb: true, extension: false, companion: false,
+            behavior: 'Recommended'
+        },
+        companion: {
+            camera: true, mic: true, screen: true, traffic: false, room: false, mobile: false,
+            fs: true, oneScreen: true, newTabs: true, closeTabs: true, printing: true, clipboard: true,
+            downloads: true, cache: false, rc: true, reentry: false,
+            verifyVideo: true, verifyAudio: true, verifyDesktop: true, verifyId: false, verifySig: false,
+            seb: false, extension: true, companion: true,
+            behavior: 'Recommended'
+        }
+    };
+    const p = presets[name];
+    if (!p) return;
+
+    setOptionChecked('chk-camera', 'card-camera', p.camera);
+    setOptionChecked('chk-mic', 'card-mic', p.mic);
+    setOptionChecked('chk-screen', 'card-screen', p.screen);
+    setOptionChecked('chk-ext-traffic', 'card-ext-traffic', p.traffic);
+    setOptionChecked('chk-room-scan', 'card-room-scan', p.room);
+    setOptionChecked('chk-mobile', 'card-mobile', p.mobile);
+    setOptionChecked('chk-fs', 'card-fs', p.fs);
+    setOptionChecked('chk-one-screen', 'card-one-screen', p.oneScreen);
+    setOptionChecked('chk-ext-newtabs', 'card-ext-newtabs', p.newTabs);
+    setOptionChecked('chk-ext-closetabs', 'card-ext-closetabs', p.closeTabs);
+    setOptionChecked('chk-printing', 'card-printing', p.printing);
+    setOptionChecked('chk-clipboard', 'card-clipboard', p.clipboard);
+    setOptionChecked('chk-downloads', 'card-downloads', p.downloads);
+    setOptionChecked('chk-ext-cache', 'card-ext-cache', p.cache);
+    setOptionChecked('chk-rc', 'card-rc', p.rc);
+    setOptionChecked('chk-reentry', 'card-reentry', p.reentry);
+    setOptionChecked('chk-verify-video', 'card-verify-video', p.verifyVideo);
+    setOptionChecked('chk-verify-audio', 'card-verify-audio', p.verifyAudio);
+    setOptionChecked('chk-verify-desktop', 'card-verify-desktop', p.verifyDesktop);
+    setOptionChecked('chk-verify-id', 'card-verify-id', p.verifyId);
+    setOptionChecked('chk-verify-signature', 'card-verify-signature', p.verifySig);
+
+    const setSwitch = (id, on) => {
+        const chk = document.getElementById(id);
+        if (!chk) return;
+        chk.checked = on;
+        const slider = chk.nextElementSibling;
+        if (slider) slider.style.backgroundColor = on ? '#2563eb' : '#cbd5e1';
+    };
+    setSwitch('chk-seb', p.seb);
+    setSwitch('chk-extension', p.extension);
+    setSwitch('chk-companion', p.companion);
+    if (typeof window.toggleSebSection === 'function') window.toggleSebSection();
+    if (typeof window.toggleExtensionSection === 'function') window.toggleExtensionSection();
+    if (typeof window.toggleCompanionSection === 'function') window.toggleCompanionSection();
+
+    if (typeof window.selectBehaviorPreset === 'function') {
+        window.selectBehaviorPreset(p.behavior);
+    }
+    showToast(`Applied “${name}” preset — review and save when ready`, 'success');
+}
 async function saveExam(examId = null) {
     const payload = {
         title: document.getElementById('exam-title').value,
@@ -2178,7 +2498,7 @@ async function saveExam(examId = null) {
         block_downloads: document.getElementById('chk-downloads').checked,
         prevent_reentry: document.getElementById('chk-reentry').checked,
         require_room_scan: document.getElementById('chk-room-scan').checked,
-        require_mobile_camera: false,
+        require_mobile_camera: document.getElementById('chk-mobile') ? document.getElementById('chk-mobile').checked : false,
         require_extension: document.getElementById('chk-extension').checked,
         record_web_traffic: document.getElementById('chk-ext-traffic') ? document.getElementById('chk-ext-traffic').checked : false,
         disable_new_tabs: document.getElementById('chk-ext-newtabs') ? document.getElementById('chk-ext-newtabs').checked : false,
@@ -2192,7 +2512,6 @@ async function saveExam(examId = null) {
         allowed_urls: document.getElementById('allowed-urls') ? document.getElementById('allowed-urls').value.trim() : '',
         additional_instructions: document.getElementById('additional-instructions') ? document.getElementById('additional-instructions').value.trim() : '',
         
-        // Proctorio makeover specific parameters
         verify_video: document.getElementById('chk-verify-video') ? document.getElementById('chk-verify-video').checked : false,
         verify_audio: document.getElementById('chk-verify-audio') ? document.getElementById('chk-verify-audio').checked : false,
         verify_desktop: document.getElementById('chk-verify-desktop') ? document.getElementById('chk-verify-desktop').checked : false,

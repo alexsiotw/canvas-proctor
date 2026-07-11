@@ -286,9 +286,40 @@ let isSebParam = urlParams.get('seb') === 'true';
 let autoExamCode = urlParams.get('exam_code');
 let placementId = urlParams.get('placement_id');
 let directExamId = urlParams.get('exam_id');
+let isPracticeMode = urlParams.get('practice') === '1' || urlParams.get('practice') === 'true';
 
 if (socket && sessionToken) {
     socket.emit('join_lti', { token: sessionToken });
+}
+
+/** Practice / system-check only — no real exam session or grade impact. */
+function startPracticeMode() {
+    isPracticeMode = true;
+    examConfig = {
+        id: null,
+        require_mic: true,
+        require_camera: true,
+        require_screen: false,
+        require_fullscreen: false,
+        require_room_scan: false,
+        require_mobile_camera: false,
+        verify_audio: true,
+        verify_video: true,
+        verify_desktop: false,
+        verify_id: false,
+        verify_signature: false,
+        additional_instructions: 'This is a practice system check only. Nothing is recorded for grading and no exam will start. When finished, close this tab and return to Canvas when you are ready for the real exam.',
+        require_seb: false,
+        require_extension: false,
+        require_companion_app: false
+    };
+    const codeEl = document.getElementById('code-container');
+    if (codeEl) codeEl.style.display = 'none';
+    const setupEl = document.getElementById('setup-container');
+    if (setupEl) setupEl.style.display = 'flex';
+    const header = document.querySelector('.setup-header span');
+    if (header) header.innerHTML = 'ProctorGuard Practice Check <span style="font-weight:500;color:#059669;font-size:12px;margin-left:8px;">No recording · Not graded</span>';
+    initStepWizard();
 }
 
 function initLtiFrameResize() {
@@ -319,6 +350,10 @@ function initLtiFrameResize() {
 
 window.addEventListener('load', () => {
     initLtiFrameResize();
+    if (isPracticeMode) {
+        startPracticeMode();
+        return;
+    }
     if ((placementId || directExamId) && sessionToken) {
         document.getElementById('code-container').style.display = 'none';
         verifyPlacement(placementId, directExamId);
@@ -464,7 +499,8 @@ function updateSidebarNav() {
         { id: 3, req: () => examConfig.require_camera || examConfig.verify_video },
         { id: 11, req: () => examConfig.verify_id },
         { id: 12, req: () => examConfig.verify_signature },
-        { id: 4, req: () => true }, // ADDITIONAL INSTRUCTIONS
+        // Custom instructions only when instructor set them; guidelines always (merged UI if both)
+        { id: 4, req: () => examConfig.additional_instructions && examConfig.additional_instructions.trim() !== '' },
         { id: 5, req: () => true }, // GUIDELINES + TIPS
         { id: 6, req: () => examConfig.require_room_scan }, // ROOM SCAN
         { id: 10, req: () => examConfig.require_mobile_camera }, // MOBILE CAMERA
@@ -546,7 +582,7 @@ function getNextStep(current) {
         { id: 3, req: () => examConfig.require_camera || examConfig.verify_video },
         { id: 11, req: () => examConfig.verify_id },
         { id: 12, req: () => examConfig.verify_signature },
-        { id: 4, req: () => true },
+        { id: 4, req: () => examConfig.additional_instructions && examConfig.additional_instructions.trim() !== '' },
         { id: 5, req: () => true },
         { id: 6, req: () => examConfig.require_room_scan },
         { id: 10, req: () => examConfig.require_mobile_camera },
@@ -585,7 +621,7 @@ function getStepName(step) {
         case 6: return 'Room scan';
         case 7: return 'Screen share';
         case 8: return 'Fullscreen mode';
-        case 9: return 'Begin exam';
+        case 9: return isPracticeMode ? 'Done' : 'Begin exam';
         case 10: return 'Mobile camera';
     }
 }
@@ -974,18 +1010,35 @@ function goToStep(step) {
             break;
             
         case 9:
-            // BEGIN EXAM
-            contentEl.innerHTML = `
-                <div>
-                    <h2 class="step-title">Begin Exam</h2>
-                    <p class="step-description">
-                        All checks have passed successfully. Click the button below to start your proctored session.
-                    </p>
-                </div>
-                <div style="display: flex; justify-content: flex-end; gap: 15px; margin-top: 20px;">
-                    <button id="btn-begin-exam" class="btn btn-success" style="padding: 15px 40px; font-size: 16px; font-weight: bold; background: #10b981; border: none;" onclick="startMainExamSession()">Begin Exam Now</button>
-                </div>
-            `;
+            if (isPracticeMode) {
+                contentEl.innerHTML = `
+                    <div>
+                        <h2 class="step-title">Practice check complete</h2>
+                        <p class="step-description">
+                            Your network, microphone, and camera look ready. Nothing was recorded for grading.
+                            Close this tab when finished, then open your real exam from Canvas when instructed.
+                        </p>
+                        <div style="background:#ecfdf5; border:1px solid #a7f3d0; border-radius:8px; padding:14px; color:#065f46; font-size:14px; line-height:1.5;">
+                            <strong>Tip:</strong> Use the same device, browser, and lighting for the real exam to avoid last-minute setup issues.
+                        </div>
+                    </div>
+                    <div style="display: flex; justify-content: flex-end; gap: 15px; margin-top: 24px;">
+                        <button class="btn btn-primary" style="padding: 12px 28px; font-size: 15px; font-weight: bold; background: #2563eb; border: none;" onclick="window.close();">Close</button>
+                    </div>
+                `;
+            } else {
+                contentEl.innerHTML = `
+                    <div>
+                        <h2 class="step-title">Begin Exam</h2>
+                        <p class="step-description">
+                            All checks have passed successfully. Click the button below to start your proctored session.
+                        </p>
+                    </div>
+                    <div style="display: flex; justify-content: flex-end; gap: 15px; margin-top: 20px;">
+                        <button id="btn-begin-exam" class="btn btn-success" style="padding: 15px 40px; font-size: 16px; font-weight: bold; background: #10b981; border: none;" onclick="startMainExamSession()">Begin Exam Now</button>
+                    </div>
+                `;
+            }
             break;
     }
 }
@@ -2911,17 +2964,26 @@ function setupAudioAnalysis(stream) {
 
         let consecutiveLoudFrames = 0;
         let consecutiveQuietFrames = 0;
-        // RMS-based threshold (0-100 scale). Ambient hum/fan noise/mic hiss typically sits under ~4-6;
-        // normal speaking voice at a laptop mic typically reads 12+.
-        const RMS_THRESHOLD = 10;
-        // Require ~500ms of sustained loud audio before flagging, so a single cough/click/knock
+        // Adaptive RMS threshold (0-100 scale). A single fixed number can't work across
+        // every mic — a quiet laptop mic with auto-gain reads "talking" at ~6 while a hot
+        // headset reads ambient at ~8. So instead we measure this student's actual ambient
+        // floor for the first ~2s, then trigger when the level rises well above it. This
+        // fixes both the old false-positives (threshold too low) AND the recent misses
+        // (threshold too high) without guessing a magic constant.
+        const BASELINE_FRAMES = 20;        // ~2s of ambient calibration at the 100ms interval
+        const RMS_FLOOR = 4;               // never trigger below this even in dead silence
+        const RMS_CEIL = 22;               // never require more than this (very loud rooms)
+        const TRIGGER_MULTIPLIER = 2.2;    // talking is typically 2x+ the ambient floor
+        let baselineSamples = [];
+        let dynamicThreshold = 10;         // sensible starting value until calibration completes
+        // Require ~300ms of sustained loud audio before flagging, so a single cough/click/knock
         // doesn't trigger a false "talking" violation.
-        const LOUD_FRAMES_TO_TRIGGER = 5;
+        const LOUD_FRAMES_TO_TRIGGER = 3;
         // ~2s of quiet before considering speech ended (unchanged behavior)
         const QUIET_FRAMES_TO_RESET = 20;
         let logCounter = 0;
 
-        console.log("[Audio] Initializing voice activity analysis. RMS threshold:", RMS_THRESHOLD);
+        console.log("[Audio] Initializing adaptive voice activity analysis (calibrating ambient floor)...");
 
         talkingDetectionInterval = setInterval(() => {
             if (isExamCompleted) {
@@ -2941,12 +3003,23 @@ function setupAudioAnalysis(stream) {
             }
             const rms = Math.sqrt(sumSquares / timeDomainArray.length) * 100; // 0..100 scale
 
-            logCounter++;
-            if (logCounter % 50 === 0) { // Log RMS level every 5 seconds to console for debugging
-                console.log(`[Audio] Monitoring... RMS in last 5s: ${rms.toFixed(1)} (threshold is ${RMS_THRESHOLD})`);
+            // Calibration phase: collect ambient floor, don't flag anything yet.
+            if (baselineSamples.length < BASELINE_FRAMES) {
+                baselineSamples.push(rms);
+                if (baselineSamples.length === BASELINE_FRAMES) {
+                    const ambient = baselineSamples.reduce((a, b) => a + b, 0) / baselineSamples.length;
+                    dynamicThreshold = Math.min(RMS_CEIL, Math.max(RMS_FLOOR, ambient * TRIGGER_MULTIPLIER));
+                    console.log(`[Audio] Calibration done. Ambient floor: ${ambient.toFixed(1)}, voice threshold set to: ${dynamicThreshold.toFixed(1)}`);
+                }
+                return;
             }
 
-            if (rms > RMS_THRESHOLD) {
+            logCounter++;
+            if (logCounter % 50 === 0) { // Log RMS level every 5 seconds to console for debugging
+                console.log(`[Audio] Monitoring... RMS in last 5s: ${rms.toFixed(1)} (adaptive threshold is ${dynamicThreshold.toFixed(1)})`);
+            }
+
+            if (rms > dynamicThreshold) {
                 consecutiveLoudFrames++;
                 consecutiveQuietFrames = 0;
             } else {

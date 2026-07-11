@@ -486,7 +486,7 @@ function openExamReviewCenterModal(sessions, loadError) {
 }
 
 function _prcAlertCount(logs) {
-  const alertTypes = ['tab_blur','window_blur','fullscreen_exit','Tab Blocked','audio_violation','clipboard_attempt','copy_attempt','paste_attempt','right_click','print_attempt','keyboard_shortcut_blocked'];
+  const alertTypes = ['tab_blur','window_blur','fullscreen_exit','Tab Blocked','audio_violation','voice_transcript','clipboard_attempt','copy_attempt','paste_attempt','right_click','print_attempt','keyboard_shortcut_blocked'];
   return (logs || []).filter(l => alertTypes.includes(l.event_type)).length;
 }
 function _prcAnnotationCount(logs) {
@@ -1156,11 +1156,11 @@ async function loadSessionInModal(modal, session) {
   }
 
   // ------- HELPER: log item -------
-  const alertTypes = ['tab_blur','window_blur','fullscreen_exit','Tab Blocked','audio_violation','clipboard_attempt','copy_attempt','paste_attempt','right_click','print_attempt','keyboard_shortcut_blocked'];
+  const alertTypes = ['tab_blur','window_blur','fullscreen_exit','Tab Blocked','audio_violation','voice_transcript','clipboard_attempt','copy_attempt','paste_attempt','right_click','print_attempt','keyboard_shortcut_blocked'];
   const abnTypes   = ['phone_detected','multiple_faces','no_face','AI_PEOPLE','gaze_off_screen','audio_threshold_exceeded','mobile_camera_lost'];
   const alertLabels = {
     tab_blur: 'Tab Leave/Blur', window_blur: 'Window Focus Lost', fullscreen_exit: 'Fullscreen Exited',
-    'Tab Blocked': 'Tab Blocked', audio_violation: 'Audio/Voice Detected',
+    'Tab Blocked': 'Tab Blocked', audio_violation: 'Audio/Voice Detected', voice_transcript: 'Speech Detected',
     clipboard_attempt: 'Clipboard Attempt', copy_attempt: 'Copy Attempt', paste_attempt: 'Paste Attempt',
     right_click: 'Right Click', print_attempt: 'Print Attempt', keyboard_shortcut_blocked: 'Keyboard Shortcut Blocked'
   };

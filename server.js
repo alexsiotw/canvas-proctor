@@ -1847,18 +1847,22 @@ async function assembleAndUploadSessionVideo(exam_session_id, total_chunks) {
             try {
                 await new Promise((resolve, reject) => {
                     const command = ffmpeg(rawWebmPath)
+                        // Chunked MediaRecorder WebM has no reliable duration/timestamps in
+                        // its header. Regenerating presentation timestamps on the INPUT is the
+                        // single most important fix for the "chipmunk/fast audio" symptom —
+                        // without it ffmpeg guesses the timebase wrong and the whole recording
+                        // (audio + video) plays sped up, which raises the perceived pitch.
+                        .inputOptions('-fflags +genpts')
                         .outputOptions('-c:v libx264')
                         .outputOptions('-pix_fmt yuv420p')
                         .outputOptions('-preset ultrafast') // Use ultrafast preset to minimize CPU/RAM usage
                         .outputOptions('-crf 30')          // Lower quality/high compression to speed up transcoding
                         .outputOptions('-threads 2')        // Limit CPU threads to protect Canvas LMS resources
                         .outputOptions('-vsync vfr')
-                        // The recorded WebM mixes a real-time mic track with a canvas video track
-                        // throttled to a fixed fps — their clocks drift. Without correcting that
-                        // drift, -vsync vfr can leave ffmpeg to stretch/compress the audio timeline
-                        // to match, which is heard as pitch-shifted ("chipmunk"/slowed) audio.
-                        .outputOptions('-af aresample=async=1000')
-                        .outputOptions('-ar 44100')
+                        // Resync audio to the (now-correct) timestamps and anchor it to t=0 so
+                        // it can't drift ahead of the video. aac at the source rate — no forced
+                        // resample, since forcing a rate is itself a common pitch-shift cause.
+                        .outputOptions('-af aresample=async=1:first_pts=0')
                         .outputOptions('-c:a aac')
                         .on('start', (commandLine) => {
                             console.log(`Spawned FFmpeg with command: ${commandLine}`);

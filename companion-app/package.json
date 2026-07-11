@@ -1,8 +1,8 @@
 {
   "name": "canvas-proctor-companion",
   "version": "1.0.0",
-  "author": "Secure Exam Proctor",
-  "description": "Secure Exam Proctor Desktop Companion application for lockdown exam testing.",
+  "author": "ProctorGuard",
+  "description": "ProctorGuard Desktop Companion for secure lockdown exam testing.",
   "main": "main.js",
   "scripts": {
     "start": "electron .",
