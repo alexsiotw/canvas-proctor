@@ -1258,18 +1258,107 @@ async function loadSessionInModal(modal, session) {
     }
   }
 
-  // Verification
+  // Verification — ID / signature are stored as proctor_logs after pre-check
+  // upload (event_type verify_id_image / verify_signature_image, URL in
+  // event_message). Session columns may also hold a path when set at start or
+  // by newer upload handlers. Prefer logs (source of truth for live sessions),
+  // fall back to session fields. Image endpoints need the extension JWT on
+  // the query string the same way video playback does.
   const pVerif = modal.querySelector('#prm-panel-verification');
   if (pVerif) {
+    const authImageUrl = (raw) => {
+      if (!raw) return null;
+      // Absolute http(s) or data: URLs can be used as-is (append token only for our API host)
+      if (/^data:/i.test(raw)) return raw;
+      let abs = raw;
+      if (raw.startsWith('/')) abs = `${PG_API_BASE}${raw}`;
+      else if (!/^https?:\/\//i.test(raw)) abs = `${PG_API_BASE}/${raw.replace(/^\//, '')}`;
+      try {
+        const u = new URL(abs);
+        if (u.origin === PG_API_BASE || u.hostname.includes('siotw.net') || u.hostname.includes('proctor')) {
+          u.searchParams.set('token', token);
+        }
+        return u.toString();
+      } catch (_) {
+        return abs + (abs.includes('?') ? '&' : '?') + 'token=' + encodeURIComponent(token);
+      }
+    };
+
+    const idLog = logs.find(l => l.event_type === 'verify_id_image');
+    const sigLog = logs.find(l => l.event_type === 'verify_signature_image');
+    const agreementLog = logs.find(l => l.event_type === 'academic_integrity_agreement');
+
+    // Path preference: log event_message → session column → synthesized view URL
+    const idRaw = (idLog && idLog.event_message)
+      || session.verify_id_image
+      || (idLog ? `/api/session/view-id/${session.id}` : null);
+    const sigRaw = (sigLog && sigLog.event_message)
+      || session.verify_signature_image
+      || (sigLog ? `/api/session/view-signature/${session.id}` : null);
+
+    let sigName = session.verify_signature_name || '';
+    if (!sigName && agreementLog && agreementLog.event_message) {
+      const m = agreementLog.event_message.match(/as\s+"([^"]+)"/i)
+        || agreementLog.event_message.match(/as\s+(.+)\.?$/i);
+      if (m) sigName = m[1].replace(/\.$/, '').trim();
+    }
+
+    const idUrl = authImageUrl(idRaw);
+    const sigUrl = authImageUrl(sigRaw);
+
+    // Room scan (optional verification artifact) — same pattern as dashboard extras
+    const roomScanLog = logs.find(l => l.event_type === 'room_scan_video');
+    const roomScanUrl = session.room_scan_drive_file_id
+      ? `https://drive.google.com/file/d/${session.room_scan_drive_file_id}/view`
+      : (roomScanLog && roomScanLog.event_message
+          ? (roomScanLog.event_message.startsWith('http')
+              ? roomScanLog.event_message
+              : `${PG_API_BASE}${roomScanLog.event_message.startsWith('/') ? '' : '/'}${roomScanLog.event_message}${roomScanLog.event_message.includes('?') ? '&' : '?'}token=${encodeURIComponent(token)}`)
+          : null);
+
     let vHtml = '';
-    if (session.verify_id_image) {
-      vHtml += `<div class="prm-score-card"><h4>ID Captured</h4><img src="${session.verify_id_image}" style="max-width:100%;border-radius:4px;margin-top:8px;"></div>`;
+    if (idUrl) {
+      vHtml += `
+        <div class="prm-score-card" style="border-color:rgba(16,185,129,0.35);">
+          <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;margin-bottom:8px;">
+            <div>
+              <h4 style="color:#059669;margin:0 0 4px;">ID Verification Card</h4>
+              <small>Government or student ID captured during pre-checks.</small>
+            </div>
+            <a href="${idUrl}" target="_blank" rel="noopener" style="flex-shrink:0;background:#10b981;color:#fff;padding:5px 10px;border-radius:6px;font-size:11px;font-weight:700;text-decoration:none;">View ID</a>
+          </div>
+          <img src="${idUrl}" alt="Student ID" style="max-width:100%;border-radius:6px;border:1px solid #e2e8f0;display:block;background:#fff;" onerror="this.style.display='none'; this.nextElementSibling && (this.nextElementSibling.style.display='block');">
+          <p style="display:none;margin:8px 0 0;font-size:12px;color:#c53030;">Image unavailable (file may have been cleared from server storage). Try View ID or re-open after reconnecting.</p>
+        </div>`;
     }
-    if (session.verify_signature_image) {
-      vHtml += `<div class="prm-score-card"><h4>Signature: ${session.verify_signature_name || 'Captured'}</h4><img src="${session.verify_signature_image}" style="max-width:100%;border-radius:4px;margin-top:8px;background:#fff;"></div>`;
+    if (sigUrl) {
+      vHtml += `
+        <div class="prm-score-card" style="border-color:rgba(245,158,11,0.4);">
+          <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;margin-bottom:8px;">
+            <div>
+              <h4 style="color:#d97706;margin:0 0 4px;">Signature Agreement</h4>
+              <small>${sigName ? `Signed as <strong>${sigName.replace(/</g, '&lt;')}</strong>` : 'Digital integrity signature before exam launch.'}</small>
+            </div>
+            <a href="${sigUrl}" target="_blank" rel="noopener" style="flex-shrink:0;background:#f59e0b;color:#fff;padding:5px 10px;border-radius:6px;font-size:11px;font-weight:700;text-decoration:none;">View Signature</a>
+          </div>
+          <img src="${sigUrl}" alt="Student signature" style="max-width:100%;border-radius:6px;border:1px solid #e2e8f0;display:block;background:#fff;" onerror="this.style.display='none'; this.nextElementSibling && (this.nextElementSibling.style.display='block');">
+          <p style="display:none;margin:8px 0 0;font-size:12px;color:#c53030;">Image unavailable (file may have been cleared from server storage).</p>
+        </div>`;
     }
-    if (!session.verify_id_image && !session.verify_signature_image) {
-      vHtml = `<div class="prm-panel-empty"><svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"></path><polyline points="22,6 12,13 2,6"></polyline></svg><p>No ID or Signature captured.</p></div>`;
+    if (roomScanUrl) {
+      vHtml += `
+        <div class="prm-score-card" style="border-color:rgba(139,92,246,0.35);">
+          <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;">
+            <div>
+              <h4 style="color:#7c3aed;margin:0 0 4px;">Environment Room Scan</h4>
+              <small>360° workspace scan completed before starting the exam.</small>
+            </div>
+            <a href="${roomScanUrl}" target="_blank" rel="noopener" style="flex-shrink:0;background:#8b5cf6;color:#fff;padding:5px 10px;border-radius:6px;font-size:11px;font-weight:700;text-decoration:none;">View Scan</a>
+          </div>
+        </div>`;
+    }
+    if (!idUrl && !sigUrl && !roomScanUrl) {
+      vHtml = `<div class="prm-panel-empty"><svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"></path><polyline points="22,6 12,13 2,6"></polyline></svg><p>No ID, Signature, or Room Scan captured for this attempt.</p></div>`;
     }
     pVerif.innerHTML = vHtml;
   }

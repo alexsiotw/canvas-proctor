@@ -944,8 +944,35 @@ app.get('/api/canvas-native/session-report', verifyExtensionToken, async (req, r
             if (riskScore >= 70) riskTier = 'High';
             else if (riskScore >= 30) riskTier = 'Medium';
 
+            // Backfill verify_* fields from logs when session columns were never
+            // populated (uploads historically only wrote proctor_logs). Lets the
+            // extension Review Center Verification tab and any other consumers
+            // that read session.verify_id_image / verify_signature_* work for
+            // both old and new attempts.
+            let verify_id_image = session.verify_id_image;
+            let verify_signature_image = session.verify_signature_image;
+            let verify_signature_name = session.verify_signature_name;
+            if (!verify_id_image) {
+                const idLog = logs.find(l => l.event_type === 'verify_id_image');
+                if (idLog && idLog.event_message) verify_id_image = idLog.event_message;
+            }
+            if (!verify_signature_image) {
+                const sigLog = logs.find(l => l.event_type === 'verify_signature_image');
+                if (sigLog && sigLog.event_message) verify_signature_image = sigLog.event_message;
+            }
+            if (!verify_signature_name) {
+                const agreementLog = logs.find(l => l.event_type === 'academic_integrity_agreement');
+                if (agreementLog && agreementLog.event_message) {
+                    const m = agreementLog.event_message.match(/as\s+"([^"]+)"/i);
+                    if (m) verify_signature_name = m[1];
+                }
+            }
+
             sessions.push({
                 ...session,
+                verify_id_image,
+                verify_signature_image,
+                verify_signature_name,
                 logs: logs,
                 riskScore: riskScore,
                 riskTier: riskTier
@@ -3057,11 +3084,21 @@ app.post('/api/session/upload-id', requireAuth, async (req, res) => {
         
         const idViewUrl = `/api/session/view-id/${exam_session_id}`;
         
-        // Log ID image in proctor_logs so the speedgrader can fetch it.
+        // Log ID image in proctor_logs so the dashboard / extension review center can fetch it.
         await pool.query(
             "INSERT INTO proctor_logs (exam_session_id, event_type, event_message, event_timestamp) VALUES ($1, $2, $3, CURRENT_TIMESTAMP)", 
             [exam_session_id, 'verify_id_image', idViewUrl]
         );
+
+        // Also mirror onto exam_sessions so session-report consumers that read
+        // verify_id_image (extension review center, older clients) see it without
+        // needing to scan logs.
+        if (exam_session_id) {
+            await pool.query(
+                'UPDATE exam_sessions SET verify_id_image = $1 WHERE id = $2',
+                [idViewUrl, exam_session_id]
+            );
+        }
 
         res.json({ success: true, url: idViewUrl });
     } catch (err) {
@@ -3116,6 +3153,14 @@ app.post('/api/session/upload-signature', requireAuth, async (req, res) => {
             "INSERT INTO proctor_logs (exam_session_id, event_type, event_message, event_timestamp) VALUES ($1, $2, $3, CURRENT_TIMESTAMP)", 
             [exam_session_id, 'academic_integrity_agreement', `Student signed academic honesty agreement as "${full_name}".`]
         );
+
+        // Mirror onto exam_sessions for extension / session-report consumers.
+        if (exam_session_id) {
+            await pool.query(
+                'UPDATE exam_sessions SET verify_signature_image = $1, verify_signature_name = $2 WHERE id = $3',
+                [sigViewUrl, full_name || null, exam_session_id]
+            );
+        }
 
         res.json({ success: true, url: sigViewUrl });
     } catch (err) {

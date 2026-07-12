@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(node -c public/extension/content.js)",
+      "Bash(node -c public/extension/review-center.js)",
+      "Bash(node -c public/extension/background.js)",
+      "Bash(node zip-ext.js)",
+      "Bash(rm -f extension/canvas-proctor-extension.zip)"
+    ]
+  }
+}
