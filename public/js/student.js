@@ -409,16 +409,7 @@ async function verifyExamCode() {
         }
         
         examConfig = data;
-        if (examConfig.require_companion_app && !navigator.userAgent.includes('CanvasProctorCompanion')) {
-            document.getElementById('code-container').style.display = 'none';
-            document.getElementById('companion-app-required-overlay').style.display = 'flex';
-            return;
-        }
-        if (examConfig.require_extension && document.documentElement.dataset.proctorExtensionInstalled !== "true" && !navigator.userAgent.includes('CanvasProctorCompanion')) {
-            document.getElementById('code-container').style.display = 'none';
-            document.getElementById('extension-required-overlay').style.display = 'flex';
-            return;
-        }
+        if (!applyExamAccessGates(examConfig)) return;
         document.getElementById('code-container').style.display = 'none';
         document.getElementById('setup-container').style.display = 'flex';
         initStepWizard();
@@ -453,16 +444,7 @@ async function verifyPlacement(pId, eId = null) {
         }
         
         examConfig = data;
-        if (examConfig.require_companion_app && !navigator.userAgent.includes('CanvasProctorCompanion')) {
-            document.getElementById('code-container').style.display = 'none';
-            document.getElementById('companion-app-required-overlay').style.display = 'flex';
-            return;
-        }
-        if (examConfig.require_extension && document.documentElement.dataset.proctorExtensionInstalled !== "true" && !navigator.userAgent.includes('CanvasProctorCompanion')) {
-            document.getElementById('code-container').style.display = 'none';
-            document.getElementById('extension-required-overlay').style.display = 'flex';
-            return;
-        }
+        if (!applyExamAccessGates(examConfig)) return;
         document.getElementById('code-container').style.display = 'none';
         document.getElementById('setup-container').style.display = 'flex';
         initStepWizard();
@@ -492,22 +474,129 @@ function isIOS() {
            (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
 }
 
-function updateSidebarNav() {
-    const stepsConfig = [
+// ---- Device profile + effective requirements (mobile-safe, desktop-unchanged) ----
+// Single source of truth for "should this client skip extension / screen / secondary cam?"
+// Desktop path is identical whenever !mobileMode. allow_mobile_devices defaults false.
+
+function getClientProfile() {
+    const ua = navigator.userAgent || '';
+    const ios = isIOS();
+    const isAndroid = /Android/i.test(ua);
+    // Phones + tablets only — not desktop Chrome with a touch screen.
+    const isMobileClient = ios || isAndroid ||
+        (/Mobile/i.test(ua) && !/Windows NT/i.test(ua) && !/Macintosh/i.test(ua));
+    return {
+        isIOS: ios,
+        isAndroid,
+        isMobileClient,
+        isCompanion: ua.includes('CanvasProctorCompanion'),
+        isSEB: typeof isSEB === 'function' ? isSEB() : false,
+        hasExtension: document.documentElement.dataset.proctorExtensionInstalled === 'true'
+    };
+}
+
+function getEffectiveRequirements(exam, client) {
+    exam = exam || examConfig || {};
+    client = client || getClientProfile();
+    const allowMobile = !!exam.allow_mobile_devices;
+    // Soft browser mode only when instructor opted in AND student is on phone/tablet
+    // AND not already inside companion/SEB hard lockdown.
+    const mobileMode = !!(client.isMobileClient && allowMobile && !client.isCompanion && !client.isSEB);
+
+    // Desktop-only capabilities: skip on any phone/tablet so the wizard never
+    // dead-ends (even soft exams without allow_mobile_devices). Extension
+    // requirement is only waived when mobileMode (allow_mobile_devices on).
+    const onPhoneOrTablet = !!client.isMobileClient;
+
+    return {
+        mobileMode,
+        client,
+        // Extension still required on desktop; waived only in mobileMode
+        requireExtension: !!(exam.require_extension && !mobileMode && !client.isCompanion),
+        // Companion is a Windows desktop app — never waived for mobile
+        requireCompanion: !!(exam.require_companion_app && !client.isCompanion),
+        // Screen share / multi-monitor / forced fullscreen are desktop concepts
+        requireScreen: !!((exam.require_screen || exam.verify_desktop) && !client.isSEB && !onPhoneOrTablet),
+        requireFullscreen: !!(exam.require_fullscreen && !onPhoneOrTablet),
+        onlyOneScreen: !!(exam.only_one_screen && !onPhoneOrTablet),
+        // Secondary phone camera is for watching the room while on a laptop.
+        // If the exam device IS already a phone/tablet, skip QR pairing entirely.
+        requireSecondaryMobileCamera: !!(exam.require_mobile_camera && !onPhoneOrTablet),
+        requireMic: !!(exam.require_mic || exam.verify_audio),
+        requireCamera: !!(exam.require_camera || exam.verify_video),
+        verifyId: !!exam.verify_id,
+        verifySignature: !!exam.verify_signature,
+        requireRoomScan: !!exam.require_room_scan,
+        hasCustomInstructions: !!(exam.additional_instructions && String(exam.additional_instructions).trim() !== '')
+    };
+}
+
+/** Returns true if student may continue into setup; shows overlays and returns false if blocked. */
+function applyExamAccessGates(exam) {
+    const eff = getEffectiveRequirements(exam);
+    const c = eff.client;
+    const hideCode = () => {
+        const code = document.getElementById('code-container');
+        if (code) code.style.display = 'none';
+    };
+    const show = (id) => {
+        const o = document.getElementById(id);
+        if (o) o.style.display = 'flex';
+        hideCode();
+    };
+
+    // ---- Phone / tablet path (never show "install Chrome extension") ----
+    if (c.isMobileClient && !c.isCompanion) {
+        if (exam.block_mobile) {
+            show('mobile-not-allowed-overlay');
+            return false;
+        }
+        // Companion is a Windows desktop app — not available on iOS/Android
+        if (exam.require_companion_app) {
+            show('mobile-not-allowed-overlay');
+            return false;
+        }
+        // Extension required but instructor did not allow mobile browser mode
+        if (exam.require_extension && !exam.allow_mobile_devices) {
+            show('mobile-not-allowed-overlay');
+            return false;
+        }
+        // allow_mobile_devices (or no extension requirement) → continue browser setup
+        return true;
+    }
+
+    // ---- Desktop / companion path (unchanged from historical behavior) ----
+    if (eff.requireCompanion) {
+        show('companion-app-required-overlay');
+        return false;
+    }
+    if (eff.requireExtension && !c.hasExtension) {
+        show('extension-required-overlay');
+        return false;
+    }
+    return true;
+}
+
+function getWizardStepsConfig() {
+    const eff = getEffectiveRequirements(examConfig);
+    return [
         { id: 1, req: () => true }, // NETWORK CHECK
-        { id: 2, req: () => examConfig.require_mic || examConfig.verify_audio },
-        { id: 3, req: () => examConfig.require_camera || examConfig.verify_video },
-        { id: 11, req: () => examConfig.verify_id },
-        { id: 12, req: () => examConfig.verify_signature },
-        // Custom instructions only when instructor set them; guidelines always (merged UI if both)
-        { id: 4, req: () => examConfig.additional_instructions && examConfig.additional_instructions.trim() !== '' },
+        { id: 2, req: () => eff.requireMic },
+        { id: 3, req: () => eff.requireCamera },
+        { id: 11, req: () => eff.verifyId },
+        { id: 12, req: () => eff.verifySignature },
+        { id: 4, req: () => eff.hasCustomInstructions },
         { id: 5, req: () => true }, // GUIDELINES + TIPS
-        { id: 6, req: () => examConfig.require_room_scan }, // ROOM SCAN
-        { id: 10, req: () => examConfig.require_mobile_camera }, // MOBILE CAMERA
-        { id: 7, req: () => (examConfig.require_screen || examConfig.verify_desktop) && !isSEB() },
-        { id: 8, req: () => examConfig.require_fullscreen },
+        { id: 6, req: () => eff.requireRoomScan },
+        { id: 10, req: () => eff.requireSecondaryMobileCamera },
+        { id: 7, req: () => eff.requireScreen },
+        { id: 8, req: () => eff.requireFullscreen },
         { id: 9, req: () => true }
     ];
+}
+
+function updateSidebarNav() {
+    const stepsConfig = getWizardStepsConfig();
 
     const activeSteps = stepsConfig.filter(s => s.req());
     const currentActiveIndex = activeSteps.findIndex(s => s.id === currentStep);
@@ -576,20 +665,7 @@ function updateSidebarNav() {
 }
 
 function getNextStep(current) {
-    const stepsConfig = [
-        { id: 1, req: () => true },
-        { id: 2, req: () => examConfig.require_mic || examConfig.verify_audio },
-        { id: 3, req: () => examConfig.require_camera || examConfig.verify_video },
-        { id: 11, req: () => examConfig.verify_id },
-        { id: 12, req: () => examConfig.verify_signature },
-        { id: 4, req: () => examConfig.additional_instructions && examConfig.additional_instructions.trim() !== '' },
-        { id: 5, req: () => true },
-        { id: 6, req: () => examConfig.require_room_scan },
-        { id: 10, req: () => examConfig.require_mobile_camera },
-        { id: 7, req: () => (examConfig.require_screen || examConfig.verify_desktop) && !isSEB() },
-        { id: 8, req: () => examConfig.require_fullscreen },
-        { id: 9, req: () => true }
-    ];
+    const stepsConfig = getWizardStepsConfig();
     
     let startIndex = 0;
     if (current !== 0) {
@@ -636,8 +712,13 @@ function initStepWizard() {
         startBlockerPolling();
         return;
     }
-    if (examConfig.only_one_screen) {
+    const eff = getEffectiveRequirements(examConfig);
+    // Multi-monitor enforcement is desktop-only; skip on phones/tablets in mobile mode
+    if (eff.onlyOneScreen) {
         initDisplayMonitoring();
+    }
+    if (eff.mobileMode) {
+        console.log('[Proctor] Mobile browser mode active — extension/screen/fullscreen/secondary-cam steps relaxed.');
     }
     const firstStep = getNextStep(0);
     goToStep(firstStep);
@@ -1860,7 +1941,8 @@ async function startProctoring() {
 
         socket.emit('laptop_begin_exam', { token: sessionToken });
 
-        if (examConfig.require_fullscreen && !document.fullscreenElement && typeof document.documentElement.requestFullscreen === 'function') {
+        const runtimeEff = getEffectiveRequirements(examConfig);
+        if (runtimeEff.requireFullscreen && !document.fullscreenElement && typeof document.documentElement.requestFullscreen === 'function') {
              await document.documentElement.requestFullscreen().catch(e => console.log('Fullscreen failed:', e));
         }
 
@@ -1869,7 +1951,7 @@ async function startProctoring() {
         }
 
         setupFocusTracking();
-        if (examConfig.only_one_screen) {
+        if (runtimeEff.onlyOneScreen) {
             initDisplayMonitoring();
         }
         setupSimulatedAIProctoring();
@@ -2463,7 +2545,7 @@ function showDualScreenBlocker(show, source = 'system') {
 let isDisplayMonitoringInitialized = false;
 
 function initDisplayMonitoring() {
-    if (!examConfig.only_one_screen) return;
+    if (!getEffectiveRequirements(examConfig).onlyOneScreen) return;
     if (isDisplayMonitoringInitialized) return;
     isDisplayMonitoringInitialized = true;
 
@@ -2511,7 +2593,7 @@ function setupFocusTracking() {
         wasFocused = isFocused;
     }, 500);
 
-    if (examConfig.require_fullscreen && typeof document.documentElement.requestFullscreen === 'function') {
+    if (getEffectiveRequirements(examConfig).requireFullscreen && typeof document.documentElement.requestFullscreen === 'function') {
         document.addEventListener('fullscreenchange', () => {
             if (isExamCompleted) return;
             if (document.fullscreenElement) return;

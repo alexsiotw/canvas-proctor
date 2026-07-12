@@ -127,6 +127,9 @@ async function initDatabase() {
       ALTER TABLE exams ADD COLUMN IF NOT EXISTS verify_signature BOOLEAN DEFAULT false;
       ALTER TABLE exams ADD COLUMN IF NOT EXISTS allow_calculator BOOLEAN DEFAULT false;
       ALTER TABLE exams ADD COLUMN IF NOT EXISTS allow_whiteboard BOOLEAN DEFAULT false;
+      -- Opt-in: let phones/tablets take the exam in-browser without the Chrome extension.
+      -- Default false so existing desktop lockdown exams are unchanged.
+      ALTER TABLE exams ADD COLUMN IF NOT EXISTS allow_mobile_devices BOOLEAN DEFAULT false;
       ALTER TABLE exams ADD COLUMN IF NOT EXISTS behavior_preset VARCHAR(100) DEFAULT 'Recommended';
       ALTER TABLE exams ADD COLUMN IF NOT EXISTS weight_navigating_away INTEGER DEFAULT 1;
       ALTER TABLE exams ADD COLUMN IF NOT EXISTS weight_keystrokes INTEGER DEFAULT 1;

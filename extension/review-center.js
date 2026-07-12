@@ -1578,6 +1578,7 @@ function injectProctorGuardTab(tabNav, quizId) {
     cache:  `<svg viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/></svg>`,
     rc:     `<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><line x1="12" y1="3" x2="12" y2="12"/><line x1="12" y1="12" x2="21" y2="12"/></svg>`,
     reen:   `<svg viewBox="0 0 24 24"><path d="M15 9l3 3-3 3"/><path d="M18 12H6"/><line x1="21" y1="3" x2="21" y2="21"/></svg>`,
+    mobile: `<svg viewBox="0 0 24 24"><rect x="5" y="2" width="14" height="20" rx="2"/><line x1="12" y1="18" x2="12.01" y2="18"/></svg>`,
     vvid:   `<svg viewBox="0 0 24 24"><path d="M23 7l-7 5 7 5V7z"/><rect x="1" y="5" width="15" height="14" rx="2"/><path d="M4 19l1.5 1.5L9 17"/></svg>`,
     vaud:   `<svg viewBox="0 0 24 24"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="22"/><path d="M15 21l1.5 1.5L20 19"/></svg>`,
     vdesk:  `<svg viewBox="0 0 24 24"><rect x="2" y="3" width="20" height="13" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="16" x2="12" y2="21"/><path d="M16 18l1.5 1.5L21 16"/></svg>`,
@@ -1615,7 +1616,7 @@ function injectProctorGuardTab(tabNav, quizId) {
       <div class="pg-sub-title" data-pg-body="pg-lock"><span class="pg-arrow">&#9660;</span>&nbsp;Lock Down Options</div>
       <div id="pg-lock">
         <div class="pg-grid">
-          ${card('pg_fs','fs','Force Full Screen')}${card('pg_one','one','Only One Screen')}${card('pg_ntab','ntab','Disable New Tabs')}${card('pg_ctab','ctab','Close Open Tabs')}${card('pg_print','print','Disable Printing')}${card('pg_clip','clip','Disable Clipboard')}${card('pg_dl','dl','Block Downloads')}${card('pg_cache','cache','Clear Cache')}${card('pg_rc','rc','Disable Right Click')}${card('pg_reen','reen','Prevent Re-entry')}
+          ${card('pg_fs','fs','Force Full Screen')}${card('pg_one','one','Only One Screen')}${card('pg_ntab','ntab','Disable New Tabs')}${card('pg_ctab','ctab','Close Open Tabs')}${card('pg_print','print','Disable Printing')}${card('pg_clip','clip','Disable Clipboard')}${card('pg_dl','dl','Block Downloads')}${card('pg_cache','cache','Clear Cache')}${card('pg_rc','rc','Disable Right Click')}${card('pg_reen','reen','Prevent Re-entry')}${card('pg_allowmob','mobile','Allow Mobile Devices')}
         </div>
         <p class="pg-note" data-pg-desc="lock">Close Open Tabs prevents access to unauthorized material by requiring any other webpages to be closed before starting the exam.</p>
       </div>
@@ -1723,6 +1724,7 @@ function injectProctorGuardTab(tabNav, quizId) {
     pg_cache: "Clear Cache clears browser cache and history upon completing the exam.",
     pg_rc: "Disable Right Click disables right-clicking to prevent context menus from being opened.",
     pg_reen: "Prevent Re-entry prevents candidates from re-entering the exam if they exit before submitting.",
+    pg_allowmob: "Allow Mobile Devices lets students take this exam on iPad, iPhone, or Android in the browser. Extension lockdown is skipped on those devices; desktop students still need the extension if required. Secondary phone camera is skipped when the exam device is already a phone or tablet.",
     pg_vvid: "Verify Video ensures the webcam is working and a face is clearly visible before starting.",
     pg_vaud: "Verify Audio checks the microphone volume level and functionality before starting.",
     pg_vdesk: "Verify Desktop requires checking the screen sharing permission and desktop state before starting.",
@@ -1786,6 +1788,7 @@ function injectProctorGuardTab(tabNav, quizId) {
       clear_cache: chk('pg_cache'), verify_video: chk('pg_vvid'), verify_audio: chk('pg_vaud'),
       verify_desktop: chk('pg_vdesk'), verify_id: chk('pg_vid'), verify_signature: chk('pg_vsig'),
       allow_calculator: chk('pg_calc'), allow_whiteboard: chk('pg_wb'),
+      allow_mobile_devices: chk('pg_allowmob'),
       max_attempts: maxAttempts,
       canvas_quiz_url: window.location.href.replace('/edit',''),
       title: titleEl ? titleEl.value : 'Untitled Quiz',
@@ -1823,6 +1826,7 @@ async function loadPGSettings(quizId) {
     s('pg_vvid',d.verify_video); s('pg_vaud',d.verify_audio); s('pg_vdesk',d.verify_desktop);
     s('pg_vid',d.verify_id); s('pg_vsig',d.verify_signature);
     s('pg_calc',d.allow_calculator); s('pg_wb',d.allow_whiteboard);
+    s('pg_allowmob', d.allow_mobile_devices);
     console.log('[ProctorGuard] Settings loaded.');
   } catch(e) { console.log('[ProctorGuard] Could not load settings:', e); }
 }

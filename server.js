@@ -757,6 +757,7 @@ app.post('/api/exams', requireInstructor, async (req, res) => {
         const verify_signature = req.body.verify_signature || false;
         const allow_calculator = req.body.allow_calculator || false;
         const allow_whiteboard = req.body.allow_whiteboard || false;
+        const allow_mobile_devices = req.body.allow_mobile_devices || false;
         const behavior_preset = req.body.behavior_preset || 'Recommended';
         const weight_navigating_away = req.body.weight_navigating_away !== undefined ? parseInt(req.body.weight_navigating_away) : 1;
         const weight_keystrokes = req.body.weight_keystrokes !== undefined ? parseInt(req.body.weight_keystrokes) : 1;
@@ -784,9 +785,9 @@ app.post('/api/exams', requireInstructor, async (req, res) => {
                 verify_video, verify_audio, verify_desktop, verify_id, verify_signature,
                 allow_calculator, allow_whiteboard, behavior_preset,
                 weight_navigating_away, weight_keystrokes, weight_copy_paste, weight_browser_resize,
-                weight_head_movement, weight_multi_face, weight_leaving_room
+                weight_head_movement, weight_multi_face, weight_leaving_room, allow_mobile_devices
             )
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, false, $38, $39, $40, $41, $42, $43, $44, $45, $46, $47, $48, $49, $50, $51, $52) RETURNING *
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, false, $38, $39, $40, $41, $42, $43, $44, $45, $46, $47, $48, $49, $50, $51, $52, $53) RETURNING *
         `, [
             canvasCourseId, title, canvas_quiz_url, require_mic, require_camera, require_screen, 
             disable_right_click, require_fullscreen, require_seb || false, max_attempts || 1, exam_code, max_violations || 0, 
@@ -799,7 +800,7 @@ app.post('/api/exams', requireInstructor, async (req, res) => {
             verify_video, verify_audio, verify_desktop, verify_id, verify_signature,
             allow_calculator, allow_whiteboard, behavior_preset,
             weight_navigating_away, weight_keystrokes, weight_copy_paste, weight_browser_resize,
-            weight_head_movement, weight_multi_face, weight_leaving_room
+            weight_head_movement, weight_multi_face, weight_leaving_room, allow_mobile_devices
         ]);
         
         // Enable proctor mode requirements on the Canvas quiz itself (results lockdown stays off)
@@ -1028,6 +1029,7 @@ app.post('/api/canvas-native/exam/:quiz_id', verifyExtensionToken, async (req, r
         const verify_signature = body.verify_signature || false;
         const allow_calculator = body.allow_calculator || false;
         const allow_whiteboard = body.allow_whiteboard || false;
+        const allow_mobile_devices = body.allow_mobile_devices || false;
 
         const existsResult = await pool.query("SELECT id, exam_code FROM exams WHERE canvas_quiz_url LIKE $1 LIMIT 1", [`%/quizzes/${quiz_id}%`]);
         if (existsResult.rows.length > 0) {
@@ -1047,8 +1049,9 @@ app.post('/api/canvas-native/exam/:quiz_id', verifyExtensionToken, async (req, r
                     require_extension = $29, require_companion_app = $30, allowed_apps = $31, blocked_apps = $32,
                     allowed_urls = $33, canvas_course_id = $34, require_room_scan = $35, additional_instructions = $36,
                     require_mobile_camera = $37, verify_video = $38, verify_audio = $39, verify_desktop = $40,
-                    verify_id = $41, verify_signature = $42, allow_calculator = $43, allow_whiteboard = $44
-                WHERE id = $45
+                    verify_id = $41, verify_signature = $42, allow_calculator = $43, allow_whiteboard = $44,
+                    allow_mobile_devices = $45
+                WHERE id = $46
             `, [
                 body.title || 'Canvas Native Exam', body.canvas_quiz_url, existingCode, body.max_attempts || 1,
                 body.require_camera, body.require_mic, body.require_screen,
@@ -1061,7 +1064,8 @@ app.post('/api/canvas-native/exam/:quiz_id', verifyExtensionToken, async (req, r
                 advanced_hardware_detection, allow_apps, block_mobile,
                 require_extension, require_companion_app, allowed_apps, blocked_apps, allowed_urls,
                 body.canvas_course_id || 'canvas_native', require_room_scan, additional_instructions, require_mobile_camera || false,
-                verify_video, verify_audio, verify_desktop, verify_id, verify_signature, allow_calculator, allow_whiteboard, id
+                verify_video, verify_audio, verify_desktop, verify_id, verify_signature, allow_calculator, allow_whiteboard,
+                allow_mobile_devices, id
             ]);
             res.json({ success: true, id: id });
         } else {
@@ -1078,11 +1082,12 @@ app.post('/api/canvas-native/exam/:quiz_id', verifyExtensionToken, async (req, r
                     require_extension, require_companion_app, allowed_apps, blocked_apps, allowed_urls, 
                     require_room_scan, additional_instructions, require_mobile_camera,
                     verify_video, verify_audio, verify_desktop, verify_id, verify_signature, allow_calculator, allow_whiteboard,
+                    allow_mobile_devices,
                     is_open, created_at
                 ) VALUES (
                     $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18,
                     $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37,
-                    $38, $39, $40, $41, $42, $43, $44,
+                    $38, $39, $40, $41, $42, $43, $44, $45,
                     true, CURRENT_TIMESTAMP
                 )
                 RETURNING id
@@ -1098,7 +1103,8 @@ app.post('/api/canvas-native/exam/:quiz_id', verifyExtensionToken, async (req, r
                 advanced_hardware_detection, allow_apps, block_mobile,
                 require_extension, require_companion_app, allowed_apps, blocked_apps, allowed_urls,
                 require_room_scan, additional_instructions, require_mobile_camera || false,
-                verify_video, verify_audio, verify_desktop, verify_id, verify_signature, allow_calculator, allow_whiteboard
+                verify_video, verify_audio, verify_desktop, verify_id, verify_signature, allow_calculator, allow_whiteboard,
+                allow_mobile_devices
             ]);
             res.json({ success: true, id: result.rows[0].id });
         }
@@ -1151,6 +1157,7 @@ app.patch('/api/exams/:id', requireInstructor, async (req, res) => {
         const verify_signature = req.body.verify_signature || false;
         const allow_calculator = req.body.allow_calculator || false;
         const allow_whiteboard = req.body.allow_whiteboard || false;
+        const allow_mobile_devices = req.body.allow_mobile_devices || false;
         const behavior_preset = req.body.behavior_preset || 'Recommended';
         const weight_navigating_away = req.body.weight_navigating_away !== undefined ? parseInt(req.body.weight_navigating_away) : 1;
         const weight_keystrokes = req.body.weight_keystrokes !== undefined ? parseInt(req.body.weight_keystrokes) : 1;
@@ -1191,8 +1198,9 @@ app.patch('/api/exams/:id', requireInstructor, async (req, res) => {
                 allow_calculator = $42, allow_whiteboard = $43, behavior_preset = $44,
                 weight_navigating_away = $45, weight_keystrokes = $46, weight_copy_paste = $47, weight_browser_resize = $48,
                 weight_head_movement = $49, weight_multi_face = $50, weight_leaving_room = $51,
+                allow_mobile_devices = $52,
                 updated_at = NOW()
-            WHERE id = $52 AND (canvas_course_id = $53 OR canvas_course_id = $54)
+            WHERE id = $53 AND (canvas_course_id = $54 OR canvas_course_id = $55)
             RETURNING *
         `, [
             title, canvas_quiz_url, exam_code, max_attempts,
@@ -1211,6 +1219,7 @@ app.patch('/api/exams/:id', requireInstructor, async (req, res) => {
             allow_calculator, allow_whiteboard, behavior_preset,
             weight_navigating_away, weight_keystrokes, weight_copy_paste, weight_browser_resize,
             weight_head_movement, weight_multi_face, weight_leaving_room,
+            allow_mobile_devices,
             id, canvasCourseId, alternativeCourseId || ''
         ]);
 

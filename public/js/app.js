@@ -1930,6 +1930,11 @@ function showCreateExamModal(examId = null) {
                             <div class="proctorio-title">Prevent Re-entry</div>
                             <input type="checkbox" id="chk-reentry" ${exam && exam.prevent_reentry ? 'checked' : ''} style="display:none;" />
                         </div>
+                        <div class="proctorio-card ${exam && exam.allow_mobile_devices ? 'selected' : ''}" id="card-allow-mobile" onclick="toggleProctorioOption('chk-allow-mobile', 'card-allow-mobile')" title="Allow iPad/iPhone/Android browsers; skips extension lockdown on those devices">
+                            <div class="proctorio-icon"><img src="icons/secondary-mobile-camera.svg" alt="" /></div>
+                            <div class="proctorio-title">Allow Mobile Devices</div>
+                            <input type="checkbox" id="chk-allow-mobile" ${exam && exam.allow_mobile_devices ? 'checked' : ''} style="display:none;" />
+                        </div>
                     </div>
 
                     <!-- Verification Options -->
@@ -2499,6 +2504,7 @@ async function saveExam(examId = null) {
         prevent_reentry: document.getElementById('chk-reentry').checked,
         require_room_scan: document.getElementById('chk-room-scan').checked,
         require_mobile_camera: document.getElementById('chk-mobile') ? document.getElementById('chk-mobile').checked : false,
+        allow_mobile_devices: document.getElementById('chk-allow-mobile') ? document.getElementById('chk-allow-mobile').checked : false,
         require_extension: document.getElementById('chk-extension').checked,
         record_web_traffic: document.getElementById('chk-ext-traffic') ? document.getElementById('chk-ext-traffic').checked : false,
         disable_new_tabs: document.getElementById('chk-ext-newtabs') ? document.getElementById('chk-ext-newtabs').checked : false,

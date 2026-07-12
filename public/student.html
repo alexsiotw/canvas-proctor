@@ -418,7 +418,7 @@
       </div>
   </div>
 
-  <!-- Extension Required Overlay -->
+  <!-- Extension Required Overlay (desktop Chrome only) -->
   <div id="extension-required-overlay" style="display: none; position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; background: rgba(15, 23, 42, 0.95); z-index: 99999; justify-content: center; align-items: center; color: white; font-family: 'Inter', sans-serif;">
     <div style="background: white; color: #1e293b; padding: 40px; border-radius: 16px; width: 90%; max-width: 500px; text-align: center; box-shadow: 0 10px 25px rgba(0,0,0,0.3);">
       <div style="margin-bottom: 20px; display: flex; justify-content: center;"><img src="icons/disable-extensions.svg" style="width:50px; height:50px;" /></div>
@@ -429,6 +429,16 @@
       <a href="https://chromewebstore.google.com/detail/proctorguard" target="_blank" rel="noopener" class="banner-link" style="display: inline-block; background: #0374B5; color: white; padding: 12px 24px; border-radius: 6px; text-decoration: none; font-weight: 600; font-size: 14px; margin-bottom: 16px; cursor: pointer;">Install from Chrome Web Store</a>
       <br>
       <button onclick="window.location.reload()" style="background: none; border: none; color: #0374B5; font-size: 13px; font-weight: bold; text-decoration: underline; cursor: pointer;">I have installed it, check again</button>
+    </div>
+  </div>
+
+  <!-- Mobile / tablet not allowed (when exam requires desktop lockdown and Allow Mobile is off) -->
+  <div id="mobile-not-allowed-overlay" style="display: none; position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; background: rgba(15, 23, 42, 0.95); z-index: 99999; justify-content: center; align-items: center; color: white; font-family: 'Inter', sans-serif;">
+    <div style="background: white; color: #1e293b; padding: 40px; border-radius: 16px; width: 90%; max-width: 500px; text-align: center; box-shadow: 0 10px 25px rgba(0,0,0,0.3);">
+      <div style="margin-bottom: 20px; display: flex; justify-content: center;"><img src="icons/secondary-mobile-camera.svg" style="width:50px; height:50px;" /></div>
+      <h2 style="font-size: 22px; font-weight: 700; margin: 0 0 12px 0;">Computer Required</h2>
+      <p style="font-size: 14px; color: #64748b; line-height: 1.6; margin-bottom: 16px;">This exam must be taken on a computer (Chrome or Edge with ProctorGuard). Phones and tablets are not allowed for this exam.</p>
+      <p style="font-size: 13px; color: #94a3b8; line-height: 1.5; margin: 0;">If your instructor meant to allow iPad or mobile browsers, they can enable <strong>Allow Mobile Devices</strong> in ProctorGuard settings.</p>
     </div>
   </div>
   <!-- Companion App Required Overlay -->
@@ -485,7 +495,7 @@
       </div>
   </div>
 
-  <script src="/js/student.js?v=2.1.0"></script>
+  <script src="/js/student.js?v=2.2.0"></script>
 </body>
 
 </html>
