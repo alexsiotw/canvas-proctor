@@ -758,14 +758,14 @@ async function setCanvasQuizProctorMode(ltiSession, canvasQuizUrl, requireProcto
         const credentials = await getCanvasCredentials(ltiSession);
         if (!credentials || !credentials.canvas_api_token) {
             console.error('Canvas API credentials missing in setCanvasQuizProctorMode');
-            return;
+            return { ok: false, error: 'Canvas API token is not configured, so quiz settings could not be applied in Canvas.' };
         }
 
         // Extract quiz ID from url
         const match = canvasQuizUrl.match(/\/quizzes\/(\d+)/);
         if (!match) {
             console.error('Could not extract quiz ID from URL:', canvasQuizUrl);
-            return;
+            return { ok: false, error: `Could not read a quiz ID from ${canvasQuizUrl}` };
         }
         const quizId = match[1];
         const courseId = ltiSession.alternativeCourseId || '1';
@@ -789,11 +789,19 @@ async function setCanvasQuizProctorMode(ltiSession, canvasQuizUrl, requireProcto
         if (!fetchRes.ok) {
             const errText = await fetchRes.text();
             console.error(`Failed to update Canvas quiz proctor mode: ${fetchRes.status} - ${errText}`);
-        } else {
-            console.log(`Canvas quiz ${quizId} proctor mode updated successfully to ${requireProctorMode}.`);
+            // Returned, not just logged. This call is what clears Canvas's
+            // "required to view results" checkbox; when it fails silently the
+            // quiz keeps whatever Canvas had, and the instructor is left
+            // believing ProctorGuard applied a setting it never managed to send.
+            // The most common cause is a missing or expired CANVAS_API_TOKEN.
+            return { ok: false, error: `Canvas API ${fetchRes.status}: ${errText.slice(0, 200)}` };
         }
+
+        console.log(`Canvas quiz ${quizId} proctor mode updated successfully to ${requireProctorMode}.`);
+        return { ok: true };
     } catch (err) {
         console.error('Error in setCanvasQuizProctorMode:', err);
+        return { ok: false, error: err.message };
     }
 }
 
@@ -974,10 +982,17 @@ app.post('/api/exams', requireInstructor, async (req, res) => {
             weight_head_movement, weight_multi_face, weight_leaving_room, allow_mobile_devices
         ]);
         
-        // Enable proctor mode requirements on the Canvas quiz itself (results lockdown stays off)
-        setCanvasQuizProctorMode(req.session.lti, canvas_quiz_url, true);
-        
-        res.json(result.rows[0]);
+        // Enable proctor mode on the Canvas quiz, and explicitly clear Canvas's
+        // "required to view results" flag. Awaited and reported: previously this
+        // was fire-and-forget, so a failure left the quiz configured however
+        // Canvas had it while the dashboard reported success.
+        const canvasSync = await setCanvasQuizProctorMode(req.session.lti, canvas_quiz_url, true);
+
+        res.json({
+            ...result.rows[0],
+            canvas_sync_ok: canvasSync ? canvasSync.ok : false,
+            canvas_sync_error: canvasSync && !canvasSync.ok ? canvasSync.error : null
+        });
     } catch (err) {
         res.status(500).json({ error: err.message });
     }
@@ -1100,22 +1115,74 @@ app.get('/api/canvas-native/session-report', verifyExtensionToken, async (req, r
                 [session.id]
             );
             
-            let riskScore = 0;
             const logs = logsResult.rows;
-            
+
+            // Risk scoring.
+            //
+            // This was an unbounded running total, which produced "250% Suspicious"
+            // on a genuine 18-second test attempt. Two separate faults:
+            //
+            //  1. Nothing clamped the result, so it was presented as a percentage
+            //     while being free to exceed 100.
+            //  2. Every occurrence of a type added its full weight, so one
+            //     continuous behaviour dominated everything else. Talking through a
+            //     single sentence out-scored a phone being detected five times over.
+            //
+            // Both matter because this number is the first thing an instructor sees
+            // about a student. It has to be defensible, and "250% suspicious" for
+            // muttering at your screen is not.
+            //
+            // Now: each category contributes its weight for the first occurrence and
+            // diminishing amounts after, capped per category, and the total is
+            // clamped to 100. Repetition still raises the score — it just cannot run
+            // away, and a single behaviour can never fill the bar alone.
+            const RISK_WEIGHTS = {
+                phone_detected: 50,
+                multiple_faces: 30,
+                tab_blur: 15, window_blur: 15, fullscreen_exit: 15,
+                app_backgrounded: 15, page_hidden: 15,
+                audio_threshold_exceeded: 10, audio_violation: 10,
+                voice_transcript: 10, voice_activity: 10,
+                no_face: 10, AI_PEOPLE: 10,
+                gaze_off_screen: 10,
+                // Mobile browser sessions cannot capture screen / use extension
+                // lockdown — surface as elevated review priority so "I misclicked"
+                // is not all-green.
+                mobile_browser_mode: 25,
+                screen_share_unavailable: 20
+            };
+
+            // Categories that share a cap, so five names for "they looked away"
+            // cannot each contribute a separate full allowance.
+            const RISK_GROUPS = {
+                tab_blur: 'focus', window_blur: 'focus', fullscreen_exit: 'focus',
+                app_backgrounded: 'focus', page_hidden: 'focus',
+                audio_threshold_exceeded: 'audio', audio_violation: 'audio',
+                voice_transcript: 'audio', voice_activity: 'audio',
+                no_face: 'face', AI_PEOPLE: 'face', multiple_faces: 'face'
+            };
+
+            const groupCounts = {};
+            let riskScore = 0;
+
             for (const log of logs) {
-                if (log.event_type === 'phone_detected') riskScore += 50;
-                else if (log.event_type === 'multiple_faces') riskScore += 30;
-                else if (log.event_type === 'tab_blur' || log.event_type === 'window_blur' || log.event_type === 'fullscreen_exit' || log.event_type === 'app_backgrounded' || log.event_type === 'page_hidden') riskScore += 15;
-                else if (log.event_type === 'audio_threshold_exceeded' || log.event_type === 'audio_violation' || log.event_type === 'voice_transcript' || log.event_type === 'voice_activity') riskScore += 10;
-                else if (log.event_type === 'no_face' || log.event_type === 'AI_PEOPLE') riskScore += 10;
-                else if (log.event_type === 'gaze_off_screen') riskScore += 10;
-                // Mobile browser sessions cannot capture screen / use extension lockdown —
-                // surface as elevated review priority so "I misclicked" is not all-green.
-                else if (log.event_type === 'mobile_browser_mode') riskScore += 25;
-                else if (log.event_type === 'screen_share_unavailable') riskScore += 20;
+                const weight = RISK_WEIGHTS[log.event_type];
+                if (!weight) continue;
+
+                const group = RISK_GROUPS[log.event_type] || log.event_type;
+                const seen = groupCounts[group] || 0;
+                groupCounts[group] = seen + 1;
+
+                // 1st occurrence full weight, 2nd half, 3rd a third, then nothing.
+                // Sustained behaviour reads as more serious than a one-off without
+                // letting a chatty five seconds outweigh a phone on the desk.
+                if (seen === 0) riskScore += weight;
+                else if (seen === 1) riskScore += weight / 2;
+                else if (seen === 2) riskScore += weight / 3;
             }
-            
+
+            riskScore = Math.min(100, Math.round(riskScore));
+
             let riskTier = 'Low';
             if (riskScore >= 70) riskTier = 'High';
             else if (riskScore >= 30) riskTier = 'Medium';
@@ -1400,17 +1467,24 @@ app.patch('/api/exams/:id', requireInstructor, async (req, res) => {
 
         if (result.rows.length === 0) return res.status(404).json({ error: 'Exam not found' });
 
-        // Update Canvas settings (results lockdown stays off)
+        // Update Canvas settings. require_lockdown_browser_for_results is always
+        // sent as false here, so saving an exam's settings is also the way to
+        // clear that flag on a quiz where it somehow got switched on.
+        let canvasSync = null;
         if (canvas_quiz_url) {
-            setCanvasQuizProctorMode(req.session.lti, canvas_quiz_url, true);
-            
+            canvasSync = await setCanvasQuizProctorMode(req.session.lti, canvas_quiz_url, true);
+
             // If the quiz URL changed, disable it on the previous quiz
             if (oldResult.rows.length > 0 && oldResult.rows[0].canvas_quiz_url !== canvas_quiz_url) {
-                setCanvasQuizProctorMode(req.session.lti, oldResult.rows[0].canvas_quiz_url, false);
+                await setCanvasQuizProctorMode(req.session.lti, oldResult.rows[0].canvas_quiz_url, false);
             }
         }
 
-        res.json(result.rows[0]);
+        res.json({
+            ...result.rows[0],
+            canvas_sync_ok: canvasSync ? canvasSync.ok : null,
+            canvas_sync_error: canvasSync && !canvasSync.ok ? canvasSync.error : null
+        });
     } catch (err) {
         res.status(500).json({ error: err.message });
     }

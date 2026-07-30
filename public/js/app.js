@@ -2588,10 +2588,23 @@ async function saveExam(examId = null) {
         });
         
         if(res.ok) {
+            const saved = await res.json().catch(() => ({}));
             closeModal();
             loadExams();
-            showToast(examId ? 'Settings updated!' : 'Exam configured securely!', 'success');
-            
+
+            // Saving writes to two places: this database and the Canvas quiz
+            // itself (which is where "required to view results" is cleared). If
+            // the Canvas half failed, saying "Settings updated!" is a lie that
+            // sends the teacher away believing the quiz is configured.
+            if (saved && saved.canvas_sync_ok === false) {
+                showToast(
+                    `Saved here, but Canvas was not updated: ${saved.canvas_sync_error || 'unknown error'}. Check the quiz settings in Canvas.`,
+                    'error'
+                );
+            } else {
+                showToast(examId ? 'Settings updated!' : 'Exam configured securely!', 'success');
+            }
+
             // If we are in the dashboard, we might want to stay there
             if (currentLiveExamId && examId == currentLiveExamId) {
                 // The exams array is reloaded by loadExams, but we need to re-render the current view

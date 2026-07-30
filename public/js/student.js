@@ -2997,13 +2997,56 @@ async function stopRecordingAndAwaitUploads() {
         }
     }
 
-    // Now wait for all active uploads to complete (up to 20 seconds)
-    console.log(`[Recorder] Waiting for active uploads to finish. Current active uploads: ${activeUploads}`);
+    // Wait for the recording to actually be uploaded before letting the session end.
+    //
+    // This previously waited on `activeUploads` alone, which only counts a chunk
+    // while its FileReader is running or its fetch is in flight. A chunk sitting
+    // in uploadQueue — queued but not yet picked up, or waiting between retry
+    // attempts — makes activeUploads 0 while work remains. Sample the counter in
+    // that window and the wait returns immediately, the session ends, and the
+    // server assembles whatever arrived.
+    //
+    // On a good connection that gap is too small to notice. On a poor one, chunks
+    // are retrying constantly and the gap is most of the time, which is how an
+    // 18-second attempt produced a 5-second video: chunk 1 landed, chunks 2-4
+    // were still queued, and nothing waited for them.
+    //
+    // Now: drain the queue, not just the in-flight count. The processor is kicked
+    // in case it went idle, and the budget is larger because the whole point is
+    // the slow-network case. A student on hotel wifi should not silently lose
+    // three quarters of their recording.
+    processUploadQueue();
+
     const uploadWaitStart = Date.now();
-    while (activeUploads > 0 && (Date.now() - uploadWaitStart < 20000)) {
+    const UPLOAD_DRAIN_BUDGET_MS = 60000;
+    const pendingWork = () => activeUploads > 0 || uploadQueue.length > 0 || isProcessingQueue;
+
+    console.log(`[Recorder] Waiting for uploads. active=${activeUploads} queued=${uploadQueue.length}`);
+
+    let lastReport = 0;
+    while (pendingWork() && (Date.now() - uploadWaitStart < UPLOAD_DRAIN_BUDGET_MS)) {
         await new Promise(r => setTimeout(r, 100));
+        // Keep the processor alive if it exited while items remain.
+        if (!isProcessingQueue && uploadQueue.length > 0) processUploadQueue();
+
+        const elapsed = Date.now() - uploadWaitStart;
+        if (elapsed - lastReport >= 5000) {
+            lastReport = elapsed;
+            console.log(`[Recorder] Still uploading. active=${activeUploads} queued=${uploadQueue.length} elapsed=${Math.round(elapsed / 1000)}s`);
+        }
     }
-    console.log(`[Recorder] Finished waiting for uploads. Remaining active uploads: ${activeUploads}`);
+
+    if (pendingWork()) {
+        // Record the shortfall rather than ending quietly: an instructor looking at
+        // a short recording needs to know it was a network failure and not a
+        // student who closed the tab.
+        console.warn(`[Recorder] Upload drain timed out. active=${activeUploads} queued=${uploadQueue.length}`);
+        try {
+            logProctorEvent('upload_incomplete', `Recording upload did not finish: ${uploadQueue.length} chunk(s) still pending after ${UPLOAD_DRAIN_BUDGET_MS / 1000}s. Video may be shorter than the attempt.`);
+        } catch (e) {}
+    } else {
+        console.log('[Recorder] All chunks uploaded.');
+    }
 }
 
 async function endExam() {
@@ -3399,13 +3442,24 @@ function setupSpeechRecognition() {
                 const result = event.results[i];
                 const transcript = (result[0] && result[0].transcript ? result[0].transcript : '').trim();
                 if (!transcript) continue;
-                // Prefer finals; also log strong interim results if long enough (short math phrases)
-                if (result.isFinal || transcript.length >= 4) {
-                    if (transcript === lastFinalTranscript) continue;
-                    if (result.isFinal) lastFinalTranscript = transcript;
-                    console.log(`[Speech] Student said: "${transcript}"${result.isFinal ? '' : ' (interim)'}`);
-                    logProctorEvent('voice_transcript', `Speaking detected: "${transcript}"`);
-                }
+
+                // Only finals. Interim results are successive *guesses at the same
+                // utterance*, not separate speech: the API emits "that's", then
+                // "that's what", then "that's one" while it refines one phrase.
+                // Logging each produced a violation per keystroke-equivalent — a
+                // single sentence generated 25 alerts, all stamped at the same
+                // second, which reads to an instructor as sustained talking and is
+                // exactly the kind of false accusation this tool must not make.
+                //
+                // The old `transcript.length >= 4` guard let every interim through,
+                // and the lastFinalTranscript check could not stop it because each
+                // refinement is a different string.
+                if (!result.isFinal) continue;
+                if (transcript === lastFinalTranscript) continue;
+                lastFinalTranscript = transcript;
+
+                console.log(`[Speech] Student said: "${transcript}"`);
+                logProctorEvent('voice_transcript', `Speaking detected: "${transcript}"`);
             }
         };
 
