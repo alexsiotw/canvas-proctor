@@ -935,10 +935,14 @@ app.get('/api/canvas-native/session-report', verifyExtensionToken, async (req, r
             for (const log of logs) {
                 if (log.event_type === 'phone_detected') riskScore += 50;
                 else if (log.event_type === 'multiple_faces') riskScore += 30;
-                else if (log.event_type === 'tab_blur' || log.event_type === 'window_blur' || log.event_type === 'fullscreen_exit') riskScore += 15;
-                else if (log.event_type === 'audio_threshold_exceeded' || log.event_type === 'audio_violation') riskScore += 10;
+                else if (log.event_type === 'tab_blur' || log.event_type === 'window_blur' || log.event_type === 'fullscreen_exit' || log.event_type === 'app_backgrounded' || log.event_type === 'page_hidden') riskScore += 15;
+                else if (log.event_type === 'audio_threshold_exceeded' || log.event_type === 'audio_violation' || log.event_type === 'voice_transcript' || log.event_type === 'voice_activity') riskScore += 10;
                 else if (log.event_type === 'no_face' || log.event_type === 'AI_PEOPLE') riskScore += 10;
                 else if (log.event_type === 'gaze_off_screen') riskScore += 10;
+                // Mobile browser sessions cannot capture screen / use extension lockdown —
+                // surface as elevated review priority so "I misclicked" is not all-green.
+                else if (log.event_type === 'mobile_browser_mode') riskScore += 25;
+                else if (log.event_type === 'screen_share_unavailable') riskScore += 20;
             }
             
             let riskTier = 'Low';
@@ -2210,7 +2214,7 @@ app.post('/api/session/end', requireAuth, async (req, res) => {
         const { exam_session_id, status, total_chunks, exit_type } = req.body;
         if (exit_type === 'unexpected') {
             console.log(`[End Session] Unexpected exit for session ${exam_session_id}`);
-            await pool.query("UPDATE exam_sessions SET status = 'unexpected' WHERE id = $1", [exam_session_id]);
+            await pool.query("UPDATE exam_sessions SET status = 'unexpected', end_time = COALESCE(end_time, NOW()) WHERE id = $1", [exam_session_id]);
             
             const examIdQuery = await pool.query('SELECT exam_id FROM exam_sessions WHERE id=$1', [exam_session_id]);
             if (examIdQuery.rows.length > 0) {
@@ -2218,6 +2222,14 @@ app.post('/api/session/end', requireAuth, async (req, res) => {
                     session_id: exam_session_id, status: 'unexpected' 
                 });
             }
+            // Still assemble whatever chunks made it to disk — mobile browsers often
+            // die via beforeunload/sendBeacon without a clean "completed" end, which
+            // previously left drive_file_id null and Review Center showing "No Video".
+            const chunksHint = total_chunks !== undefined && total_chunks !== null
+                ? total_chunks
+                : undefined;
+            console.log(`[End Session] Unexpected exit — still assembling video for session ${exam_session_id}`);
+            assembleAndUploadSessionVideo(exam_session_id, chunksHint);
             return res.json({ success: true });
         }
 
@@ -2385,24 +2397,35 @@ app.get('/api/session/video-playback/:session_id', requireInstructorOrExtensionT
             }
             masterBuffer = Buffer.concat(chunks);
         } else {
-            // Legacy fallback to database
-            const chunkResults = await pool.query(`
-                SELECT video_data FROM video_chunks 
-                WHERE exam_session_id = $1 
-                ORDER BY chunk_index ASC
-            `, [session_id]);
-            
-            if (chunkResults.rows.length === 0) {
-                return res.status(404).json({ error: 'No video chunks found' });
+            // Prefer live filesystem chunks (current upload path writes here), then legacy DB.
+            const chunkDir = path.join(os.tmpdir(), `chunks-${session_id}`);
+            if (fs.existsSync(chunkDir)) {
+                const files = fs.readdirSync(chunkDir).filter(f => f.startsWith('chunk-')).sort();
+                if (files.length > 0) {
+                    console.log(`[Playback] Assembling ${files.length} local disk chunks for session ${session_id}`);
+                    const binaryChunks = files.map(f => fs.readFileSync(path.join(chunkDir, f)));
+                    masterBuffer = Buffer.concat(binaryChunks);
+                }
             }
+            if (!masterBuffer) {
+                const chunkResults = await pool.query(`
+                    SELECT video_data FROM video_chunks 
+                    WHERE exam_session_id = $1 
+                    ORDER BY chunk_index ASC
+                `, [session_id]);
+                
+                if (chunkResults.rows.length === 0) {
+                    return res.status(404).json({ error: 'No video chunks found' });
+                }
 
-            const binaryChunks = [];
-            for(let row of chunkResults.rows) {
-                // Strip the Data URL prefix and whitespace
-                const pureB64 = row.video_data.replace(/^data:[^,]+,/, '').replace(/\s/g, '');
-                binaryChunks.push(Buffer.from(pureB64, 'base64'));
+                const binaryChunks = [];
+                for(let row of chunkResults.rows) {
+                    // Strip the Data URL prefix and whitespace
+                    const pureB64 = row.video_data.replace(/^data:[^,]+,/, '').replace(/\s/g, '');
+                    binaryChunks.push(Buffer.from(pureB64, 'base64'));
+                }
+                masterBuffer = Buffer.concat(binaryChunks);
             }
-            masterBuffer = Buffer.concat(binaryChunks);
         }
         
         const cleanMime = mimeToUse.split(';')[0];

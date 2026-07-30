@@ -6,6 +6,18 @@ if (!PG_DEBUG) {
   console.log = function () {};
 }
 
+// ---------------------------------------------------------------------------
+// TEMPORARY: students are not using the Chrome extension right now — everything
+// is enforced through the ProctorGuard web system instead. While this is true:
+//   • students are never blocked by the "install the extension" overlay, and
+//   • extension-only features (disable new tabs, record web traffic, close open
+//     tabs, clear cache) simply no-op, since the extension is what enforced them.
+// To bring the extension requirement back for students, flip this to false.
+const PG_EXTENSION_ENFORCEMENT_DISABLED = true;
+// Event types that only the extension can actually enforce. Kept here so both the
+// requirement logic and any UI can reference one list.
+const PG_EXTENSION_ONLY_FEATURES = ['disable_new_tabs', 'record_web_traffic', 'close_open_tabs', 'clear_cache'];
+
 let examConfig = null;
 let sessionInfo = null;
 let activeVisualFlags = [];
@@ -511,8 +523,10 @@ function getEffectiveRequirements(exam, client) {
     return {
         mobileMode,
         client,
-        // Extension still required on desktop; waived only in mobileMode
-        requireExtension: !!(exam.require_extension && !mobileMode && !client.isCompanion),
+        // Extension still required on desktop; waived only in mobileMode.
+        // While PG_EXTENSION_ENFORCEMENT_DISABLED is set, it's waived for everyone
+        // (students take exams through the web system without installing anything).
+        requireExtension: !PG_EXTENSION_ENFORCEMENT_DISABLED && !!(exam.require_extension && !mobileMode && !client.isCompanion),
         // Companion is a Windows desktop app — never waived for mobile
         requireCompanion: !!(exam.require_companion_app && !client.isCompanion),
         // Screen share / multi-monitor / forced fullscreen are desktop concepts
@@ -556,8 +570,9 @@ function applyExamAccessGates(exam) {
             show('mobile-not-allowed-overlay');
             return false;
         }
-        // Extension required but instructor did not allow mobile browser mode
-        if (exam.require_extension && !exam.allow_mobile_devices) {
+        // Extension required but instructor did not allow mobile browser mode.
+        // Skipped entirely while extension enforcement is temporarily disabled.
+        if (!PG_EXTENSION_ENFORCEMENT_DISABLED && exam.require_extension && !exam.allow_mobile_devices) {
             show('mobile-not-allowed-overlay');
             return false;
         }
@@ -752,7 +767,8 @@ function goToStep(step) {
     currentStep = step;
     updateSidebarNav();
     
-    if (step !== 2) {
+    // Tear down webcam AI only when leaving the webcam step (step 3), not when entering it.
+    if (step !== 3) {
         isCheckingWebcamAI = false;
         if (trackerTask) {
             try { trackerTask.stop(); } catch(e){}
@@ -763,11 +779,11 @@ function goToStep(step) {
             webcamWatchdogInterval = null;
         }
     }
-    if (step !== 1 && micVolInterval) {
+    if (step !== 2 && micVolInterval) {
         clearInterval(micVolInterval);
         micVolInterval = null;
     }
-    if (step !== 1 && micAudioContext) {
+    if (step !== 2 && micAudioContext) {
         try { micAudioContext.close(); } catch(e){}
         micAudioContext = null;
     }
@@ -839,10 +855,13 @@ function goToStep(step) {
                     <div id="step-error" style="color: var(--danger); font-size: 14px; margin-top: 10px; display: none;"></div>
                 </div>
                 <div style="display: flex; justify-content: flex-end; gap: 15px; margin-top: 20px;">
+                    <button type="button" class="btn btn-secondary" id="btn-retry-webcam" onclick="startWebcamCheck()" style="display:none;">Retry Camera</button>
                     <button id="btn-record-webcam" class="btn btn-primary" onclick="startWebcam5sRecord()">Record Five Second Video</button>
                     <button id="btn-next-step" class="btn btn-primary" style="background:#2563eb; color:white; border:none;" onclick="goToStep(getNextStep(3))" disabled>Next Step</button>
                 </div>
             `;
+            // CRITICAL: actually start the camera — without this the preview is a black box.
+            setTimeout(() => { startWebcamCheck(); }, 50);
             break;
 
         case 11:
@@ -1289,22 +1308,135 @@ function runWebcamAIDetection() {
     }, 1000);
 }
 
+// ---- Camera helpers: resilient getUserMedia + force play (fixes black preview) ----
+async function getUserMediaCamera(preferAudio = false) {
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+        throw new Error('Camera API not available in this browser. Use Chrome, Edge, or Safari over HTTPS.');
+    }
+    // Soft constraints first — rigid {width:640,height:480} fails or blacks out on many laptops/phones.
+    const attempts = [
+        {
+            video: {
+                facingMode: { ideal: 'user' },
+                width: { ideal: 1280 },
+                height: { ideal: 720 }
+            },
+            audio: preferAudio
+        },
+        {
+            video: { facingMode: { ideal: 'user' } },
+            audio: preferAudio
+        },
+        { video: true, audio: preferAudio },
+        { video: { facingMode: 'user' }, audio: preferAudio }
+    ];
+    let lastErr = null;
+    for (const constraints of attempts) {
+        try {
+            const stream = await navigator.mediaDevices.getUserMedia(constraints);
+            // Ensure video tracks are enabled
+            stream.getVideoTracks().forEach(t => { t.enabled = true; });
+            return stream;
+        } catch (err) {
+            lastErr = err;
+            console.warn('[Camera] getUserMedia attempt failed:', constraints, err && err.name, err && err.message);
+        }
+    }
+    throw lastErr || new Error('Could not open camera');
+}
+
+async function attachStreamToVideoElement(videoEl, stream) {
+    if (!videoEl || !stream) return false;
+    videoEl.muted = true;
+    videoEl.defaultMuted = true;
+    videoEl.autoplay = true;
+    videoEl.playsInline = true;
+    videoEl.setAttribute('playsinline', '');
+    videoEl.setAttribute('webkit-playsinline', '');
+    videoEl.setAttribute('muted', '');
+    // Clear any leftover recorded blob URL from the 5s test
+    try {
+        if (videoEl.src && videoEl.src.startsWith('blob:')) {
+            URL.revokeObjectURL(videoEl.src);
+        }
+    } catch (e) {}
+    videoEl.removeAttribute('src');
+    videoEl.srcObject = stream;
+
+    // Wait for metadata then play — many browsers show a permanent black frame without this.
+    await new Promise((resolve) => {
+        if (videoEl.readyState >= 1 && videoEl.videoWidth > 0) {
+            resolve();
+            return;
+        }
+        const onMeta = () => { cleanup(); resolve(); };
+        const onTimeout = setTimeout(() => { cleanup(); resolve(); }, 4000);
+        function cleanup() {
+            videoEl.removeEventListener('loadedmetadata', onMeta);
+            clearTimeout(onTimeout);
+        }
+        videoEl.addEventListener('loadedmetadata', onMeta);
+    });
+
+    try {
+        await videoEl.play();
+    } catch (playErr) {
+        console.warn('[Camera] video.play() blocked, retrying after gesture/delay:', playErr);
+        await new Promise(r => setTimeout(r, 200));
+        try { await videoEl.play(); } catch (e2) {
+            console.warn('[Camera] video.play() still failed:', e2);
+        }
+    }
+
+    // Confirm frames are actually flowing (not black / 0x0)
+    const readyStart = Date.now();
+    while (Date.now() - readyStart < 5000) {
+        if (videoEl.videoWidth > 0 && videoEl.videoHeight > 0 && !videoEl.paused) {
+            return true;
+        }
+        await new Promise(r => setTimeout(r, 100));
+    }
+    // Partial success: stream may still work for recording even if preview lags
+    return videoEl.videoWidth > 0;
+}
+
 async function startWebcamCheck() {
     const nextBtn = document.getElementById('btn-next-step');
     const recordBtn = document.getElementById('btn-record-webcam');
+    const retryBtn = document.getElementById('btn-retry-webcam');
     const aiLoadingContainer = document.getElementById('ai-loading-container');
     const aiStatusContainer = document.getElementById('ai-status-container');
     try {
-        if (examConfig.require_camera) {
+        if (examConfig && examConfig.require_camera) {
             if (nextBtn) nextBtn.disabled = true;
             if (recordBtn) recordBtn.disabled = true;
         }
+        if (retryBtn) retryBtn.style.display = 'none';
 
-        localCamStream = await navigator.mediaDevices.getUserMedia({ video: { width: 640, height: 480 }, audio: false });
+        // Stop a previous dead stream before re-opening (common after permission toggles)
+        if (localCamStream) {
+            try { localCamStream.getTracks().forEach(t => t.stop()); } catch (e) {}
+            localCamStream = null;
+        }
+
+        localCamStream = await getUserMediaCamera(false);
         const videoEl = document.getElementById('webcam-check-preview');
-        if (videoEl) videoEl.srcObject = localCamStream;
+        if (!videoEl) {
+            throw new Error('Webcam preview element missing from the page.');
+        }
+        const previewOk = await attachStreamToVideoElement(videoEl, localCamStream);
+        if (!previewOk) {
+            console.warn('[Camera] Preview may still be initializing; stream tracks:', localCamStream.getVideoTracks().map(t => t.label + ':' + t.readyState));
+        }
+
+        // If we got a live track, allow continue even before AI (students stuck on black+disabled Next)
+        const hasLiveVideo = localCamStream.getVideoTracks().some(t => t.readyState === 'live' && t.enabled);
+        if (hasLiveVideo && previewOk) {
+            if (recordBtn) recordBtn.disabled = false;
+            if (nextBtn) nextBtn.disabled = false;
+        }
         
-        if (examConfig.require_camera) {
+        if (examConfig && examConfig.require_camera) {
             if (aiLoadingContainer) aiLoadingContainer.style.display = 'flex';
             if (aiStatusContainer) aiStatusContainer.style.display = 'none';
 
@@ -1315,6 +1447,17 @@ async function startWebcamCheck() {
 
                 isCheckingWebcamAI = true;
                 runWebcamAIDetection();
+                // Safety: never leave Next permanently disabled if face model is flaky
+                setTimeout(() => {
+                    if (nextBtn && nextBtn.disabled && localCamStream) {
+                        nextBtn.disabled = false;
+                        if (recordBtn) recordBtn.disabled = false;
+                        const statusMsgEl = document.getElementById('ai-status-msg');
+                        if (statusMsgEl) {
+                            statusMsgEl.innerHTML = `<span style="color: #b45309; font-weight: bold;">⚠ Face check timed out — camera is active, you may continue</span>`;
+                        }
+                    }
+                }, 12000);
             } catch (aiErr) {
                 console.error("[AI] Graceful degradation: Failed to initialize AI model:", aiErr);
                 if (aiLoadingContainer) aiLoadingContainer.style.display = 'none';
@@ -1338,7 +1481,9 @@ async function startWebcamCheck() {
         }
     } catch (err) {
         if (aiLoadingContainer) aiLoadingContainer.style.display = 'none';
-        showStepError("Camera access denied or not found: " + err.message);
+        if (retryBtn) retryBtn.style.display = 'inline-flex';
+        showStepError("Camera access denied or not found: " + (err && err.message ? err.message : err) + " — click Retry Camera, or check browser site permissions.");
+        if (nextBtn) nextBtn.disabled = true;
     }
 }
 
@@ -1865,9 +2010,13 @@ async function startProctoring() {
         let compositeStream = null;
         const addedTrackIds = new Set();
 
-        const ios = isIOS();
-        if (ios) {
-            console.log("[Media] iOS/Safari detected: obtaining combined audio/video stream for MediaRecorder...");
+        const clientProfile = getClientProfile();
+        const onMobile = clientProfile.isMobileClient;
+        // iOS always needs a fresh combined stream. Android mobile without screen share
+        // also benefits from a simple camera+mic captureStream path (canvas composites
+        // are flaky on some mobile Chromium builds and can produce zero playable video).
+        if (clientProfile.isIOS || (onMobile && !screenStream)) {
+            console.log("[Media] Mobile/simple path: obtaining combined camera+mic stream for MediaRecorder...");
             // Stop old tracks to release camera/mic hardware cleanly
             if (localCamStream) {
                 localCamStream.getTracks().forEach(t => { try { t.stop(); } catch(e){} });
@@ -1877,19 +2026,45 @@ async function startProctoring() {
             }
             
             try {
-                finalStream = await navigator.mediaDevices.getUserMedia({
-                    video: { width: 640, height: 480 },
-                    audio: true
-                });
+                // Prefer combined cam+mic; fall back through soft constraint ladder
+                try {
+                    finalStream = await navigator.mediaDevices.getUserMedia({
+                        video: { facingMode: { ideal: 'user' }, width: { ideal: 1280 }, height: { ideal: 720 } },
+                        audio: { echoCancellation: true, noiseSuppression: false, autoGainControl: true }
+                    });
+                } catch (e1) {
+                    finalStream = await getUserMediaCamera(true);
+                }
                 localCamStream = finalStream;
                 localMicStream = finalStream;
                 videoStream = finalStream;
             } catch (mediaErr) {
-                console.error("[Media] Failed to get combined stream on iOS:", mediaErr);
-                throw mediaErr;
+                console.error("[Media] Failed to get combined stream on mobile:", mediaErr);
+                // Fall back to composite if available
+                if (videoStream || screenStream) {
+                    console.log("[Media] Falling back to composite track layout...");
+                    compositeStream = await createCompositeTrack(screenStream, videoStream);
+                    compositeStream.getTracks().forEach(t => {
+                        if (!addedTrackIds.has(t.id)) {
+                            tracks.push(t);
+                            addedTrackIds.add(t.id);
+                        }
+                    });
+                    if (localMicStream) {
+                        localMicStream.getAudioTracks().forEach(t => {
+                            if (!addedTrackIds.has(t.id)) {
+                                tracks.push(t);
+                                addedTrackIds.add(t.id);
+                            }
+                        });
+                    }
+                    finalStream = new MediaStream(tracks);
+                } else {
+                    throw mediaErr;
+                }
             }
         } else {
-            // Always create a composite track layout to ensure proctoring status indicators and flags are drawn on the recording
+            // Desktop: composite layout (screen + webcam sidebar + status flags)
             console.log("[Media] Initializing composite track layout...");
             compositeStream = await createCompositeTrack(screenStream, videoStream);
             compositeStream.getTracks().forEach(t => {
@@ -1959,11 +2134,35 @@ async function startProctoring() {
         if (localMicStream) {
             setupAudioAnalysis(localMicStream);
             setupSpeechRecognition();
+        } else if (finalStream && finalStream.getAudioTracks().length > 0) {
+            setupAudioAnalysis(finalStream);
+            setupSpeechRecognition();
+        }
+
+        // Integrity metadata for reviewers — especially important on mobile where
+        // extension lockdown + screen share are unavailable.
+        const plat = getClientProfile();
+        const platformLabel = plat.isIOS ? 'iOS/iPad' : (plat.isAndroid ? 'Android' : (plat.isMobileClient ? 'Mobile' : 'Desktop'));
+        logProctorEvent('client_platform', `Client: ${platformLabel}; UA: ${(navigator.userAgent || '').slice(0, 180)}`);
+        if (plat.isMobileClient) {
+            logProctorEvent(
+                'mobile_browser_mode',
+                'Exam taken in a mobile browser. Chrome extension lockdown, multi-monitor checks, and desktop screen capture are not available. App switches and page hide events are logged instead.'
+            );
+            setupMobileIntegrityMonitoring();
+        }
+        if ((examConfig.require_screen || examConfig.verify_desktop) && !localScreenStream) {
+            logProctorEvent(
+                'screen_share_unavailable',
+                'Screen share was enabled for this exam but could not be captured on this device (common on phones/tablets). Review webcam/audio and app-switch events carefully.'
+            );
         }
         
         setInterval(sendSnapshot, 3000);
 
-        showToast("Proctoring session successfully started.");
+        showToast(plat.isMobileClient
+            ? "Proctoring active (mobile browser — camera/mic monitored)."
+            : "Proctoring session successfully started.");
 
     } catch (err) {
         console.error("Failed to start proctoring:", err);
@@ -2260,10 +2459,17 @@ async function createCompositeTrack(screenStream, cameraStream) {
     let vCam = null;
     if (cameraStream && cameraStream.getVideoTracks().length > 0) {
         vCam = document.createElement('video');
-        vCam.srcObject = cameraStream;
         vCam.muted = true;
+        vCam.playsInline = true;
         vCam.setAttribute('playsinline', '');
+        vCam.setAttribute('webkit-playsinline', '');
+        vCam.srcObject = cameraStream;
         await vCam.play().catch(e => console.warn("[Media] Camera video play failed:", e));
+        // Wait until frames exist so the composite isn't a permanent black panel
+        const waitStart = Date.now();
+        while (Date.now() - waitStart < 4000 && (!vCam.videoWidth || !vCam.videoHeight)) {
+            await new Promise(r => setTimeout(r, 50));
+        }
     }
     compositeVCam = vCam;
 
@@ -2314,8 +2520,18 @@ async function createCompositeTrack(screenStream, cameraStream) {
         ctx.fillStyle = "#0f172a";
         ctx.fillRect(0, 0, canvas.width, canvas.height);
  
-        if (vScreen && screenStream) {
+        const hasScreen = !!(vScreen && screenStream);
+        if (hasScreen) {
             ctx.drawImage(vScreen, 0, 0, 1280, 720);
+        } else if (vCam) {
+            // No screen share (typical on mobile): use full main pane for the webcam
+            // so the recording is useful evidence instead of a blank "INACTIVE" slate.
+            ctx.drawImage(vCam, 0, 0, 1280, 720);
+            ctx.fillStyle = "rgba(15, 23, 42, 0.72)";
+            ctx.fillRect(0, 0, 1280, 48);
+            ctx.fillStyle = "#fbbf24";
+            ctx.font = "bold 16px Arial";
+            ctx.fillText("CAMERA-ONLY RECORDING — SCREEN SHARE NOT AVAILABLE ON THIS DEVICE", 24, 30);
         } else {
             ctx.fillStyle = "#1e293b";
             ctx.fillRect(0, 0, 1280, 720);
@@ -2330,16 +2546,26 @@ async function createCompositeTrack(screenStream, cameraStream) {
         const camH = 240;
         const camY = (720 - camH) / 2 - 40; // Shift up slightly to make room for mic box
         
-        // Draw Camera
-        if (vCam) {
+        // Sidebar camera (when screen is also present); otherwise a status panel
+        if (hasScreen && vCam) {
             ctx.drawImage(vCam, sidebarX, camY, camW, camH);
-        } else {
+        } else if (hasScreen && !vCam) {
             ctx.fillStyle = "#1e293b";
             ctx.fillRect(sidebarX, camY, camW, camH);
             ctx.fillStyle = "#9ca3af";
             ctx.font = "bold 13px Arial";
             const placeholderText = "NO WEBCAM REQUIRED";
             ctx.fillText(placeholderText, sidebarX + (320 - ctx.measureText(placeholderText).width) / 2, camY + camH / 2);
+        } else {
+            ctx.fillStyle = "#0f172a";
+            ctx.fillRect(sidebarX, camY, camW, camH);
+            ctx.fillStyle = "#94a3b8";
+            ctx.font = "bold 13px Arial";
+            const t1 = "PRIMARY: WEBCAM";
+            ctx.fillText(t1, sidebarX + (320 - ctx.measureText(t1).width) / 2, camY + camH / 2 - 8);
+            ctx.font = "11px Arial";
+            const t2 = "(no desktop capture)";
+            ctx.fillText(t2, sidebarX + (320 - ctx.measureText(t2).width) / 2, camY + camH / 2 + 12);
         }
         ctx.strokeStyle = "rgba(255,255,255,0.5)";
         ctx.lineWidth = 2;
@@ -2350,10 +2576,21 @@ async function createCompositeTrack(screenStream, cameraStream) {
         const camLabel = "PROCTOR FEED";
         ctx.fillText(camLabel, sidebarX + (320 - ctx.measureText(camLabel).width) / 2, camY - 15);
  
-        // Mic Status Box - Hardware connectivity based
-        const hasHardwareMic = localMicStream && localMicStream.getAudioTracks().some(t => t.enabled && !t.muted && t.readyState === 'live');
-        const isHardwareMuted = audioTrackerActive && (Date.now() - lastNonZeroVolumeTime) > 3000;
-        const hasMic = hasHardwareMic && !isHardwareMuted;
+        // Mic Status — do NOT use track.muted (Chrome/Android often reports muted=true
+        // while audio is still captured). Use readyState + enabled + recent volume.
+        const liveMicTrack = localMicStream && localMicStream.getAudioTracks().some(t => t.readyState === 'live' && t.enabled);
+        const silenceMs = audioTrackerActive ? (Date.now() - lastNonZeroVolumeTime) : 0;
+        const recentlyHeard = audioTrackerActive && silenceMs < 2500;
+        let micLabel = 'MICROPHONE: OFF';
+        let dotColor = '#ef4444';
+        if (liveMicTrack && recentlyHeard) {
+            micLabel = 'MICROPHONE: ON';
+            dotColor = '#22c55e';
+        } else if (liveMicTrack) {
+            // Track is live but quiet — still recording; not a hard OFF
+            micLabel = 'MICROPHONE: ON (quiet)';
+            dotColor = '#eab308';
+        }
         const micBoxY = camY + camH + 40;
         const micBoxW = 240;
         const micBoxH = 60;
@@ -2365,8 +2602,6 @@ async function createCompositeTrack(screenStream, cameraStream) {
         ctx.fill();
         ctx.strokeStyle = "rgba(255,255,255,0.2)";
         ctx.stroke();
- 
-        const dotColor = hasMic ? "#22c55e" : "#ef4444";
         
         ctx.fillStyle = dotColor;
         ctx.beginPath();
@@ -2374,8 +2609,8 @@ async function createCompositeTrack(screenStream, cameraStream) {
         ctx.fill();
  
         ctx.fillStyle = "white";
-        ctx.font = "bold 13px Arial";
-        ctx.fillText(hasMic ? "MICROPHONE: ON" : "MICROPHONE: OFF", micBoxX + 45, micBoxY + 35);
+        ctx.font = "bold 12px Arial";
+        ctx.fillText(micLabel, micBoxX + 40, micBoxY + 35);
         
         // Draw Active Security / AI Flags in the top sidebar space (y = 20 to y = 180)
         const now = Date.now();
@@ -2577,7 +2812,14 @@ function setupFocusTracking() {
     document.addEventListener('visibilitychange', () => {
         if (isExamCompleted) return;
         if (document.visibilityState === 'hidden') {
-            handleViolation('tab_blur', 'Student switched tabs or minimized browser');
+            const mobile = getClientProfile().isMobileClient;
+            // On mobile this is the strongest integrity signal (app switch / lock screen)
+            handleViolation(
+                mobile ? 'app_backgrounded' : 'tab_blur',
+                mobile
+                    ? 'Student left the exam view (app switch, lock screen, or another tab). Screen content is not recorded on mobile.'
+                    : 'Student switched tabs or minimized browser'
+            );
         } else {
             logProctorEvent('tab_focus', 'Student returned to the exam tab');
         }
@@ -3049,21 +3291,21 @@ function setupAudioAnalysis(stream) {
         // Adaptive RMS threshold (0-100 scale). A single fixed number can't work across
         // every mic — a quiet laptop mic with auto-gain reads "talking" at ~6 while a hot
         // headset reads ambient at ~8. So instead we measure this student's actual ambient
-        // floor for the first ~2s, then trigger when the level rises well above it. This
-        // fixes both the old false-positives (threshold too low) AND the recent misses
-        // (threshold too high) without guessing a magic constant.
-        const BASELINE_FRAMES = 20;        // ~2s of ambient calibration at the 100ms interval
-        const RMS_FLOOR = 4;               // never trigger below this even in dead silence
-        const RMS_CEIL = 22;               // never require more than this (very loud rooms)
-        const TRIGGER_MULTIPLIER = 2.2;    // talking is typically 2x+ the ambient floor
+        // floor for the first ~2s, then trigger when the level rises well above it.
+        const isMobile = getClientProfile().isMobileClient;
+        const BASELINE_FRAMES = isMobile ? 15 : 20;
+        const RMS_FLOOR = isMobile ? 3 : 4;
+        const RMS_CEIL = 22;
+        // Mobile mics + AGC often compress dynamic range — use a lower multiplier so
+        // short phrases like "one plus one equals two" still register.
+        const TRIGGER_MULTIPLIER = isMobile ? 1.6 : 2.2;
         let baselineSamples = [];
-        let dynamicThreshold = 10;         // sensible starting value until calibration completes
-        // Require ~300ms of sustained loud audio before flagging, so a single cough/click/knock
-        // doesn't trigger a false "talking" violation.
-        const LOUD_FRAMES_TO_TRIGGER = 3;
-        // ~2s of quiet before considering speech ended (unchanged behavior)
-        const QUIET_FRAMES_TO_RESET = 20;
+        let dynamicThreshold = isMobile ? 7 : 10;
+        const LOUD_FRAMES_TO_TRIGGER = isMobile ? 2 : 3; // ~200ms mobile / ~300ms desktop
+        // End speech sooner so short utterances produce a complete log entry
+        const QUIET_FRAMES_TO_RESET = isMobile ? 10 : 20;
         let logCounter = 0;
+        let startEventLogged = false;
 
         console.log("[Audio] Initializing adaptive voice activity analysis (calibrating ambient floor)...");
 
@@ -3097,8 +3339,8 @@ function setupAudioAnalysis(stream) {
             }
 
             logCounter++;
-            if (logCounter % 50 === 0) { // Log RMS level every 5 seconds to console for debugging
-                console.log(`[Audio] Monitoring... RMS in last 5s: ${rms.toFixed(1)} (adaptive threshold is ${dynamicThreshold.toFixed(1)})`);
+            if (logCounter % 50 === 0) {
+                console.log(`[Audio] Monitoring... RMS: ${rms.toFixed(1)} (threshold ${dynamicThreshold.toFixed(1)})`);
             }
 
             if (rms > dynamicThreshold) {
@@ -3109,11 +3351,16 @@ function setupAudioAnalysis(stream) {
                 consecutiveLoudFrames = 0;
             }
 
-            // Speech started: sustained loud frames at 100ms interval
+            // Speech started — log immediately so short phrases aren't lost if session ends mid-talk
             if (!isCurrentlyTalking && consecutiveLoudFrames >= LOUD_FRAMES_TO_TRIGGER) {
                 isCurrentlyTalking = true;
                 talkingStartTimestamp = new Date();
+                startEventLogged = false;
                 console.log(`[Audio] Voice activity detected (RMS: ${rms.toFixed(1)})...`);
+                if (!startEventLogged) {
+                    startEventLogged = true;
+                    logProctorEvent('voice_activity', `Voice/talking activity detected at ${talkingStartTimestamp.toLocaleTimeString()} (RMS ${rms.toFixed(1)})`);
+                }
             }
 
             // Speech ended: sustained quiet frames
@@ -3124,7 +3371,7 @@ function setupAudioAnalysis(stream) {
                 const startTimeStr = talkingStartTimestamp.toLocaleTimeString();
                 logProctorEvent('audio_violation', `Talking/Voice detected starting at ${startTimeStr} (Duration: ${finalDuration}s)`);
             }
-        }, 100); // 100ms interval for high-resolution tracking
+        }, 100);
 
     } catch (e) {
         console.warn("[Audio] Failed to setup audio analysis:", e);
@@ -3136,33 +3383,40 @@ function setupSpeechRecognition() {
     const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
     if (!SpeechRecognition) {
         console.warn("[Speech] Web Speech API is not supported in this browser.");
+        logProctorEvent('speech_recognition_unavailable', 'Web Speech API not supported — relying on RMS voice-activity detection only.');
         return;
     }
 
     try {
         speechRecognition = new SpeechRecognition();
         speechRecognition.continuous = true;
-        speechRecognition.interimResults = false;
+        speechRecognition.interimResults = true; // catch short phrases sooner on mobile
         speechRecognition.lang = 'en-US';
+        let lastFinalTranscript = '';
 
         speechRecognition.onresult = (event) => {
-            const lastResultIndex = event.results.length - 1;
-            const transcript = event.results[lastResultIndex][0].transcript.trim();
-            if (transcript) {
-                console.log(`[Speech] Student said: "${transcript}"`);
-                logProctorEvent('voice_transcript', `Speaking detected: "${transcript}"`);
-                if (socket) {
-                    socket.emit('proctor_log', {
-                        exam_session_id: sessionInfo.id,
-                        event_type: 'voice_transcript',
-                        event_message: `Speaking detected: "${transcript}"`
-                    });
+            for (let i = event.resultIndex; i < event.results.length; i++) {
+                const result = event.results[i];
+                const transcript = (result[0] && result[0].transcript ? result[0].transcript : '').trim();
+                if (!transcript) continue;
+                // Prefer finals; also log strong interim results if long enough (short math phrases)
+                if (result.isFinal || transcript.length >= 4) {
+                    if (transcript === lastFinalTranscript) continue;
+                    if (result.isFinal) lastFinalTranscript = transcript;
+                    console.log(`[Speech] Student said: "${transcript}"${result.isFinal ? '' : ' (interim)'}`);
+                    logProctorEvent('voice_transcript', `Speaking detected: "${transcript}"`);
                 }
             }
         };
 
         speechRecognition.onerror = (event) => {
             console.warn("[Speech] Recognition error:", event.error);
+            // network / not-allowed / service-not-allowed are common on Android — don't loop spam
+            if (event.error === 'not-allowed' || event.error === 'service-not-allowed') {
+                logProctorEvent('speech_recognition_unavailable', `Speech recognition blocked: ${event.error}`);
+                try { speechRecognition.onend = null; speechRecognition.stop(); } catch (e) {}
+                speechRecognition = null;
+            }
         };
 
         speechRecognition.onend = () => {
@@ -3177,7 +3431,21 @@ function setupSpeechRecognition() {
         console.log("[Speech] Speech recognition active.");
     } catch (e) {
         console.warn("[Speech] Failed to start speech recognition:", e);
+        logProctorEvent('speech_recognition_unavailable', `Speech recognition failed to start: ${e.message || e}`);
     }
+}
+
+/** Mobile-only extras beyond setupFocusTracking (visibility already handled there). */
+let mobileIntegrityWired = false;
+function setupMobileIntegrityMonitoring() {
+    if (mobileIntegrityWired) return;
+    mobileIntegrityWired = true;
+    // pagehide fires more reliably than visibilitychange when the mobile OS kills the tab
+    window.addEventListener('pagehide', () => {
+        if (isExamCompleted) return;
+        logProctorEvent('page_hidden', 'pagehide — exam page unloaded or backgrounded by the OS.');
+    });
+    console.log('[Proctor] Mobile integrity monitoring active.');
 }
 
 function setupSimulatedAIProctoring() {
@@ -3305,7 +3573,7 @@ function startExamLiveAIDetection() {
                     
                     const isCameraActive = localCamStream &&
                                            localCamStream.getVideoTracks().length > 0 &&
-                                           localCamStream.getVideoTracks().every(t => t.enabled && t.readyState === 'live' && !t.muted);
+                                           localCamStream.getVideoTracks().some(t => t.enabled && t.readyState === 'live');
 
                     if (isCameraActive && blocker && blocker.style.display === 'flex') {
                         console.log("[AI] Student returned. Dismissing overlay.");
@@ -3363,10 +3631,10 @@ function startExamLiveAIDetection() {
         const blocker = document.getElementById('ai-blocker-overlay');
         if (!blocker) return;
 
-        // Check if camera stream is active, enabled, live, and not muted
+        // Do NOT use track.muted — Chrome often reports muted=true while video is fine (false "camera off" blocker / black UX).
         const isCameraActive = localCamStream && 
                                localCamStream.getVideoTracks().length > 0 && 
-                               localCamStream.getVideoTracks().every(t => t.enabled && t.readyState === 'live' && !t.muted);
+                               localCamStream.getVideoTracks().some(t => t.enabled && t.readyState === 'live');
 
         if (!isCameraActive) {
             const cameraElapsed = Date.now() - lastCameraActiveTime;
@@ -3509,15 +3777,19 @@ async function startRoomScanRecord() {
 
 async function setupIdPreview() {
     try {
-        if (!localCamStream) {
-            localCamStream = await navigator.mediaDevices.getUserMedia({ video: { width: 640, height: 480 }, audio: false });
+        const live = localCamStream && localCamStream.getVideoTracks().some(t => t.readyState === 'live');
+        if (!live) {
+            if (localCamStream) {
+                try { localCamStream.getTracks().forEach(t => t.stop()); } catch (e) {}
+            }
+            localCamStream = await getUserMediaCamera(false);
         }
         const videoEl = document.getElementById('id-check-preview');
         if (videoEl) {
-            videoEl.srcObject = localCamStream;
+            await attachStreamToVideoElement(videoEl, localCamStream);
         }
     } catch (err) {
-        showStepError("Failed to access camera for ID verification: " + err.message);
+        showStepError("Failed to access camera for ID verification: " + (err && err.message ? err.message : err));
     }
 }
 

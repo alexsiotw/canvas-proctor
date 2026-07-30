@@ -486,14 +486,14 @@ function openExamReviewCenterModal(sessions, loadError) {
 }
 
 function _prcAlertCount(logs) {
-  const alertTypes = ['tab_blur','window_blur','fullscreen_exit','Tab Blocked','audio_violation','voice_transcript','clipboard_attempt','copy_attempt','paste_attempt','right_click','print_attempt','keyboard_shortcut_blocked'];
+  const alertTypes = ['tab_blur','window_blur','fullscreen_exit','Tab Blocked','audio_violation','voice_transcript','voice_activity','clipboard_attempt','copy_attempt','paste_attempt','right_click','print_attempt','keyboard_shortcut_blocked','app_backgrounded','page_hidden'];
   return (logs || []).filter(l => alertTypes.includes(l.event_type)).length;
 }
 function _prcAnnotationCount(logs) {
   return (logs || []).filter(l => l.event_type === 'annotation').length;
 }
 function _prcAbnormalCount(logs) {
-  const types = ['phone_detected','multiple_faces','no_face','AI_PEOPLE','gaze_off_screen','audio_threshold_exceeded','mobile_camera_lost'];
+  const types = ['phone_detected','multiple_faces','no_face','AI_PEOPLE','gaze_off_screen','audio_threshold_exceeded','mobile_camera_lost','mobile_browser_mode','screen_share_unavailable'];
   return (logs || []).filter(l => types.includes(l.event_type)).length;
 }
 function _prcIconRowHtml(session) {
@@ -925,13 +925,25 @@ async function loadSessionInModal(modal, session) {
   }
 
   // ------- VIDEO AREA -------
-  const hasVideo   = !!session.drive_file_id;
+  // Always try playback for finished attempts — drive_file_id may lag while assembly
+  // runs, and the server can now stream from local chunks as a fallback.
+  const hasDrive   = !!session.drive_file_id;
   const hasMobile  = !!session.mobile_drive_file_id;
+  const tryPlayback = hasDrive || ['completed', 'abandoned', 'unexpected', 'started'].includes(session.status);
   const videoSrc   = `${PG_API_BASE}/api/session/video-playback/${session.id}?token=${encodeURIComponent(token)}`;
   const mobileSrc  = `${PG_API_BASE}/api/session/mobile-video-playback/${session.id}?token=${encodeURIComponent(token)}`;
+  const logsForBanner = session.logs || [];
+  const isMobileSession = logsForBanner.some(l => l.event_type === 'mobile_browser_mode' || l.event_type === 'screen_share_unavailable');
+  const mobileBanner = isMobileSession
+    ? `<div style="background:#fff7ed;border:1px solid #fdba74;color:#9a3412;padding:8px 12px;font-size:12px;font-weight:600;border-radius:6px;margin-bottom:8px;">
+         Mobile browser session — extension lockdown and desktop screen capture were not available.
+         Treat app-switch / background events and audio carefully; do not treat an all-green desk view as full lockdown.
+       </div>`
+    : '';
 
-  if (hasVideo) {
+  if (tryPlayback) {
     videoArea.innerHTML = `
+      ${mobileBanner}
       <div class="prm-video-primary">
         ${hasMobile ? `<div class="prm-webcam-thumb"><video id="prm-vid-mobile" controls playsinline muted src="${mobileSrc}"></video></div>` : ''}
         <div class="prm-vid-main-container" style="flex:${hasMobile ? '2' : '1'};">
@@ -939,11 +951,27 @@ async function loadSessionInModal(modal, session) {
             <source src="${videoSrc}" type="video/webm">
             <source src="${videoSrc}" type="video/mp4">
           </video>
+          ${!hasDrive ? `<div style="font-size:11px;color:#94a3b8;padding:4px 0;">If playback fails, video may still be uploading to Drive — refresh in a minute.</div>` : ''}
         </div>
       </div>
     `;
+    const mainVidEl = videoArea.querySelector('#prm-vid-main');
+    if (mainVidEl) {
+      mainVidEl.addEventListener('error', () => {
+        if (!videoArea.querySelector('.prm-no-video')) {
+          const note = document.createElement('div');
+          note.className = 'prm-no-video';
+          note.style.cssText = 'padding:12px;text-align:center;color:#6b7280;font-size:13px;';
+          note.textContent = hasDrive
+            ? 'Video failed to load. Try Open in Drive or refresh.'
+            : 'No playable recording yet (still assembling, or the session ended before chunks uploaded).';
+          videoArea.appendChild(note);
+        }
+      }, { once: true });
+    }
   } else {
     videoArea.innerHTML = `
+      ${mobileBanner}
       <div class="prm-video-primary">
         <div class="prm-no-video">
           <div class="prm-no-video-icon">
@@ -1156,18 +1184,21 @@ async function loadSessionInModal(modal, session) {
   }
 
   // ------- HELPER: log item -------
-  const alertTypes = ['tab_blur','window_blur','fullscreen_exit','Tab Blocked','audio_violation','voice_transcript','clipboard_attempt','copy_attempt','paste_attempt','right_click','print_attempt','keyboard_shortcut_blocked'];
-  const abnTypes   = ['phone_detected','multiple_faces','no_face','AI_PEOPLE','gaze_off_screen','audio_threshold_exceeded','mobile_camera_lost'];
+  const alertTypes = ['tab_blur','window_blur','fullscreen_exit','Tab Blocked','audio_violation','voice_transcript','voice_activity','clipboard_attempt','copy_attempt','paste_attempt','right_click','print_attempt','keyboard_shortcut_blocked','app_backgrounded','page_hidden'];
+  const abnTypes   = ['phone_detected','multiple_faces','no_face','AI_PEOPLE','gaze_off_screen','audio_threshold_exceeded','mobile_camera_lost','mobile_browser_mode','screen_share_unavailable','client_platform','speech_recognition_unavailable'];
   const alertLabels = {
     tab_blur: 'Tab Leave/Blur', window_blur: 'Window Focus Lost', fullscreen_exit: 'Fullscreen Exited',
     'Tab Blocked': 'Tab Blocked', audio_violation: 'Audio/Voice Detected', voice_transcript: 'Speech Detected',
+    voice_activity: 'Voice Activity', app_backgrounded: 'App Switch / Backgrounded', page_hidden: 'Page Hidden',
     clipboard_attempt: 'Clipboard Attempt', copy_attempt: 'Copy Attempt', paste_attempt: 'Paste Attempt',
     right_click: 'Right Click', print_attempt: 'Print Attempt', keyboard_shortcut_blocked: 'Keyboard Shortcut Blocked'
   };
   const abnLabels = {
     phone_detected: 'Phone Detected', multiple_faces: 'Multiple Faces', no_face: 'No Face Detected',
     AI_PEOPLE: 'AI-Detected Person', gaze_off_screen: 'Gaze Off-Screen', audio_threshold_exceeded: 'Loud Audio',
-    mobile_camera_lost: 'Mobile Camera Lost'
+    mobile_camera_lost: 'Mobile Camera Lost', mobile_browser_mode: 'Mobile Browser Mode',
+    screen_share_unavailable: 'Screen Share Unavailable', client_platform: 'Client Platform',
+    speech_recognition_unavailable: 'Speech Recognition Unavailable'
   };
 
   const makeLogEl = (log, index) => {
@@ -1588,8 +1619,20 @@ function injectProctorGuardTab(tabNav, quizId) {
     wb:     `<svg viewBox="0 0 24 24"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/><path d="M7 10l3 3 5-5"/></svg>`
   };
 
-  const card = (id, key, label) =>
-    `<label class="pg-lbl" for="${id}"><input type="checkbox" class="pg-chk" id="${id}"><div class="pg-card"><div class="pg-icon">${ic[key]}</div><div class="pg-ct">${label}</div></div></label>`;
+  // These four options can only be enforced by the student browser extension, which is
+  // temporarily paused (students now take exams through the web system only). Render them
+  // greyed-out and disabled so nobody configures an exam expecting them to work. Flip this
+  // to an empty array when the extension is reinstated for students.
+  const EXT_ONLY_DISABLED = ['pg_traffic', 'pg_ntab', 'pg_ctab', 'pg_cache'];
+  const card = (id, key, label) => {
+    const extOnly = EXT_ONLY_DISABLED.includes(id);
+    const labelExtra = extOnly
+      ? ' style="opacity:0.45;cursor:not-allowed;" title="Temporarily unavailable — this option needs the student browser extension, which is currently paused. Everything else is enforced through the ProctorGuard system."'
+      : '';
+    const disabledAttr = extOnly ? ' disabled' : '';
+    const badge = extOnly ? '<div style="font-size:9px;color:#9ca3af;margin-top:2px;font-weight:600;">Extension only</div>' : '';
+    return `<label class="pg-lbl" for="${id}"${labelExtra}><input type="checkbox" class="pg-chk" id="${id}"${disabledAttr}><div class="pg-card"><div class="pg-icon">${ic[key]}</div><div class="pg-ct">${label}${badge}</div></div></label>`;
+  };
 
   // --- Build panel HTML ---
   const panel = document.createElement('div');

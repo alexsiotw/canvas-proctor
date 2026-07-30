@@ -201,10 +201,18 @@
     #setup-container video {
         width: 100% !important;
         height: 100% !important;
-        position: relative !important;
+        position: absolute !important;
+        inset: 0 !important;
         opacity: 1 !important;
         pointer-events: auto !important;
         object-fit: cover !important;
+        background: #000 !important;
+        transform: none !important; /* avoid GPU mirror bugs on some devices */
+        z-index: 1 !important;
+    }
+    #setup-container .video-preview-box video#id-check-preview {
+        /* keep ID mirror only on that step via inline style; ensure it's still visible */
+        z-index: 1 !important;
     }
     #active-exam-container {
         display: none;
@@ -495,7 +503,7 @@
       </div>
   </div>
 
-  <script src="/js/student.js?v=2.2.0"></script>
+  <script src="/js/student.js?v=2.3.1"></script>
 </body>
 
 </html>
