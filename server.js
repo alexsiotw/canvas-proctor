@@ -72,7 +72,6 @@ const CANVAS_LAUNCH_SECRET = process.env.CANVAS_LAUNCH_SECRET || 'canvas-proctor
 const INSECURE_DEFAULTS = {
     JWT_SIGNING_KEY: 'dev-only-insecure-signing-key-DO-NOT-USE-IN-PRODUCTION',
     AUTO_LOGIN_SIGNING_SECRET: 'dev-only-insecure-auto-login-secret',
-    CANVAS_LAUNCH_SECRET: 'canvas-proctor-shared-secret-key-998877',
     // Signs the session cookie (see app.use(session(...)) below). With the
     // published fallback, a session cookie can be forged outright.
     SESSION_SECRET: 'proctor-secret-key'
