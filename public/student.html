@@ -39,7 +39,7 @@
         box-shadow: 0 10px 15px -3px rgba(0,0,0,0.05), 0 4px 6px -2px rgba(0,0,0,0.02);
         overflow: hidden;
         color: #1f2937;
-        font-family: 'Inter', sans-serif;
+        font-family: var(--font-sans);
     }
     .setup-header {
         background: #f9fafb;
@@ -354,7 +354,7 @@
           </div>
       </div>
       <!-- iOS third-party cookie check warning -->
-      <div id="ios-cookie-warning" style="display: none; background: #fffbeb; border-bottom: 1px solid #fef3c7; padding: 15px 20px; color: #b45309; font-size: 13px; line-height: 1.5; font-family: sans-serif;">
+      <div id="ios-cookie-warning" style="display: none; background: #fffbeb; border-bottom: 1px solid #fef3c7; padding: 15px 20px; color: #b45309; font-size: 13px; line-height: 1.5; font-family: var(--font-sans);">
           <strong style="font-size: 14px; display: flex; align-items: center; gap: 6px; margin-bottom: 6px; color: #92400e;">
               📱 iPhone / iPad (iOS) Action Required
           </strong>
@@ -403,7 +403,7 @@
       </div>
       
       <!-- iOS Iframe Cookie Warning Bar -->
-      <div id="ios-iframe-warning" style="display: none; background: #fffbeb; border-bottom: 1px solid #fef3c7; padding: 10px 20px; color: #b45309; font-size: 13px; font-family: sans-serif; text-align: center; justify-content: center; align-items: center; gap: 15px; flex-wrap: wrap; z-index: 1000; box-sizing: border-box;">
+      <div id="ios-iframe-warning" style="display: none; background: #fffbeb; border-bottom: 1px solid #fef3c7; padding: 10px 20px; color: #b45309; font-size: 13px; font-family: var(--font-sans); text-align: center; justify-content: center; align-items: center; gap: 15px; flex-wrap: wrap; z-index: 1000; box-sizing: border-box;">
           <span>⚠️ <strong>Canvas asking you to log in?</strong> If you see a Canvas login screen or Google error, go to <strong>Settings &rarr; Safari</strong> and turn <strong>OFF</strong> "Prevent Cross-Site Tracking", then reload.</span>
           <button class="btn" style="background: #d97706; color: white; border: none; padding: 6px 12px; font-size: 12px; border-radius: 4px; font-weight: bold; cursor: pointer; text-decoration: none; display: inline-flex; align-items: center;" onclick="openQuizInNewTabFallback()">Open Quiz in New Tab</button>
       </div>
@@ -427,7 +427,7 @@
   </div>
 
   <!-- Extension Required Overlay (desktop Chrome only) -->
-  <div id="extension-required-overlay" style="display: none; position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; background: rgba(15, 23, 42, 0.95); z-index: 99999; justify-content: center; align-items: center; color: white; font-family: 'Inter', sans-serif;">
+  <div id="extension-required-overlay" style="display: none; position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; background: rgba(15, 23, 42, 0.95); z-index: 99999; justify-content: center; align-items: center; color: white; font-family: var(--font-sans);">
     <div style="background: white; color: #1e293b; padding: 40px; border-radius: 16px; width: 90%; max-width: 500px; text-align: center; box-shadow: 0 10px 25px rgba(0,0,0,0.3);">
       <div style="margin-bottom: 20px; display: flex; justify-content: center;"><img src="icons/disable-extensions.svg" style="width:50px; height:50px;" /></div>
       <h2 style="font-size: 22px; font-weight: 700; margin: 0 0 12px 0;">Chrome Extension Required</h2>
@@ -441,7 +441,7 @@
   </div>
 
   <!-- Mobile / tablet not allowed (when exam requires desktop lockdown and Allow Mobile is off) -->
-  <div id="mobile-not-allowed-overlay" style="display: none; position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; background: rgba(15, 23, 42, 0.95); z-index: 99999; justify-content: center; align-items: center; color: white; font-family: 'Inter', sans-serif;">
+  <div id="mobile-not-allowed-overlay" style="display: none; position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; background: rgba(15, 23, 42, 0.95); z-index: 99999; justify-content: center; align-items: center; color: white; font-family: var(--font-sans);">
     <div style="background: white; color: #1e293b; padding: 40px; border-radius: 16px; width: 90%; max-width: 500px; text-align: center; box-shadow: 0 10px 25px rgba(0,0,0,0.3);">
       <div style="margin-bottom: 20px; display: flex; justify-content: center;"><img src="icons/secondary-mobile-camera.svg" style="width:50px; height:50px;" /></div>
       <h2 style="font-size: 22px; font-weight: 700; margin: 0 0 12px 0;">Computer Required</h2>
@@ -450,7 +450,7 @@
     </div>
   </div>
   <!-- Companion App Required Overlay -->
-  <div id="companion-app-required-overlay" style="display: none; position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; background: rgba(15, 23, 42, 0.95); z-index: 99999; justify-content: center; align-items: center; color: white; font-family: 'Inter', sans-serif;">
+  <div id="companion-app-required-overlay" style="display: none; position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; background: rgba(15, 23, 42, 0.95); z-index: 99999; justify-content: center; align-items: center; color: white; font-family: var(--font-sans);">
     <div style="background: white; color: #1e293b; padding: 40px; border-radius: 16px; width: 90%; max-width: 500px; text-align: center; box-shadow: 0 10px 25px rgba(0,0,0,0.3);">
       <div style="margin-bottom: 20px; display: flex; justify-content: center;"><img src="icons/record-screen.svg" style="width:50px; height:50px;" /></div>
       <h2 style="font-size: 22px; font-weight: 700; margin: 0 0 12px 0;">ProctorGuard Desktop App Required</h2>
@@ -472,7 +472,7 @@
   </div>
 
   <!-- Human Detection Blocker Overlay -->
-  <div id="ai-blocker-overlay" style="display: none; position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; background: rgba(15, 23, 42, 0.98); z-index: 999999; justify-content: center; align-items: center; flex-direction: column; color: white; font-family: 'Inter', sans-serif; text-align: center;">
+  <div id="ai-blocker-overlay" style="display: none; position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; background: rgba(15, 23, 42, 0.98); z-index: 999999; justify-content: center; align-items: center; flex-direction: column; color: white; font-family: var(--font-sans); text-align: center;">
       <div style="background: #1e293b; border: 2px solid #ef4444; padding: 40px; border-radius: 16px; max-width: 550px; width: 90%; box-shadow: 0 20px 25px -5px rgba(0,0,0,0.5);">
           <div style="margin-bottom: 20px; display: flex; justify-content: center; animation: pulse 1.5s infinite;"><img src="icons/record-video.svg" style="width:60px; height:60px;" /></div>
           <h1 id="ai-blocker-title" style="color: #ef4444; font-size: 26px; font-weight: 800; margin: 0 0 15px 0;">Student Presence Required</h1>
@@ -492,7 +492,7 @@
           </p>
       </div>
   <!-- Screen Share Blocker Overlay -->
-  <div id="screen-share-blocker-overlay" style="display: none; position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; background: rgba(15, 23, 42, 0.98); z-index: 999999; justify-content: center; align-items: center; flex-direction: column; color: white; font-family: 'Inter', sans-serif; text-align: center;">
+  <div id="screen-share-blocker-overlay" style="display: none; position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; background: rgba(15, 23, 42, 0.98); z-index: 999999; justify-content: center; align-items: center; flex-direction: column; color: white; font-family: var(--font-sans); text-align: center;">
       <div style="background: #1e293b; border: 2px solid #ef4444; padding: 40px; border-radius: 16px; max-width: 550px; width: 90%; box-shadow: 0 20px 25px -5px rgba(0,0,0,0.5);">
           <div style="margin-bottom: 20px; display: flex; justify-content: center;"><img src="icons/record-screen.svg" style="width:60px; height:60px;" /></div>
           <h1 style="color: #ef4444; font-size: 26px; font-weight: 800; margin: 0 0 15px 0;">Screen Share Stopped</h1>

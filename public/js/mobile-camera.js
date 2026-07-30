@@ -234,7 +234,7 @@ function stopRecordingSequence() {
     document.body.innerHTML = `
         <div style="width:100%; max-width:480px; text-align:center; padding:40px 20px; background:var(--card-bg); border:1px solid var(--border); border-radius:var(--radius-lg); margin-top:40px;">
             <div style="font-size:48px; margin-bottom:20px;">🏁</div>
-            <h2 style="font-family:'Outfit'; font-size:24px; color:var(--success); margin-bottom:10px;">Proctoring Complete</h2>
+            <h2 style="font-family: var(--font-sans); font-size:24px; color:var(--success); margin-bottom:10px;">Proctoring Complete</h2>
             <p style="color:var(--text-secondary); font-size:14px; line-height:1.6;">Your secondary camera recording has been securely uploaded. You may close this page now.</p>
         </div>
     `;

@@ -1,4 +1,22 @@
-@import url('https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&display=swap');
+/* Typography is deliberately system-native. Three reasons, in order of weight:
+ *
+ * 1. An exam must not depend on fonts.googleapis.com. A slow or blocked request
+ *    at launch time reflows the proctoring UI under a student who is already
+ *    nervous, and on some networks it simply never resolves.
+ * 2. Every student browser was announcing itself to Google on every exam launch.
+ *    A tool whose whole premise is careful handling of student data should not
+ *    make a third-party request it does not need.
+ * 3. It was already broken. 'Inter' was referenced in student.html eleven times
+ *    and 'Lato' in index.html, and neither was ever loaded, so those surfaces
+ *    fell back to default sans-serif. The identity was accidental, not chosen.
+ *
+ * The system stack also reads as institutional rather than as a marketing site,
+ * which is the correct register for software that produces evidence.
+ */
+:root {
+  --font-sans: system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace;
+}
 
 :root {
   --bg-primary: #f5f6f8; /* Canvas default dashboard content background */
@@ -40,7 +58,7 @@
 
 html,
 body {
-  font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, sans-serif;
+  font-family: var(--font-sans);
   background: var(--bg-primary);
   color: var(--text-primary);
   min-height: 100vh;
@@ -214,7 +232,7 @@ body::before {
   padding: 10px 20px;
   border: none;
   border-radius: var(--radius-sm);
-  font-family: 'Inter', sans-serif;
+  font-family: var(--font-sans);
   font-size: 14px;
   font-weight: 500;
   cursor: pointer;
@@ -294,7 +312,7 @@ body::before {
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   color: var(--text-primary);
-  font-family: 'Inter', sans-serif;
+  font-family: var(--font-sans);
   font-size: 14px;
   transition: var(--transition);
 }
@@ -448,7 +466,7 @@ tbody tr:last-child td {
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   color: var(--text-primary);
-  font-family: 'Inter', sans-serif;
+  font-family: var(--font-sans);
   font-size: 13px;
   cursor: pointer;
   min-width: 100px;
@@ -661,7 +679,7 @@ tbody tr:last-child td {
   font-weight: 800;
   letter-spacing: 8px;
   color: var(--accent-hover);
-  font-family: 'Inter', monospace;
+  font-family: var(--font-mono);
   text-shadow: 0 0 20px var(--accent-glow);
 }
 
@@ -937,7 +955,7 @@ tbody tr:last-child td {
   border: 2px solid var(--border);
   border-radius: var(--radius);
   color: var(--text-primary);
-  font-family: 'Inter', monospace;
+  font-family: var(--font-mono);
   font-weight: 700;
 }
 
@@ -1006,7 +1024,7 @@ tbody tr:last-child td {
   border: 1px solid var(--border);
   border-radius: 4px;
   color: var(--text-primary);
-  font-family: 'Inter', sans-serif;
+  font-family: var(--font-sans);
 }
 
 .comment-input:focus {
@@ -1113,7 +1131,7 @@ tbody tr:last-child td {
   background: none;
   color: var(--text-muted);
   cursor: pointer;
-  font-family: 'Inter', sans-serif;
+  font-family: var(--font-sans);
   font-size: 13px;
   transition: var(--transition);
 }
@@ -1135,7 +1153,7 @@ tbody tr:last-child td {
   transition: var(--transition);
   background: none;
   border: none;
-  font-family: 'Inter', sans-serif;
+  font-family: var(--font-sans);
 }
 
 .back-btn:hover {
@@ -1314,7 +1332,7 @@ body::before {
   text-transform: uppercase;
   letter-spacing: 0.5px;
   line-height: 1;
-  font-family: 'Outfit', sans-serif;
+  font-family: var(--font-sans);
 }
 
 .badge-success {
@@ -1477,7 +1495,7 @@ body::before {
 }
 
 .proctorio-section-title {
-  font-family: 'Outfit', sans-serif;
+  font-family: var(--font-sans);
   font-size: 15px;
   font-weight: 700;
   color: var(--text-primary);
@@ -1591,7 +1609,7 @@ body::before {
 
 .check-card h1.danger {
   color: var(--danger);
-  font-family: 'Outfit', sans-serif;
+  font-family: var(--font-sans);
   font-size: 28px;
   font-weight: 800;
   margin-bottom: 12px;

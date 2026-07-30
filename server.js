@@ -52,6 +52,52 @@ const AUTO_LOGIN_SIGNING_SECRET = process.env.AUTO_LOGIN_SIGNING_SECRET || 'dev-
 // updating every quiz's configured launch URL to match.
 const CANVAS_LAUNCH_SECRET = process.env.CANVAS_LAUNCH_SECRET || 'canvas-proctor-shared-secret-key-998877';
 
+// ================================================================
+// Refuse to run in production on the fallback secrets above.
+//
+// Each of those `||` defaults exists so a developer can `node server.js` without
+// a .env. The danger is that they are also *published* — this file is in git, so
+// the fallback values are public knowledge. A single missing or misspelled
+// variable in the production environment would silently downgrade the system to
+// a publicly-known signing key, and nothing would look wrong: the app boots, the
+// dashboard loads, tokens verify.
+//
+// What that actually costs: JWT_SIGNING_KEY signs the extension tokens accepted
+// by requireInstructorOrExtensionToken, which guards video playback, room scans,
+// ID photos and signatures. Anyone who can read this repo could mint themselves
+// an instructor token and read student recordings. So this is a hard stop, not a
+// warning — a proctoring server that cannot prove who an instructor is should
+// not accept exams.
+// ================================================================
+const INSECURE_DEFAULTS = {
+    JWT_SIGNING_KEY: 'dev-only-insecure-signing-key-DO-NOT-USE-IN-PRODUCTION',
+    AUTO_LOGIN_SIGNING_SECRET: 'dev-only-insecure-auto-login-secret',
+    CANVAS_LAUNCH_SECRET: 'canvas-proctor-shared-secret-key-998877'
+};
+
+if (process.env.NODE_ENV === 'production') {
+    const active = { JWT_SIGNING_KEY, AUTO_LOGIN_SIGNING_SECRET, CANVAS_LAUNCH_SECRET };
+    const unsafe = Object.keys(INSECURE_DEFAULTS)
+        .filter(name => active[name] === INSECURE_DEFAULTS[name]);
+
+    if (unsafe.length > 0) {
+        console.error('\n=============================================================');
+        console.error(' ProctorGuard refused to start.');
+        console.error('');
+        console.error(' These secrets are still set to the built-in development');
+        console.error(' fallback, which is published in this repository:');
+        unsafe.forEach(name => console.error(`   - ${name}`));
+        console.error('');
+        console.error(' Generate a value for each and put it in .env:');
+        console.error('   openssl rand -hex 32');
+        console.error('');
+        console.error(' CANVAS_LAUNCH_SECRET must also match the value configured');
+        console.error(' on the Canvas side, so change both together.');
+        console.error('=============================================================\n');
+        process.exit(1);
+    }
+}
+
 function signExtensionToken(ltiSession) {
     return jwt.sign({
         sub: ltiSession.userId,
@@ -516,8 +562,46 @@ async function requireAuth(req, res, next) {
     next();
 }
 
+// ================================================================
+// Optional second factor for the instructor dashboard.
+//
+// The primary gate is, and has always been, the LTI role check below: you cannot
+// reach any instructor endpoint without a real signed Canvas launch that named
+// you an instructor. The passcode is a deliberate *second* step for the shared
+// classroom machine — the case where a teacher launches the dashboard, walks
+// away, and leaves an authenticated session on screen in front of students.
+//
+// Previously this was dead code in two directions at once: the value was
+// hardcoded here (and therefore public, since this file is in git), and
+// `passcodeVerified` was written but never read, while the client waited for a
+// `needs_passcode` flag the server never sent. So the overlay never appeared and
+// the check never ran. It is now driven by INSTRUCTOR_PASSCODE.
+//
+// Leave INSTRUCTOR_PASSCODE unset and the feature is simply off — which is
+// honest, rather than presenting a prompt that protects nothing.
+// ================================================================
+const INSTRUCTOR_PASSCODE = process.env.INSTRUCTOR_PASSCODE || '';
+const PASSCODE_ENABLED = INSTRUCTOR_PASSCODE.length > 0;
+
+// Bound guessing without locking a teacher out mid-exam: per-session, resets on
+// success, and the window is short enough to be invisible to a legitimate typo.
+const passcodeAttempts = new Map(); // sessionID -> { count, firstAttemptAt }
+const PASSCODE_MAX_ATTEMPTS = 5;
+const PASSCODE_WINDOW_MS = 5 * 60 * 1000;
+
 function requireInstructor(req, res, next) {
-    if (!req.session.lti || req.session.lti.role !== 'instructor') return res.status(403).json({ error: 'Instructor access required.' });
+    if (!req.session.lti || req.session.lti.role !== 'instructor') {
+        return res.status(403).json({ error: 'Instructor access required.' });
+    }
+    if (PASSCODE_ENABLED && !req.session.passcodeVerified) {
+        // needs_passcode is what apiFetch() in public/js/app.js watches for to
+        // raise the overlay. Without this flag the client cannot tell "you are
+        // not an instructor" apart from "you have not entered the passcode yet".
+        return res.status(403).json({
+            error: 'Passcode verification required.',
+            needs_passcode: true
+        });
+    }
     next();
 }
 
@@ -525,11 +609,42 @@ app.post('/api/verify-passcode', (req, res) => {
     if (!req.session.lti || req.session.lti.role !== 'instructor') {
         return res.status(403).json({ error: 'Instructor session required.' });
     }
-    const { passcode } = req.body;
-    if (passcode === '1032016') {
+    if (!PASSCODE_ENABLED) {
+        // Nothing to verify against; don't pretend otherwise.
+        req.session.passcodeVerified = true;
+        return res.json({ success: true, passcode_disabled: true });
+    }
+
+    const key = req.sessionID;
+    const now = Date.now();
+    const record = passcodeAttempts.get(key);
+    if (record && now - record.firstAttemptAt > PASSCODE_WINDOW_MS) {
+        passcodeAttempts.delete(key);
+    }
+    const current = passcodeAttempts.get(key);
+    if (current && current.count >= PASSCODE_MAX_ATTEMPTS) {
+        const waitMs = PASSCODE_WINDOW_MS - (now - current.firstAttemptAt);
+        return res.status(429).json({
+            error: `Too many attempts. Try again in ${Math.ceil(waitMs / 60000)} minute(s).`
+        });
+    }
+
+    const supplied = String(req.body.passcode ?? '');
+    // Constant-time compare. Hash both sides first so the comparison operates on
+    // equal-length buffers regardless of what was submitted — timingSafeEqual
+    // throws on a length mismatch, and the length itself would otherwise leak.
+    const digest = (value) => crypto.createHash('sha256').update(value, 'utf8').digest();
+    const matches = crypto.timingSafeEqual(digest(supplied), digest(INSTRUCTOR_PASSCODE));
+
+    if (matches) {
+        passcodeAttempts.delete(key);
         req.session.passcodeVerified = true;
         return res.json({ success: true });
     }
+
+    const updated = current || { count: 0, firstAttemptAt: now };
+    updated.count += 1;
+    passcodeAttempts.set(key, updated);
     res.status(400).json({ error: 'Incorrect passcode' });
 });
 

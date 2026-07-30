@@ -339,7 +339,7 @@ async function loadExams() {
             content.innerHTML = `
                 <div style="padding: 40px; text-align: center; max-width: 600px; margin: 0 auto; margin-top: 50px; background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius-lg); box-shadow: var(--shadow-lg);">
                     <div style="font-size: 40px; margin-bottom: 20px;">⚠️</div>
-                    <h2 style="font-family: 'Outfit', sans-serif; color: var(--text-primary); margin-bottom: 15px;">Session Authentication Required</h2>
+                    <h2 style="font-family: var(--font-sans); color: var(--text-primary); margin-bottom: 15px;">Session Authentication Required</h2>
                     <p style="color: var(--text-secondary); line-height: 1.6; margin-bottom: 20px;">Your instructor session could not be verified.</p>
                     <p style="color: var(--text-secondary); line-height: 1.6;">Please launch ProctorGuard via the Canvas Course Navigation menu or click the dashboard links from within Canvas to establish a secure session.</p>
                 </div>
@@ -438,7 +438,7 @@ function renderExams() {
         
         if (linkedExam) {
             // Enabled state (Dashboard, Settings, Disable buttons)
-            titleHtml = `<a href="javascript:void(0)" onclick="loadExamDashboard(${linkedExam.id})" style="color: var(--accent); font-weight: 700; text-decoration:none; transition:var(--transition); font-size: 14px; font-family:'Outfit',sans-serif;">${q.title}</a>`;
+            titleHtml = `<a href="javascript:void(0)" onclick="loadExamDashboard(${linkedExam.id})" style="color: var(--accent); font-weight: 700; text-decoration:none; transition:var(--transition); font-size: 14px; font-family: var(--font-sans);">${q.title}</a>`;
             actionsHtml = `
                 <div style="display:flex; gap:6px; justify-content:flex-end;">
                     <button class="btn btn-slate btn-sm" onclick="loadExamDashboard(${linkedExam.id})" style="font-weight:700;">Dashboard</button>
@@ -448,7 +448,7 @@ function renderExams() {
             `;
         } else {
             // Disabled state (Enable button)
-            titleHtml = `<span style="color: var(--text-primary); font-weight: 500; font-size: 14px; font-family:'Outfit',sans-serif;">${q.title}</span>`;
+            titleHtml = `<span style="color: var(--text-primary); font-weight: 500; font-size: 14px; font-family: var(--font-sans);">${q.title}</span>`;
             actionsHtml = `
                 <div style="display:flex; justify-content:flex-end; align-items:center; gap: 10px;">
                     <span style="color: #ea580c; font-size:16px;">➔</span>
@@ -473,14 +473,14 @@ function renderExams() {
     content.innerHTML = `
         <div class="page-header" style="margin-bottom: 30px;">
             <div>
-                <h1 class="page-title" style="font-family:'Outfit', sans-serif; font-size:24px; font-weight:700;">Canvas Quizzes</h1>
-                <p class="page-subtitle" style="font-family:'Plus Jakarta Sans', sans-serif;">Enable, configure, and monitor secure proctoring options for all quizzes in this course.</p>
+                <h1 class="page-title" style="font-family: var(--font-sans); font-size:24px; font-weight:700;">Canvas Quizzes</h1>
+                <p class="page-subtitle" style="font-family: var(--font-sans);">Enable, configure, and monitor secure proctoring options for all quizzes in this course.</p>
             </div>
         </div>
 
         <div class="card" style="padding: 24px; background:var(--bg-secondary); border:1px solid var(--border); border-radius:var(--radius-lg); box-shadow:var(--shadow);">
             <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom: 20px; border-bottom: 1px solid var(--border); padding-bottom: 15px;">
-                <div style="font-size:14px; font-weight:700; color:var(--text-secondary); font-family:'Outfit',sans-serif;">
+                <div style="font-size:14px; font-weight:700; color:var(--text-secondary); font-family: var(--font-sans);">
                     Course Quizzes (${quizzes.length})
                 </div>
             </div>
@@ -490,10 +490,10 @@ function renderExams() {
                 <table style="width: 100%; border-collapse: collapse;">
                     <thead>
                         <tr style="border-bottom: 2px solid var(--border); background: rgba(0, 0, 0, 0.01);">
-                            <th style="font-family:'Outfit',sans-serif; font-weight:700; color:var(--text-primary); text-transform:none; letter-spacing:0; font-size:14px; padding: 16px; text-align:left;">Quiz Name</th>
-                            <th style="font-family:'Outfit',sans-serif; font-weight:700; color:var(--text-primary); text-transform:none; letter-spacing:0; font-size:14px; padding: 16px; text-align:left;">Type</th>
-                            <th style="font-family:'Outfit',sans-serif; font-weight:700; color:var(--text-primary); text-transform:none; letter-spacing:0; font-size:14px; padding: 16px; text-align:left;">Dates</th>
-                            <th style="font-family:'Outfit',sans-serif; font-weight:700; color:var(--text-primary); text-transform:none; letter-spacing:0; font-size:14px; padding: 16px; text-align:right;">Actions</th>
+                            <th style="font-family: var(--font-sans); font-weight:700; color:var(--text-primary); text-transform:none; letter-spacing:0; font-size:14px; padding: 16px; text-align:left;">Quiz Name</th>
+                            <th style="font-family: var(--font-sans); font-weight:700; color:var(--text-primary); text-transform:none; letter-spacing:0; font-size:14px; padding: 16px; text-align:left;">Type</th>
+                            <th style="font-family: var(--font-sans); font-weight:700; color:var(--text-primary); text-transform:none; letter-spacing:0; font-size:14px; padding: 16px; text-align:left;">Dates</th>
+                            <th style="font-family: var(--font-sans); font-weight:700; color:var(--text-primary); text-transform:none; letter-spacing:0; font-size:14px; padding: 16px; text-align:right;">Actions</th>
                         </tr>
                     </thead>
                     <tbody>
@@ -1782,7 +1782,7 @@ function showCreateExamModal(examId = null) {
 
     const html = `
         <div class="modal-header">
-            <h2 class="modal-title" style="font-family:'Outfit', sans-serif; font-size:20px; font-weight:700;">${exam ? 'Edit Exam Settings' : 'Enable Proctoring'}</h2>
+            <h2 class="modal-title" style="font-family: var(--font-sans); font-size:20px; font-weight:700;">${exam ? 'Edit Exam Settings' : 'Enable Proctoring'}</h2>
             <button class="modal-close" onclick="closeModal()">×</button>
         </div>
         <div style="max-height: 70vh; overflow-y: auto; padding-right: 8px;">
@@ -1841,7 +1841,7 @@ function showCreateExamModal(examId = null) {
                 </div>
                 <div class="proctorio-section-content">
                     <!-- Recording Options -->
-                    <h4 style="margin: 0 0 6px 0; font-family:'Outfit',sans-serif; font-size:13px; font-weight:700; color:var(--text-primary);">What to record during the exam</h4>
+                    <h4 style="margin: 0 0 6px 0; font-family: var(--font-sans); font-size:13px; font-weight:700; color:var(--text-primary);">What to record during the exam</h4>
                     <p style="font-size:11px; color:var(--text-muted); margin-bottom: 12px;">Streams captured while the student is in the quiz.</p>
                     <div class="proctorio-grid">
                         <div class="proctorio-card ${!exam || exam.require_camera ? 'selected' : ''}" id="card-camera" onclick="toggleProctorioOption('chk-camera', 'card-camera')" title="Record student webcam">
@@ -1877,7 +1877,7 @@ function showCreateExamModal(examId = null) {
                     </div>
 
                     <!-- Lock Down Options -->
-                    <h4 style="margin: 20px 0 6px 0; font-family:'Outfit',sans-serif; font-size:13px; font-weight:700; color:var(--text-primary);">Lock Down Options</h4>
+                    <h4 style="margin: 20px 0 6px 0; font-family: var(--font-sans); font-size:13px; font-weight:700; color:var(--text-primary);">Lock Down Options</h4>
                     <p style="font-size:11px; color:var(--text-muted); margin-bottom: 12px;">Enforce strict browser behavior guidelines during the assessment.</p>
                     <div class="proctorio-grid" style="grid-template-columns: repeat(5, 1fr);">
                         <div class="proctorio-card ${!exam || exam.require_fullscreen ? 'selected' : ''}" id="card-fs" onclick="toggleProctorioOption('chk-fs', 'card-fs')" title="Prevent window resizing">
@@ -1938,7 +1938,7 @@ function showCreateExamModal(examId = null) {
                     </div>
 
                     <!-- Verification Options -->
-                    <h4 style="margin: 20px 0 6px 0; font-family:'Outfit',sans-serif; font-size:13px; font-weight:700; color:var(--text-primary);">Pre-exam checks (before recording starts)</h4>
+                    <h4 style="margin: 20px 0 6px 0; font-family: var(--font-sans); font-size:13px; font-weight:700; color:var(--text-primary);">Pre-exam checks (before recording starts)</h4>
                     <p style="font-size:11px; color:var(--text-muted); margin-bottom: 12px;">Hardware and identity steps students complete in the setup wizard.</p>
                     <div class="proctorio-grid">
                         <div class="proctorio-card ${verifyVideo ? 'selected' : ''}" id="card-verify-video" onclick="toggleProctorioOption('chk-verify-video', 'card-verify-video')" title="Check camera feed before start">
@@ -1969,7 +1969,7 @@ function showCreateExamModal(examId = null) {
                     </div>
 
                     <!-- In-Quiz Tools -->
-                    <h4 style="margin: 20px 0 6px 0; font-family:'Outfit',sans-serif; font-size:13px; font-weight:700; color:var(--text-primary);">In-Quiz Tools</h4>
+                    <h4 style="margin: 20px 0 6px 0; font-family: var(--font-sans); font-size:13px; font-weight:700; color:var(--text-primary);">In-Quiz Tools</h4>
                     <p style="font-size:11px; color:var(--text-muted); margin-bottom: 12px;">Allowed digital tools for students within the secure frame.</p>
                     <div class="proctorio-grid" style="grid-template-columns: repeat(6, 1fr);">
                         <div class="proctorio-card ${allowCalculator ? 'selected' : ''}" id="card-allow-calculator" onclick="toggleProctorioOption('chk-allow-calculator', 'card-allow-calculator')" title="Provide scientific calculator tool">
@@ -2022,7 +2022,7 @@ function showCreateExamModal(examId = null) {
                         </div>
                     </div>
 
-                    <h4 style="margin: 0 0 12px 0; font-family:'Outfit',sans-serif; font-size:13px; font-weight:700; color:var(--text-primary);">Flag sensitivity (1 = light, 5 = heavy)</h4>
+                    <h4 style="margin: 0 0 12px 0; font-family: var(--font-sans); font-size:13px; font-weight:700; color:var(--text-primary);">Flag sensitivity (1 = light, 5 = heavy)</h4>
                     
                     <!-- Sliders / Segments list -->
                     <div id="metrics-sliders-container">
@@ -2160,7 +2160,7 @@ function showCreateExamModal(examId = null) {
                     <div style="margin-top: 10px; background: #f8fafc; border: 1px solid #cbd5e1; border-radius: 8px; padding: 16px; margin-bottom: 16px;">
                         <div style="display: flex; align-items: center; justify-content: space-between;">
                             <div>
-                                <h4 style="font-family:'Outfit',sans-serif; font-size:14px; font-weight:700; color:var(--text-primary); margin:0; display:flex; align-items:center; gap:6px;"><img src="icons/block-navigation.svg" style="width: 16px; height: 16px;" /> Require Safe Exam Browser (SEB)</h4>
+                                <h4 style="font-family: var(--font-sans); font-size:14px; font-weight:700; color:var(--text-primary); margin:0; display:flex; align-items:center; gap:6px;"><img src="icons/block-navigation.svg" style="width: 16px; height: 16px;" /> Require Safe Exam Browser (SEB)</h4>
                                 <p style="font-size:11px; color:var(--text-muted); margin: 2px 0 0 0;">Forces students to launch and complete the quiz inside SEB</p>
                             </div>
                             <div>
@@ -2180,7 +2180,7 @@ function showCreateExamModal(examId = null) {
                     <div style="margin-top: 10px; background: #f8fafc; border: 1px solid #cbd5e1; border-radius: 8px; padding: 16px; margin-bottom: 16px;">
                         <div style="display: flex; align-items: center; justify-content: space-between;">
                             <div>
-                                <h4 style="font-family:'Outfit',sans-serif; font-size:14px; font-weight:700; color:var(--text-primary); margin:0; display:flex; align-items:center; gap:6px;"><img src="icons/disable-extensions.svg" style="width: 16px; height: 16px;" /> Require Secure Chrome Extension</h4>
+                                <h4 style="font-family: var(--font-sans); font-size:14px; font-weight:700; color:var(--text-primary); margin:0; display:flex; align-items:center; gap:6px;"><img src="icons/disable-extensions.svg" style="width: 16px; height: 16px;" /> Require Secure Chrome Extension</h4>
                                 <p style="font-size:11px; color:var(--text-muted); margin: 2px 0 0 0;">Enables advanced browser lockdown and web traffic analysis</p>
                             </div>
                             <div>
@@ -2210,7 +2210,7 @@ function showCreateExamModal(examId = null) {
                     <div style="margin-top: 10px; background: #f8fafc; border: 1px solid #cbd5e1; border-radius: 8px; padding: 16px; margin-bottom: 16px;">
                         <div style="display: flex; align-items: center; justify-content: space-between;">
                             <div>
-                                <h4 style="font-family:'Outfit',sans-serif; font-size:14px; font-weight:700; color:var(--text-primary); margin:0; display:flex; align-items:center; gap:6px;"><img src="icons/record-screen.svg" style="width: 16px; height: 16px;" /> Require Secure Desktop Companion App</h4>
+                                <h4 style="font-family: var(--font-sans); font-size:14px; font-weight:700; color:var(--text-primary); margin:0; display:flex; align-items:center; gap:6px;"><img src="icons/record-screen.svg" style="width: 16px; height: 16px;" /> Require Secure Desktop Companion App</h4>
                                 <p style="font-size:11px; color:var(--text-muted); margin: 2px 0 0 0;">Lock down background applications, secondary screens, and check VM setups</p>
                             </div>
                             <div>
@@ -2242,7 +2242,7 @@ function showCreateExamModal(examId = null) {
 
                     <!-- Custom Instructions -->
                     <div style="margin-top: 10px; background: #f8fafc; border: 1px solid #cbd5e1; border-radius: 8px; padding: 16px; margin-bottom: 16px;">
-                        <h4 style="font-family:'Outfit',sans-serif; font-size:14px; font-weight:700; color:var(--text-primary); margin:0;">📝 Custom Instructions (Optional)</h4>
+                        <h4 style="font-family: var(--font-sans); font-size:14px; font-weight:700; color:var(--text-primary); margin:0;">📝 Custom Instructions (Optional)</h4>
                         <p style="font-size:11px; color:var(--text-muted); margin: 2px 0 10px 0;">Add custom instructions for students to read before starting the quiz.</p>
                         <textarea id="additional-instructions" class="form-input" style="height: 80px; width: 100%; border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 10px; background: var(--bg-primary); color: var(--text-primary); resize: vertical;" placeholder="e.g. You are allowed to use one blank sheet of scratch paper.">${exam && exam.additional_instructions ? exam.additional_instructions : ''}</textarea>
                     </div>

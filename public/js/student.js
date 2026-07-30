@@ -2744,7 +2744,7 @@ function showDualScreenBlocker(show, source = 'system') {
             align-items: center;
             justify-content: center;
             color: white;
-            font-family: 'Plus Jakarta Sans', sans-serif;
+            font-family: var(--font-sans);
             text-align: center;
             padding: 20px;
             box-sizing: border-box;
@@ -2752,7 +2752,7 @@ function showDualScreenBlocker(show, source = 'system') {
         dualScreenOverlay.innerHTML = `
             <div style="background: rgba(30, 41, 59, 0.5); padding: 40px; border-radius: 16px; border: 1px solid rgba(255,255,255,0.1); max-width: 500px; box-shadow: 0 20px 40px rgba(0,0,0,0.5);">
                 <div style="margin-bottom: 20px; display: flex; justify-content: center;"><img src="icons/only-one-screen.svg" style="width:60px; height:60px;" /></div>
-                <h2 style="font-size: 24px; font-weight: 700; margin: 0 0 15px 0; font-family:'Outfit',sans-serif; color:#f87171;">Multiple Screens Detected</h2>
+                <h2 style="font-size: 24px; font-weight: 700; margin: 0 0 15px 0; font-family: var(--font-sans); color:#f87171;">Multiple Screens Detected</h2>
                 <p style="font-size: 14px; line-height: 1.6; color: #374151; margin-bottom: 25px;">
                     This exam requires using a single display. Please disconnect, unplug, or disable all secondary screens, monitors, or display mirroring to resume the exam.
                 </p>
@@ -2914,7 +2914,7 @@ async function bootStudent() {
     }
     
     document.getElementById('active-exam-container').innerHTML = `
-        <div style="margin: auto; text-align: center; padding: 40px; background: white; border-radius: 8px; max-width: 600px; box-shadow: 0 4px 20px rgba(0,0,0,0.15); font-family: sans-serif;">
+        <div style="margin: auto; text-align: center; padding: 40px; background: white; border-radius: 8px; max-width: 600px; box-shadow: 0 4px 20px rgba(0,0,0,0.15); font-family: var(--font-sans);">
             <h1 style="color: var(--danger); margin-bottom: 20px; font-size: 28px;">⚠️ Exam Session Terminated</h1>
             <p style="color: var(--text-secondary); font-size: 16px; line-height: 1.6; margin-bottom: 20px;">
                 Your session has been terminated because you exceeded the limit of allowed window/tab departures (${examConfig.max_violations}) permitted by your instructor.
@@ -3033,7 +3033,7 @@ async function endExam() {
     // Display the successfully submitted message immediately
     const isSeb = isSEB();
     document.getElementById('active-exam-container').innerHTML = `
-        <div style="margin: auto; text-align: center; padding: 40px; background: white; border-radius: 8px; max-width: 600px; box-shadow: 0 4px 20px rgba(0,0,0,0.15); font-family: sans-serif;">
+        <div style="margin: auto; text-align: center; padding: 40px; background: white; border-radius: 8px; max-width: 600px; box-shadow: 0 4px 20px rgba(0,0,0,0.15); font-family: var(--font-sans);">
             <div style="width: 80px; height: 80px; border-radius: 50%; background: #ecfdf5; display: flex; align-items: center; justify-content: center; margin: 0 auto 20px auto; font-size: 40px; color: #059669;">✓</div>
             <h2 style="color: #059669; font-weight: 700; margin: 0 0 10px 0;">${isSeb ? 'Quiz Submitted Successfully' : 'Exam Successfully Submitted'}</h2>
             <p id="proctor-upload-status" style="color: var(--text-secondary); font-size: 16px; line-height: 1.5; margin: 0 0 10px 0;">
@@ -3135,7 +3135,7 @@ async function autoEndExamSession() {
     
     const isSeb = isSEB();
     document.getElementById('active-exam-container').innerHTML = `
-        <div style="margin: auto; text-align: center; padding: 40px; background: white; border-radius: 8px; max-width: 600px; box-shadow: 0 4px 20px rgba(0,0,0,0.15); font-family: sans-serif;">
+        <div style="margin: auto; text-align: center; padding: 40px; background: white; border-radius: 8px; max-width: 600px; box-shadow: 0 4px 20px rgba(0,0,0,0.15); font-family: var(--font-sans);">
             <div style="width: 80px; height: 80px; border-radius: 50%; background: #ecfdf5; display: flex; align-items: center; justify-content: center; margin: 0 auto 20px auto; font-size: 40px; color: #059669;">✓</div>
             <h2 style="color: #059669; font-weight: 700; margin: 0 0 10px 0;">Quiz Submitted Successfully</h2>
             <p id="proctor-upload-status" style="color: var(--text-secondary); font-size: 16px; line-height: 1.5; margin: 0 0 20px 0;">
