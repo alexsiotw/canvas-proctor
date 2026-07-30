@@ -137,6 +137,27 @@ async function syncExtensionAuthToken() {
 syncExtensionAuthToken();
 setInterval(syncExtensionAuthToken, 10 * 60 * 1000);
 
+// Put the real signed-in name in the top bar. index.html ships the placeholder
+// text "Instructor", which every teacher saw regardless of who they were —
+// software that produces evidence for integrity cases should at minimum be able
+// to say whose session generated it.
+async function loadIdentity() {
+    try {
+        const res = await fetch('/api/me');
+        if (!res.ok) return;
+        const me = await res.json();
+        if (me.user_name) {
+            const el = document.getElementById('user-name');
+            if (el) el.textContent = me.user_name;
+        }
+        return me;
+    } catch (e) {
+        // Non-fatal: the placeholder stays, the dashboard still works.
+        console.warn('[ProctorGuard] Could not load identity:', e.message);
+        return null;
+    }
+}
+
 async function apiFetch(url, options = {}) {
     const res = await fetch(url, options);
     if (res.status === 403) {
@@ -232,11 +253,30 @@ function initLtiFrameResize() {
     setTimeout(sendResize, 1000);
 }
 
-document.addEventListener('DOMContentLoaded', () => {
+document.addEventListener('DOMContentLoaded', async () => {
     initLtiFrameResize();
+
+    const overlay = document.getElementById('passcode-overlay');
+    const app = document.getElementById('app');
+
+    // Ask who we are before deciding what to show. Doing this first means we
+    // either present the passcode prompt or the dashboard — never the dashboard
+    // briefly followed by the prompt slamming over it, which is what happened
+    // when this handler hid the overlay unconditionally and something async
+    // raised it a moment later.
+    const me = await loadIdentity();
+
+    if (me && me.passcode_required) {
+        overlay.style.display = 'flex';
+        app.style.display = 'none';
+        const input = document.getElementById('passcode-input');
+        if (input) input.focus();
+        return; // loadExams() runs after a successful passcode instead.
+    }
+
+    overlay.style.display = 'none';
+    app.style.display = '';
     checkDatabaseCapacity();
-    document.getElementById('passcode-overlay').style.display = 'none';
-    document.getElementById('app').style.display = '';
     loadExams();
 });
 
@@ -256,6 +296,7 @@ async function submitPasscode() {
             sessionStorage.setItem('dashboard_passcode_verified', 'true');
             document.getElementById('passcode-overlay').style.display = 'none';
             document.getElementById('app').style.display = '';
+            checkDatabaseCapacity();
             loadExams();
         } else {
             errorEl.innerText = data.error || 'Incorrect passcode';

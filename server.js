@@ -72,11 +72,19 @@ const CANVAS_LAUNCH_SECRET = process.env.CANVAS_LAUNCH_SECRET || 'canvas-proctor
 const INSECURE_DEFAULTS = {
     JWT_SIGNING_KEY: 'dev-only-insecure-signing-key-DO-NOT-USE-IN-PRODUCTION',
     AUTO_LOGIN_SIGNING_SECRET: 'dev-only-insecure-auto-login-secret',
-    CANVAS_LAUNCH_SECRET: 'canvas-proctor-shared-secret-key-998877'
+    CANVAS_LAUNCH_SECRET: 'canvas-proctor-shared-secret-key-998877',
+    // Signs the session cookie (see app.use(session(...)) below). With the
+    // published fallback, a session cookie can be forged outright.
+    SESSION_SECRET: 'proctor-secret-key'
 };
 
 if (process.env.NODE_ENV === 'production') {
-    const active = { JWT_SIGNING_KEY, AUTO_LOGIN_SIGNING_SECRET, CANVAS_LAUNCH_SECRET };
+    const active = {
+        JWT_SIGNING_KEY,
+        AUTO_LOGIN_SIGNING_SECRET,
+        CANVAS_LAUNCH_SECRET,
+        SESSION_SECRET: process.env.SESSION_SECRET || 'proctor-secret-key'
+    };
     const unsafe = Object.keys(INSECURE_DEFAULTS)
         .filter(name => active[name] === INSECURE_DEFAULTS[name]);
 
@@ -182,7 +190,25 @@ app.set('trust proxy', 1);
 app.use(cors());
 app.use(bodyParser.json({ limit: '50mb' }));
 app.use(bodyParser.urlencoded({ extended: true, limit: '50mb' }));
+// Sessions live in Postgres, not in process memory.
+//
+// express-session's default MemoryStore keeps every session in the Node heap,
+// which for this application means a restart signs everyone out. On a proctoring
+// server that is not a minor annoyance: `pm2 restart`, a deploy, or a crash-loop
+// recovery in the middle of an exam window invalidates the session that
+// requireAuth checks, and students lose their in-progress attempt. It also
+// cannot survive running more than one process.
+//
+// createTableIfMissing lets the store provision its own table on first boot, so
+// this needs no migration step.
+const PgSession = require('connect-pg-simple')(session);
+
 app.use(session({
+    store: new PgSession({
+        pool,
+        tableName: 'user_sessions',
+        createTableIfMissing: true
+    }),
     secret: process.env.SESSION_SECRET || 'proctor-secret-key',
     resave: false,
     saveUninitialized: false,
@@ -193,8 +219,21 @@ app.use(session({
     }
 }));
 
-// Route to check server logs on Render
-app.get('/api/server-logs', (req, res) => {
+// Server logs, for remote diagnostics.
+//
+// This was previously unauthenticated and publicly reachable. console.log and
+// console.error are intercepted into logFile above, and the application logs
+// student names, Canvas user IDs, session identifiers and per-launch
+// Referer/User-Agent — so this endpoint served a running transcript of exam
+// activity to anyone who requested the URL.
+//
+// requireInstructor is the minimum bar. It is also gated behind
+// ENABLE_DEV_ENDPOINTS because a diagnostic firehose should be switched on
+// deliberately while debugging, not left listening during exams.
+app.get('/api/server-logs', requireInstructor, (req, res) => {
+    if (process.env.ENABLE_DEV_ENDPOINTS !== 'true') {
+        return res.status(404).send('Not found');
+    }
     if (fs.existsSync(logFile)) {
         res.setHeader('Content-Type', 'text/plain');
         fs.createReadStream(logFile).pipe(res);
@@ -646,6 +685,24 @@ app.post('/api/verify-passcode', (req, res) => {
     updated.count += 1;
     passcodeAttempts.set(key, updated);
     res.status(400).json({ error: 'Incorrect passcode' });
+});
+
+// Who is signed in, for the dashboard chrome. The LTI launch already carries
+// lis_person_name_full (see /lti/launch), but nothing ever handed it to the
+// client, so the top bar rendered the literal placeholder "Instructor" for
+// everyone, permanently.
+//
+// Deliberately requireAuth rather than requireInstructor: this only returns the
+// viewer's own identity, and it must still resolve while the passcode overlay is
+// up so the prompt can address the teacher by name.
+app.get('/api/me', requireAuth, (req, res) => {
+    const lti = req.session.lti || {};
+    res.json({
+        user_name: lti.userName || null,
+        role: lti.role || null,
+        course_id: lti.canvasCourseId || null,
+        passcode_required: PASSCODE_ENABLED && !req.session.passcodeVerified
+    });
 });
 
 // Helper to retrieve Canvas API credentials

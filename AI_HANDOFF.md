@@ -6,7 +6,8 @@
 ## 2. Tech Stack & Dependencies
 * **Core:** Node.js (>=18.0.0), Express, Express-Session, Body-Parser, Cors, Multer.
 * **Database:** PostgreSQL (via `pg`), hosted on Supabase (configured via connection pooler).
-* **Hosting/Deployment:** Self-hosted on a Contabo VPS, deployed under `/opt/canvas-proctor/` with PM2/systemd.
+* **Hosting/Deployment:** Self-hosted on a Contabo VPS, deployed under `/opt/canvas-proctor/` with PM2/systemd. (Render is no longer used; `render.yaml` was removed.)
+* **Sessions:** Stored in Postgres via `connect-pg-simple` (table `user_sessions`, auto-created on boot), not in process memory — a restart must not sign students out mid-exam.
 * **LTI Integration:** `ims-lti` (LTI 1.0/1.1 implementation for Canvas).
 * **Real-time Comm:** `socket.io` for live proctoring events, tracking mobile upload status, and active assemblies.
 * **Media Processing:** `fluent-ffmpeg`, `ffmpeg-static`, `webm-duration-fix`, `archiver` for video chunk processing and session archiving.
@@ -25,7 +26,7 @@ The application initializes several key tables on startup:
 * **LTI Launch:** Received at `/lti/launch`, handled via `ims-lti`, storing user/course context in `lti_sessions`.
 * **Proctoring Validation:** Enforces microphone, camera, and desktop capture depending on the `exams` table config. Also integrates mobile/room scan logic.
 * **Video Archiving:** Intercepts video chunks via Multer memory storage, fixes WebM duration, optionally processes with FFmpeg, and uploads to Google Drive.
-* **Logging:** Intercepts stdout/stderr locally to `/tmp/server.log` (or within `/opt/canvas-proctor/`) for remote debugging/diagnostics (`/api/server-logs`).
+* **Logging:** Intercepts stdout/stderr locally to `/tmp/server.log` (or within `/opt/canvas-proctor/`) for remote debugging/diagnostics (`/api/server-logs`). That endpoint requires an instructor session **and** `ENABLE_DEV_ENDPOINTS=true`; it was previously unauthenticated and served exam activity, including student names and session identifiers, to anyone who requested it.
 
 ## 5. Security Context
 * The `.gitignore` has been thoroughly updated to ignore all environment files (`.env`, `.env.*`), private keys (`*.pem`, `*.key`), and IDE configurations to prevent sensitive credential leaks to AI prompts or version control.
