@@ -69,6 +69,8 @@ const CANVAS_LAUNCH_SECRET = process.env.CANVAS_LAUNCH_SECRET || 'canvas-proctor
 // warning — a proctoring server that cannot prove who an instructor is should
 // not accept exams.
 // ================================================================
+// Secrets that are server-side only and can be rotated freely. If one of these
+// still equals the value published in this repo, refuse to run.
 const INSECURE_DEFAULTS = {
     JWT_SIGNING_KEY: 'dev-only-insecure-signing-key-DO-NOT-USE-IN-PRODUCTION',
     AUTO_LOGIN_SIGNING_SECRET: 'dev-only-insecure-auto-login-secret',
@@ -76,6 +78,21 @@ const INSECURE_DEFAULTS = {
     // published fallback, a session cookie can be forged outright.
     SESSION_SECRET: 'proctor-secret-key'
 };
+
+// CANVAS_LAUNCH_SECRET is handled separately and deliberately more gently.
+//
+// It cannot be rotated unilaterally: the same value is embedded in every
+// proctored quiz's launch configuration in Canvas and in the patched
+// quizzes_controller.rb, so changing it here alone breaks every quiz launch.
+// Hard-failing on the published value would therefore force an operator to
+// choose between a server that will not start and a coordinated Canvas-side
+// migration in the middle of a deploy. That is the wrong time to make them
+// choose, and the predictable result is that the check gets deleted.
+//
+// So: require it to be *explicitly set* — an unset variable silently falling
+// back is the failure this whole block exists to prevent — but if it is set to
+// the published value, warn loudly and keep running.
+const CANVAS_LAUNCH_SECRET_PUBLISHED = 'canvas-proctor-shared-secret-key-998877';
 
 if (process.env.NODE_ENV === 'production') {
     const active = {
@@ -97,11 +114,37 @@ if (process.env.NODE_ENV === 'production') {
         console.error('');
         console.error(' Generate a value for each and put it in .env:');
         console.error('   openssl rand -hex 32');
-        console.error('');
-        console.error(' CANVAS_LAUNCH_SECRET must also match the value configured');
-        console.error(' on the Canvas side, so change both together.');
         console.error('=============================================================\n');
         process.exit(1);
+    }
+
+    if (!process.env.CANVAS_LAUNCH_SECRET) {
+        console.error('\n=============================================================');
+        console.error(' ProctorGuard refused to start.');
+        console.error('');
+        console.error(' CANVAS_LAUNCH_SECRET is not set, so the server would fall');
+        console.error(' back to a value published in this repository without');
+        console.error(' anything indicating it had done so.');
+        console.error('');
+        console.error(' Set it in .env to whatever your Canvas quizzes and patched');
+        console.error(' quizzes_controller.rb are already configured with. If that');
+        console.error(' is still the published value, set it to that value — it is');
+        console.error(' recorded explicitly rather than assumed, and you will get a');
+        console.error(' warning until it is rotated on both sides.');
+        console.error('=============================================================\n');
+        process.exit(1);
+    }
+
+    if (process.env.CANVAS_LAUNCH_SECRET === CANVAS_LAUNCH_SECRET_PUBLISHED) {
+        console.warn('\n-------------------------------------------------------------');
+        console.warn(' WARNING: CANVAS_LAUNCH_SECRET is the value published in this');
+        console.warn(' repository. Anyone who can read the repo can forge a Canvas');
+        console.warn(' launch. Rotating it requires changing, together:');
+        console.warn('   1. CANVAS_LAUNCH_SECRET in .env');
+        console.warn('   2. the launch URL on every proctored quiz in Canvas');
+        console.warn('   3. the patched quizzes_controller.rb');
+        console.warn(' Schedule that outside an exam window.');
+        console.warn('-------------------------------------------------------------\n');
     }
 }
 
