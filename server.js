@@ -227,6 +227,15 @@ const PORT = process.env.PORT || 3000;
 const activeAssemblies = new Set();
 const mobileUploadStatus = new Map(); // exam_session_id -> { total: number, finished: boolean }
 
+// A `beforeunload` beacon is not proof the attempt is over. The student may be
+// reloading, losing wifi for a moment, or being bounced by Canvas — all of which
+// come back through /api/session/start and resume the same exam_session. If we
+// assemble on that beacon we also delete the chunk directory, which destroys the
+// chunks the resumed recording is still appending to. So an unexpected exit only
+// *schedules* finalization, and resuming cancels it.
+const pendingFinalizations = new Map(); // exam_session_id -> Timeout
+const UNEXPECTED_EXIT_GRACE_MS = 3 * 60 * 1000;
+
 app.set('trust proxy', 1);
 
 app.use(cors());
@@ -1893,22 +1902,22 @@ app.post('/api/session/start', requireAuth, async (req, res) => {
         if (latestSession && (latestSession.status === 'started' || (latestSession.status === 'unexpected' && !preventReentry))) {
             // Resume the existing session
             session = latestSession;
+            // The student is back, so the deferred finalization queued by their
+            // beforeunload beacon must not fire — it would assemble a partial video and
+            // clear the chunks this resumed recording is about to extend.
+            cancelPendingFinalization(session.id, 'student resumed the attempt');
             if (session.status === 'unexpected') {
                 await pool.query("UPDATE exam_sessions SET status = 'started' WHERE id = $1", [session.id]);
                 session.status = 'started';
             }
-            
+
             // Determine next chunk index
             const chunkDir = path.join(os.tmpdir(), `chunks-${session.id}`);
             if (fs.existsSync(chunkDir)) {
-                const files = fs.readdirSync(chunkDir);
                 let maxIdx = -1;
-                for (const file of files) {
-                    const match = file.match(/^chunk-(\d+)\.dat$/);
-                    if (match) {
-                        const idx = parseInt(match[1], 10);
-                        if (idx > maxIdx) maxIdx = idx;
-                    }
+                for (const file of fs.readdirSync(chunkDir)) {
+                    const idx = parseChunkIndex(file);
+                    if (idx !== null && idx > maxIdx) maxIdx = idx;
                 }
                 if (maxIdx >= 0) {
                     next_chunk_index = maxIdx;
@@ -2062,6 +2071,82 @@ app.post('/api/session/log-traffic', requireAuth, async (req, res) => {
     }
 });
 
+// Reassembling a MediaRecorder recording: chunk ordering, segment detection, and
+// ffmpeg normalisation live in services/videoAssembly.js. See the comment at the
+// top of that file for why the chunks cannot simply be concatenated.
+const {
+    parseChunkIndex,
+    extractInitSegment,
+    groupChunksIntoSegments,
+    writeSegmentFile,
+    readOrderedChunks,
+    transcodeSegmentToMp4,
+    concatMp4Segments
+} = require('./services/videoAssembly');
+
+async function logSessionEvent(exam_session_id, event_type, event_message) {
+    try {
+        await pool.query(
+            'INSERT INTO proctor_logs (exam_session_id, event_type, event_message) VALUES ($1, $2, $3)',
+            [exam_session_id, event_type, event_message]
+        );
+    } catch (err) {
+        console.error(`[Assemble] Failed to write ${event_type} log for session ${exam_session_id}:`, err.message);
+    }
+}
+
+function cancelPendingFinalization(exam_session_id, reason) {
+    const timer = pendingFinalizations.get(exam_session_id);
+    if (timer) {
+        clearTimeout(timer);
+        pendingFinalizations.delete(exam_session_id);
+        console.log(`[Finalize] Cancelled deferred finalization for session ${exam_session_id} (${reason}).`);
+    }
+}
+
+// Called when a student's page goes away without a clean submit. Waits out the
+// grace period, then assembles only if the attempt really is over.
+function scheduleUnexpectedFinalization(exam_session_id, total_chunks) {
+    cancelPendingFinalization(exam_session_id, 'rescheduling');
+
+    const timer = setTimeout(async () => {
+        pendingFinalizations.delete(exam_session_id);
+        try {
+            const statusResult = await pool.query('SELECT status FROM exam_sessions WHERE id = $1', [exam_session_id]);
+            const status = statusResult.rows.length > 0 ? statusResult.rows[0].status : null;
+            if (status !== 'unexpected') {
+                console.log(`[Finalize] Session ${exam_session_id} is now '${status}' — the clean end path owns assembly. Skipping.`);
+                return;
+            }
+
+            // Chunks still arriving means the recording is alive; give it longer.
+            const chunkDir = path.join(os.tmpdir(), `chunks-${exam_session_id}`);
+            if (fs.existsSync(chunkDir)) {
+                const newest = fs.readdirSync(chunkDir)
+                    .map(f => {
+                        try { return fs.statSync(path.join(chunkDir, f)).mtimeMs; } catch (e) { return 0; }
+                    })
+                    .reduce((max, ms) => Math.max(max, ms), 0);
+                if (newest > 0 && Date.now() - newest < 60000) {
+                    console.log(`[Finalize] Session ${exam_session_id} is still receiving chunks. Deferring again.`);
+                    scheduleUnexpectedFinalization(exam_session_id, total_chunks);
+                    return;
+                }
+            }
+
+            console.log(`[Finalize] Grace period elapsed for session ${exam_session_id}. Assembling abandoned attempt.`);
+            await logSessionEvent(exam_session_id, 'warning',
+                'Attempt ended without a clean submit. The recording was assembled from the chunks that reached the server.');
+            assembleAndUploadSessionVideo(exam_session_id, total_chunks);
+        } catch (err) {
+            console.error(`[Finalize] Deferred finalization failed for session ${exam_session_id}:`, err.message);
+        }
+    }, UNEXPECTED_EXIT_GRACE_MS);
+
+    pendingFinalizations.set(exam_session_id, timer);
+    console.log(`[Finalize] Deferred finalization for session ${exam_session_id} by ${UNEXPECTED_EXIT_GRACE_MS / 1000}s in case the student resumes.`);
+}
+
 // Helper to assemble and upload video chunks in the background
 async function assembleAndUploadSessionVideo(exam_session_id, total_chunks) {
     if (activeAssemblies.has(exam_session_id)) {
@@ -2072,18 +2157,32 @@ async function assembleAndUploadSessionVideo(exam_session_id, total_chunks) {
 
     try {
         const chunkDir = path.join(os.tmpdir(), `chunks-${exam_session_id}`);
-        
-        // Wait up to 30s for all expected chunks to be written to disk
+
+        // Wait for the expected chunks to land on disk.
+        //
+        // `total_chunks` is the client's final chunk *index*, and after a resume
+        // that index continues from where the previous run stopped — so it is not a
+        // count of files. The old comparison (`files.length >= expected`) therefore
+        // matched early on a resumed session and late on one that lost a chunk. Wait
+        // on the highest index instead, and keep waiting while the sequence still
+        // has holes, since a hole is what truncates the video.
         if (total_chunks !== undefined && total_chunks !== null) {
             const expected = parseInt(total_chunks, 10);
-            console.log(`[Assemble] Expecting ${expected} chunks for session ${exam_session_id}. Waiting for chunks...`);
+            console.log(`[Assemble] Expecting chunks up to #${expected} for session ${exam_session_id}. Waiting for chunks...`);
             const startWait = Date.now();
-            while (Date.now() - startWait < 30000) {
+            while (Date.now() - startWait < 60000) {
                 if (fs.existsSync(chunkDir)) {
-                    const files = fs.readdirSync(chunkDir);
-                    if (files.length >= expected) {
-                        console.log(`[Assemble] All ${expected} chunks are present on disk!`);
-                        break;
+                    const indices = fs.readdirSync(chunkDir)
+                        .map(parseChunkIndex)
+                        .filter(i => i !== null);
+                    if (indices.length > 0) {
+                        const highest = Math.max(...indices);
+                        const lowest = Math.min(...indices);
+                        const contiguous = indices.length === (highest - lowest + 1);
+                        if (highest >= expected && contiguous) {
+                            console.log(`[Assemble] All chunks up to #${expected} are present and contiguous.`);
+                            break;
+                        }
                     }
                 }
                 await new Promise(r => setTimeout(r, 500));
@@ -2092,21 +2191,26 @@ async function assembleAndUploadSessionVideo(exam_session_id, total_chunks) {
 
         if (!fs.existsSync(chunkDir)) {
             console.log(`No local chunks found for session ${exam_session_id}`);
+            await logSessionEvent(exam_session_id, 'error',
+                'No recording chunks were found on the server for this attempt. No video could be produced.');
             return;
         }
 
         console.log(`Assembling video for session ${exam_session_id}...`);
         
-        // Get all chunk files in order
-        const files = fs.readdirSync(chunkDir).sort();
-        if (files.length === 0) {
+        const orderedChunks = readOrderedChunks(chunkDir);
+
+        if (orderedChunks.length === 0) {
             console.log(`No chunk files in directory for session ${exam_session_id}`);
+            await logSessionEvent(exam_session_id, 'error',
+                'The recording directory for this attempt contained no usable chunks. No video could be produced.');
             return;
         }
+        const files = orderedChunks.map(entry => entry.file);
 
         // Get student/exam info for nice filename and mime type
         const sessionInfo = await pool.query(`
-            SELECT es.student_name, es.attempt_number, es.started_at, es.mime_type, e.title, e.require_mobile_camera 
+            SELECT es.student_name, es.attempt_number, es.started_at, es.end_time, es.mime_type, e.title, e.require_mobile_camera
             FROM exam_sessions es
             JOIN exams e ON es.exam_id = e.id
             WHERE es.id = $1
@@ -2120,7 +2224,8 @@ async function assembleAndUploadSessionVideo(exam_session_id, total_chunks) {
         let examTitleRaw = 'exam';
         let mimeTypeFromDb = 'video/webm';
         let sessionStartMs = 0;
-        
+        let sessionEndMs = 0;
+
         if (sessionInfo.rows.length > 0) {
             const s = sessionInfo.rows[0];
             studentNameRaw = s.student_name || 'student';
@@ -2136,96 +2241,184 @@ async function assembleAndUploadSessionVideo(exam_session_id, total_chunks) {
             if (s.started_at) {
                 sessionStartMs = new Date(s.started_at).getTime();
             }
+            sessionEndMs = s.end_time ? new Date(s.end_time).getTime() : Date.now();
             mimeTypeFromDb = s.mime_type || 'video/webm';
         }
 
         const isWebm = mimeTypeFromDb.includes('webm');
         const rawExt = isWebm ? 'webm' : 'mp4';
-        const rawWebmPath = path.join(os.tmpdir(), `session-${exam_session_id}-raw.${rawExt}`);
 
         console.log(`[Assemble] Found ${files.length} chunk files in ${chunkDir}`);
-        for (const file of files) {
-            const filePath = path.join(chunkDir, file);
-            const stats = fs.statSync(filePath);
-            console.log(`[Assemble] Chunk file ${file} size: ${stats.size} bytes`);
+        for (const entry of orderedChunks) {
+            const stats = fs.statSync(path.join(chunkDir, entry.file));
+            console.log(`[Assemble] Chunk file ${entry.file} size: ${stats.size} bytes`);
         }
 
-        const writeStream = fs.createWriteStream(rawWebmPath);
+        // Split the chunks into independently decodable runs before touching ffmpeg.
+        const segments = groupChunksIntoSegments(chunkDir, orderedChunks);
+        const lowestIndex = orderedChunks[0].index;
+        const highestIndex = orderedChunks[orderedChunks.length - 1].index;
+        const missingCount = (highestIndex - lowestIndex + 1) - orderedChunks.length;
 
-        for (const file of files) {
-            const filePath = path.join(chunkDir, file);
-            const data = fs.readFileSync(filePath);
-            writeStream.write(data);
+        console.log(`[Assemble] Session ${exam_session_id}: chunks #${lowestIndex}-#${highestIndex}, ` +
+            `${segments.length} recorder segment(s), ${missingCount} missing chunk(s).`);
+        segments.forEach((seg, i) => {
+            console.log(`[Assemble]   segment ${i + 1}: chunks #${seg.startIndex}-#${seg.endIndex} ` +
+                `(${seg.files.length} files, ownHeader=${seg.hasOwnHeader}, gapBefore=${seg.precededByGap})`);
+        });
+
+        if (missingCount > 0) {
+            await logSessionEvent(exam_session_id, 'warning',
+                `Recording gap: ${missingCount} of ${highestIndex - lowestIndex + 1} expected chunks never reached the server ` +
+                `(likely a network failure on the student's side). The video skips the affected moments.`);
         }
-        writeStream.end();
 
-        // Wait for write to finish
-        await new Promise((resolve) => writeStream.on('finish', resolve));
+        // Runs that start after a gap have no header of their own. Recover them by
+        // prefixing the initialisation bytes from the run that did have one, so a
+        // dropped chunk costs the seconds around it instead of the rest of the exam.
+        let initSegment = null;
+        const headerSegment = segments.find(seg => seg.hasOwnHeader);
+        if (headerSegment) {
+            initSegment = extractInitSegment(path.join(chunkDir, headerSegment.files[0]));
+            if (initSegment) {
+                console.log(`[Assemble] Extracted ${initSegment.length}-byte init segment for header recovery.`);
+            }
+        }
 
-        const rawStats = fs.statSync(rawWebmPath);
-        console.log(`[Assemble] Raw compiled video path: ${rawWebmPath}, total size: ${rawStats.size} bytes`);
+        // Write each run out as its own container.
+        const segmentRawPaths = [];
+        const skippedSegments = [];
+        for (let i = 0; i < segments.length; i++) {
+            const seg = segments[i];
+            const segPath = path.join(os.tmpdir(), `session-${exam_session_id}-seg${i}-raw.${rawExt}`);
+            const written = writeSegmentFile(chunkDir, seg, segPath, initSegment);
+            if (!written) {
+                console.warn(`[Assemble] Segment ${i + 1} (chunks #${seg.startIndex}-#${seg.endIndex}) has no header and no init segment to borrow. Skipping.`);
+                skippedSegments.push(seg);
+                continue;
+            }
+            const stats = fs.statSync(segPath);
+            console.log(`[Assemble] Segment ${i + 1} raw path: ${segPath}, size: ${stats.size} bytes` +
+                (seg.needsInit ? ' (header recovered)' : ''));
+            segmentRawPaths.push(segPath);
+        }
+
+        if (skippedSegments.length > 0) {
+            const lostChunks = skippedSegments.reduce((sum, seg) => sum + seg.files.length, 0);
+            await logSessionEvent(exam_session_id, 'error',
+                `Recording damage: ${lostChunks} uploaded chunk(s) across ${skippedSegments.length} span(s) could not be decoded ` +
+                `because no stream header was ever received for them. That footage is missing from the video.`);
+        }
+
+        if (segmentRawPaths.length === 0) {
+            throw new Error(`No decodable recorder segments for session ${exam_session_id} (${orderedChunks.length} chunks on disk).`);
+        }
 
         let tempOutFile = path.join(os.tmpdir(), `session-${exam_session_id}.${isWebm ? 'webm' : 'mp4'}`);
         let finalMimeType = mimeTypeFromDb;
         let finalExt = isWebm ? 'webm' : 'mp4';
+        let assembledDurationSec = 0;
 
-        if (isWebm && process.env.TRANSCODE_TO_MP4 === 'true') {
-            console.log(`[Assemble] TRANSCODE_TO_MP4 is enabled. Transcoding WebM to MP4 for session ${exam_session_id}...`);
+        // More than one segment can only be joined after each is normalised, so a
+        // resumed recording is transcoded whether or not TRANSCODE_TO_MP4 is set, and
+        // regardless of the source container. Concatenating two recorder runs at the
+        // byte level gives the second run's timestamps a fresh start, so the file
+        // reports the length of the first run and players stop there — that is the bug
+        // this exists to prevent, and taking only the first segment instead would
+        // discard the rest of the attempt outright.
+        const mustTranscode = segmentRawPaths.length > 1;
+        const wantTranscode = process.env.TRANSCODE_TO_MP4 === 'true';
+
+        if (mustTranscode || (isWebm && wantTranscode)) {
+            if (mustTranscode && !wantTranscode) {
+                console.log(`[Assemble] ${segmentRawPaths.length} recorder segments present — transcoding despite TRANSCODE_TO_MP4 being off, since raw concatenation would truncate playback.`);
+            } else {
+                console.log(`[Assemble] TRANSCODE_TO_MP4 is enabled. Transcoding to MP4 for session ${exam_session_id}...`);
+            }
             const mp4OutFile = path.join(os.tmpdir(), `session-${exam_session_id}.mp4`);
+            const segmentMp4Paths = [];
             try {
-                await new Promise((resolve, reject) => {
-                    const command = ffmpeg(rawWebmPath)
-                        // Chunked MediaRecorder WebM has no reliable duration/timestamps in
-                        // its header. Regenerating presentation timestamps on the INPUT is the
-                        // single most important fix for the "chipmunk/fast audio" symptom —
-                        // without it ffmpeg guesses the timebase wrong and the whole recording
-                        // (audio + video) plays sped up, which raises the perceived pitch.
-                        .inputOptions('-fflags +genpts')
-                        .outputOptions('-c:v libx264')
-                        .outputOptions('-pix_fmt yuv420p')
-                        .outputOptions('-preset ultrafast') // Use ultrafast preset to minimize CPU/RAM usage
-                        .outputOptions('-crf 30')          // Lower quality/high compression to speed up transcoding
-                        .outputOptions('-threads 2')        // Limit CPU threads to protect Canvas LMS resources
-                        .outputOptions('-vsync vfr')
-                        // Resync audio to the (now-correct) timestamps and anchor it to t=0 so
-                        // it can't drift ahead of the video. aac at the source rate — no forced
-                        // resample, since forcing a rate is itself a common pitch-shift cause.
-                        .outputOptions('-af aresample=async=1:first_pts=0')
-                        .outputOptions('-c:a aac')
-                        .on('start', (commandLine) => {
-                            console.log(`Spawned FFmpeg with command: ${commandLine}`);
-                        })
-                        .on('end', () => {
-                            clearTimeout(timeoutId);
-                            resolve();
-                        })
-                        .on('error', (err) => {
-                            clearTimeout(timeoutId);
-                            reject(err);
-                        });
+                // Transcode each run independently and keep going if one fails. A
+                // damaged span in the middle of an attempt should cost that span, not
+                // the whole recording.
+                for (let i = 0; i < segmentRawPaths.length; i++) {
+                    const segMp4 = path.join(os.tmpdir(), `session-${exam_session_id}-seg${i}.mp4`);
+                    try {
+                        const segDuration = await transcodeSegmentToMp4(segmentRawPaths[i], segMp4);
+                        if (segDuration <= 0 || !fs.existsSync(segMp4) || fs.statSync(segMp4).size === 0) {
+                            throw new Error('produced no decodable output');
+                        }
+                        console.log(`[Assemble] Segment ${i + 1}/${segmentRawPaths.length} transcoded: ${segDuration.toFixed(1)}s`);
+                        segmentMp4Paths.push(segMp4);
+                        assembledDurationSec += segDuration;
+                    } catch (segErr) {
+                        console.error(`[Assemble] Segment ${i + 1}/${segmentRawPaths.length} failed (${segErr.message}). Continuing with the remaining segments.`);
+                        try { if (fs.existsSync(segMp4)) fs.unlinkSync(segMp4); } catch (e) {}
+                        await logSessionEvent(exam_session_id, 'error',
+                            `A span of the recording (segment ${i + 1} of ${segmentRawPaths.length}) could not be decoded ` +
+                            `and is missing from the video.`);
+                    }
+                }
 
-                    const timeoutId = setTimeout(() => {
-                        console.error(`Transcoding for session ${exam_session_id} timed out. Killing FFmpeg process.`);
-                        command.kill('SIGKILL');
-                    }, 120000); // 2 minutes
+                if (segmentMp4Paths.length === 0) {
+                    throw new Error('no segment produced decodable output');
+                }
 
-                    command.save(mp4OutFile);
-                });
-                console.log(`Successfully transcoded to MP4 for session ${exam_session_id}`);
-                if (fs.existsSync(rawWebmPath)) fs.unlinkSync(rawWebmPath);
+                if (segmentMp4Paths.length === 1) {
+                    fs.renameSync(segmentMp4Paths[0], mp4OutFile);
+                } else {
+                    const concatDuration = await concatMp4Segments(segmentMp4Paths, mp4OutFile, os.tmpdir());
+                    if (concatDuration > 0) assembledDurationSec = concatDuration;
+                    for (const segMp4 of segmentMp4Paths) {
+                        try { if (fs.existsSync(segMp4)) fs.unlinkSync(segMp4); } catch (e) {}
+                    }
+                }
+
+                console.log(`Successfully transcoded to MP4 for session ${exam_session_id} (${assembledDurationSec.toFixed(1)}s)`);
                 tempOutFile = mp4OutFile;
                 finalMimeType = 'video/mp4';
                 finalExt = 'mp4';
             } catch (transcodeErr) {
-                console.error(`Transcoding failed for session ${exam_session_id}, falling back to WebM:`, transcodeErr.message);
-                tempOutFile = path.join(os.tmpdir(), `session-${exam_session_id}.webm`);
-                fs.renameSync(rawWebmPath, tempOutFile);
-                finalMimeType = 'video/webm';
-                finalExt = 'webm';
+                console.error(`Transcoding failed for session ${exam_session_id}, falling back to the raw recording:`, transcodeErr.message);
+                const droppedSegments = segmentRawPaths.length - 1;
+                await logSessionEvent(exam_session_id, 'error',
+                    `Video transcoding failed (${transcodeErr.message}). The raw recording was preserved instead` +
+                    (droppedSegments > 0
+                        ? `, but only the first of ${segmentRawPaths.length} recorded spans could be kept — the video is incomplete.`
+                        : `; it may not play past the first interruption.`));
+                for (const segMp4 of segmentMp4Paths) {
+                    try { if (fs.existsSync(segMp4)) fs.unlinkSync(segMp4); } catch (e) {}
+                }
+                tempOutFile = path.join(os.tmpdir(), `session-${exam_session_id}.${rawExt}`);
+                fs.copyFileSync(segmentRawPaths[0], tempOutFile);
+                finalMimeType = isWebm ? 'video/webm' : 'video/mp4';
+                finalExt = rawExt;
             }
         } else {
             console.log(`[Assemble] Direct upload mode (no transcoding) for session ${exam_session_id}`);
-            fs.renameSync(rawWebmPath, tempOutFile);
+            fs.renameSync(segmentRawPaths[0], tempOutFile);
+        }
+
+        for (const segRaw of segmentRawPaths) {
+            try { if (fs.existsSync(segRaw)) fs.unlinkSync(segRaw); } catch (e) {}
+        }
+
+        // Compare what we produced against how long the student was actually in the
+        // attempt. This is the check that would have caught the twelve-minute attempt
+        // that shipped a thirty-five second video: ffmpeg exits 0 when it stops early,
+        // so the length of the output is the only honest signal we have.
+        if (assembledDurationSec > 0 && sessionStartMs && sessionEndMs > sessionStartMs) {
+            const attemptSec = (sessionEndMs - sessionStartMs) / 1000;
+            const coverage = assembledDurationSec / attemptSec;
+            console.log(`[Assemble] Session ${exam_session_id}: video ${assembledDurationSec.toFixed(1)}s vs attempt ${attemptSec.toFixed(1)}s (${Math.round(coverage * 100)}% coverage).`);
+            if (attemptSec > 60 && coverage < 0.8) {
+                const shortfall = Math.round(attemptSec - assembledDurationSec);
+                console.warn(`[Assemble] Session ${exam_session_id} video is short by ${shortfall}s.`);
+                await logSessionEvent(exam_session_id, 'error',
+                    `Recording is shorter than the attempt: ${Math.round(assembledDurationSec)}s of video for a ` +
+                    `${Math.round(attemptSec)}s attempt (${Math.round(coverage * 100)}% covered, ${shortfall}s missing). ` +
+                    `Review the gap and upload warnings on this timeline before drawing conclusions from this video.`);
+            }
         }
 
         // Create dedicated attempt folder on Google Drive
@@ -2473,8 +2666,25 @@ async function assembleAndUploadSessionVideo(exam_session_id, total_chunks) {
         } catch (cleanupErr) {
             console.error(`Failed to clean up temp out file for session ${exam_session_id}:`, cleanupErr.message);
         }
+        // Delete only the chunks this run actually consumed.
+        //
+        // This used to `rmSync` the whole directory. Assembly takes minutes — folder
+        // creation, transcode, two Drive uploads — and a student who reloaded and
+        // resumed is appending new chunks to that same directory the entire time.
+        // Wiping it recursively at the end therefore deleted live footage, including
+        // the header chunk the resumed run needed, which is how a long attempt ended
+        // up as an unplayable or near-empty video.
         try {
-            fs.rmSync(chunkDir, { recursive: true, force: true });
+            for (const file of files) {
+                const filePath = path.join(chunkDir, file);
+                try { if (fs.existsSync(filePath)) fs.unlinkSync(filePath); } catch (e) {}
+            }
+            const remaining = fs.existsSync(chunkDir) ? fs.readdirSync(chunkDir) : [];
+            if (remaining.length === 0) {
+                try { fs.rmdirSync(chunkDir); } catch (e) {}
+            } else {
+                console.log(`[Assemble] Kept ${remaining.length} chunk(s) in ${chunkDir} that arrived after assembly began.`);
+            }
         } catch (cleanupErr) {
             console.error(`Failed to clean up chunk directory for session ${exam_session_id}:`, cleanupErr.message);
         }
@@ -2510,18 +2720,27 @@ app.post('/api/session/end', requireAuth, async (req, res) => {
                     session_id: exam_session_id, status: 'unexpected' 
                 });
             }
-            // Still assemble whatever chunks made it to disk — mobile browsers often
-            // die via beforeunload/sendBeacon without a clean "completed" end, which
-            // previously left drive_file_id null and Review Center showing "No Video".
+            // Assemble whatever chunks made it to disk — mobile browsers often die via
+            // beforeunload/sendBeacon without a clean "completed" end, which previously
+            // left drive_file_id null and Review Center showing "No Video".
+            //
+            // But do it on a delay. This beacon fires for an abandoned attempt AND for
+            // a plain page reload, and the two are indistinguishable at this point.
+            // Assembling immediately meant a student who reloaded mid-exam had their
+            // chunk directory assembled and then deleted while the resumed recording
+            // was still writing into it, which truncated the video to whatever had been
+            // recorded before the reload. Resuming cancels this timer; a clean submit
+            // supersedes it.
             const chunksHint = total_chunks !== undefined && total_chunks !== null
                 ? total_chunks
                 : undefined;
-            console.log(`[End Session] Unexpected exit — still assembling video for session ${exam_session_id}`);
-            assembleAndUploadSessionVideo(exam_session_id, chunksHint);
+            console.log(`[End Session] Unexpected exit for session ${exam_session_id} — deferring assembly in case of resume`);
+            scheduleUnexpectedFinalization(exam_session_id, chunksHint);
             return res.json({ success: true });
         }
 
         const finalStatus = status || 'completed';
+        cancelPendingFinalization(exam_session_id, 'clean session end');
         console.log(`[End Session] Ending session ${exam_session_id} with status: ${finalStatus}, total_chunks expected: ${total_chunks}`);
         await pool.query('UPDATE exam_sessions SET status=$1 WHERE id=$2', [finalStatus, exam_session_id]);
         
@@ -2567,11 +2786,12 @@ app.post('/api/session/external-submit', async (req, res) => {
             if (sessionQuery.rows.length > 0) {
                 const session = sessionQuery.rows[0];
                 console.log(`[External Submit] Session ${session.id} finalized successfully via external ping.`);
-                
-                io.to('teacher_' + session.exam_id).emit('student_status', { 
-                    session_id: session.id, status: 'completed' 
+                cancelPendingFinalization(session.id, 'external submit');
+
+                io.to('teacher_' + session.exam_id).emit('student_status', {
+                    session_id: session.id, status: 'completed'
                 });
-                
+
                 assembleAndUploadSessionVideo(session.id);
             }
         }
@@ -2634,20 +2854,35 @@ app.post('/api/session/upload-chunk', requireAuth, async (req, res) => {
     const { chunk_index, exam_session_id, base64_video } = req.body;
     try {
         if (!base64_video) throw new Error("Video payload was empty");
-        console.log(`[Upload Chunk] Received chunk #${chunk_index} for session ${exam_session_id} (length: ${base64_video.length}), value preview: ${JSON.stringify(base64_video)}`);
-        
+
+        const index = parseInt(chunk_index, 10);
+        if (!Number.isInteger(index) || index < 0) throw new Error(`Invalid chunk index: ${chunk_index}`);
+
         // Write chunk data to local temporary directory instead of DB
         const chunkDir = path.join(os.tmpdir(), `chunks-${exam_session_id}`);
         if (!fs.existsSync(chunkDir)) {
             fs.mkdirSync(chunkDir, { recursive: true });
             console.log(`[Upload Chunk] Created temporary chunk directory: ${chunkDir}`);
         }
-        
-        const chunkPath = path.join(chunkDir, `chunk-${String(chunk_index).padStart(5, '0')}.dat`);
+
+        const chunkPath = path.join(chunkDir, `chunk-${String(index).padStart(5, '0')}.dat`);
         const pureB64 = base64_video.replace(/^data:[^,]+,/, '').replace(/\s/g, '');
-        fs.writeFileSync(chunkPath, pureB64, 'base64');
-        console.log(`[Upload Chunk] Saved chunk #${chunk_index} to: ${chunkPath}`);
-        
+
+        // A base64 body whose length is not a multiple of 4 was cut off in transit —
+        // by a proxy body limit or a dropped connection. Node would decode it
+        // partially and silently, leaving a corrupt chunk that breaks the stream from
+        // there on. Reject it so the client's retry can deliver it intact.
+        if (pureB64.length === 0 || pureB64.length % 4 !== 0) {
+            throw new Error(`Chunk #${index} payload is truncated (${pureB64.length} base64 chars).`);
+        }
+
+        // Write to a temp name and rename into place: assembly reads this directory
+        // concurrently, and a half-written file looks exactly like a corrupt chunk.
+        const stagingPath = `${chunkPath}.part`;
+        fs.writeFileSync(stagingPath, pureB64, 'base64');
+        fs.renameSync(stagingPath, chunkPath);
+        console.log(`[Upload Chunk] Saved chunk #${index} for session ${exam_session_id} (${fs.statSync(chunkPath).size} bytes)`);
+
         res.json({ success: true });
     } catch (err) {
         console.error('Upload Error', err);
@@ -2688,10 +2923,22 @@ app.get('/api/session/video-playback/:session_id', requireInstructorOrExtensionT
             // Prefer live filesystem chunks (current upload path writes here), then legacy DB.
             const chunkDir = path.join(os.tmpdir(), `chunks-${session_id}`);
             if (fs.existsSync(chunkDir)) {
-                const files = fs.readdirSync(chunkDir).filter(f => f.startsWith('chunk-')).sort();
-                if (files.length > 0) {
-                    console.log(`[Playback] Assembling ${files.length} local disk chunks for session ${session_id}`);
-                    const binaryChunks = files.map(f => fs.readFileSync(path.join(chunkDir, f)));
+                // Live monitoring fallback: order by chunk index and stop at the first
+                // hole, since a WebM stream is unreadable past a missing chunk anyway.
+                const ordered = fs.readdirSync(chunkDir)
+                    .map(file => ({ file, index: parseChunkIndex(file) }))
+                    .filter(entry => entry.index !== null)
+                    .sort((a, b) => a.index - b.index);
+
+                const contiguous = [];
+                for (const entry of ordered) {
+                    if (contiguous.length > 0 && entry.index !== contiguous[contiguous.length - 1].index + 1) break;
+                    contiguous.push(entry);
+                }
+
+                if (contiguous.length > 0) {
+                    console.log(`[Playback] Assembling ${contiguous.length} of ${ordered.length} local disk chunks for session ${session_id}`);
+                    const binaryChunks = contiguous.map(entry => fs.readFileSync(path.join(chunkDir, entry.file)));
                     masterBuffer = Buffer.concat(binaryChunks);
                 }
             }

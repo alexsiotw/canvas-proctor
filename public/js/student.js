@@ -136,28 +136,77 @@ function openDB() {
     });
 }
 
+// Persist a chunk for crash/reload recovery. Returns false when it could not be
+// stored — the caller still holds the bytes and must not treat that as fatal.
+//
+// The IndexedDB write used to be returned unawaited, so a quota failure rejected
+// out of this function past its own catch block. Storage quota is reached exactly
+// when a slow connection has let chunks pile up, i.e. precisely when losing them
+// matters most.
 async function saveChunkToDB(sessionId, index, data) {
+    const key = `${sessionId}_${index}`;
+    const record = { key, session_id: sessionId, index, data, attempts: 0 };
+
     if (useMemoryStorage) {
-        const key = `${sessionId}_${index}`;
-        memoryChunks[key] = { key, session_id: sessionId, index, data, attempts: 0 };
-        return;
+        memoryChunks[key] = record;
+        return true;
     }
     try {
         const db = await openDB();
-        return new Promise((resolve, reject) => {
+        await new Promise((resolve, reject) => {
             const tx = db.transaction(STORE_NAME, 'readwrite');
             const store = tx.objectStore(STORE_NAME);
-            const key = `${sessionId}_${index}`;
-            store.put({ key, session_id: sessionId, index, data, attempts: 0 });
+            store.put(record);
             tx.oncomplete = () => resolve();
             tx.onerror = () => reject(tx.error);
+            tx.onabort = () => reject(tx.error || new Error('IndexedDB transaction aborted'));
         });
+        return true;
     } catch (e) {
-        console.warn("[DB] Failed to save chunk to IndexedDB. Falling back to memory storage.", e);
+        console.warn(`[DB] Failed to persist chunk #${index} to IndexedDB. Falling back to memory storage.`, e);
+        // Route subsequent reads to memory too, otherwise this chunk becomes
+        // invisible to the upload queue.
         useMemoryStorage = true;
-        const key = `${sessionId}_${index}`;
-        memoryChunks[key] = { key, session_id: sessionId, index, data, attempts: 0 };
+        try {
+            memoryChunks[key] = record;
+            return true;
+        } catch (memErr) {
+            return false;
+        }
     }
+}
+
+// Read a recorded blob as base64. Retried, because a transient FileReader failure
+// used to drop the chunk outright and every chunk after it becomes undecodable.
+async function blobToBase64(blob, attempts = 3) {
+    let lastError = null;
+    for (let attempt = 1; attempt <= attempts; attempt++) {
+        try {
+            return await new Promise((resolve, reject) => {
+                const reader = new FileReader();
+                reader.onloadend = () => {
+                    const result = reader.result || '';
+                    const base64Part = result.indexOf(';base64,');
+                    const base64Data = base64Part !== -1
+                        ? result.substring(base64Part + 8)
+                        : (result.indexOf(',') !== -1 ? result.substring(result.indexOf(',') + 1) : result);
+                    if (!base64Data) {
+                        reject(new Error('FileReader produced an empty result'));
+                        return;
+                    }
+                    resolve(base64Data);
+                };
+                reader.onerror = () => reject(reader.error || new Error('FileReader failed'));
+                reader.onabort = () => reject(new Error('FileReader aborted'));
+                reader.readAsDataURL(blob);
+            });
+        } catch (err) {
+            lastError = err;
+            console.warn(`[Recorder] Blob read attempt ${attempt}/${attempts} failed:`, err && err.message);
+            if (attempt < attempts) await new Promise(r => setTimeout(r, 250 * attempt));
+        }
+    }
+    throw lastError || new Error('Could not read recorded blob');
 }
 
 async function getPendingChunksFromDB(sessionId) {
@@ -2296,28 +2345,30 @@ function setupRecording() {
             // CRITICAL: Capture the current index locally to prevent race conditions during upload
             const currentIndex = ++chunkIndex;
             activeUploads++; // Increment to track that file reading/db writing is in progress
-            
-            const reader = new FileReader();
-            reader.onloadend = async () => {
-                const result = reader.result || '';
-                const base64Part = result.indexOf(';base64,');
-                const base64Data = base64Part !== -1 ? result.substring(base64Part + 8) : (result.indexOf(',') !== -1 ? result.substring(result.indexOf(',') + 1) : result);
-                
+
+            try {
+                const base64Data = await blobToBase64(e.data);
+
                 console.log(`[Recorder] Saving chunk #${currentIndex} (${e.data.size} bytes) to IndexedDB...`);
-                await saveChunkToDB(sessionInfo.id, currentIndex, base64Data);
-                
-                // Add to sequential upload queue and decrement read counter
-                uploadQueue.push({ index: currentIndex, attempts: 0 });
-                activeUploads--;
-                
+                const saved = await saveChunkToDB(sessionInfo.id, currentIndex, base64Data);
+
+                // Queue the chunk with its bytes attached. Losing a single chunk makes
+                // every chunk after it undecodable, so the upload must not depend on
+                // being able to read it back out of storage later.
+                uploadQueue.push({ index: currentIndex, attempts: 0, data: base64Data, persisted: saved !== false });
+                trimQueueMemory();
+
                 // Trigger background queue processor
                 processUploadQueue();
-            };
-            reader.onerror = () => {
-                console.error(`[Recorder] FileReader error on chunk #${currentIndex}`);
+            } catch (err) {
+                // A chunk lost here is a hole in the recording, not a dropped frame.
+                console.error(`[Recorder] Could not read chunk #${currentIndex}:`, err);
+                logProctorEvent('upload_incomplete',
+                    `Recording chunk #${currentIndex} could not be read from the browser (${err && err.message ? err.message : 'unknown error'}). ` +
+                    `This leaves a gap in the video.`);
+            } finally {
                 activeUploads--;
-            };
-            reader.readAsDataURL(e.data);
+            }
         }
     };
     
@@ -2336,6 +2387,20 @@ function setupRecording() {
     // with a specific warm-up delay to prevent DEMUXER_ERRORs.
 }
 
+// Each queued chunk's base64 is roughly 1.3MB, so a backlog on a slow connection
+// would otherwise sit entirely in the JS heap. Release the copy for chunks that did
+// reach IndexedDB — those can be read back — and hold on to the rest, since for
+// them the in-memory copy is the only copy.
+const QUEUE_MEMORY_HIGH_WATER = 8;
+
+function trimQueueMemory() {
+    if (uploadQueue.length <= QUEUE_MEMORY_HIGH_WATER) return;
+    for (let i = QUEUE_MEMORY_HIGH_WATER; i < uploadQueue.length; i++) {
+        const item = uploadQueue[i];
+        if (item.persisted && item.data) item.data = null;
+    }
+}
+
 async function processUploadQueue() {
     if (isProcessingQueue) return;
     if (uploadQueue.length === 0) return;
@@ -2349,41 +2414,65 @@ async function processUploadQueue() {
         
         let success = false;
         try {
-            let chunkRecord = null;
-            if (useMemoryStorage) {
+            // Prefer the bytes the queue is already carrying. Reading them back out of
+            // IndexedDB was the only source before, so a storage miss silently dropped
+            // the chunk — and a dropped chunk makes the rest of the recording
+            // undecodable, not just the five seconds it held.
+            let chunkData = item.data;
+
+            if (!chunkData) {
+                // Check both stores rather than branching on useMemoryStorage. That
+                // flag can flip mid-exam when IndexedDB starts failing, and chunks
+                // written before the flip live on the other side of it.
                 const chunkKey = `${sessionInfo.id}_${item.index}`;
-                chunkRecord = memoryChunks[chunkKey];
-            } else {
-                // Retrieve chunk data from IndexedDB
-                const db = await openDB();
-                const chunkKey = `${sessionInfo.id}_${item.index}`;
-                chunkRecord = await new Promise((resolve) => {
-                    const tx = db.transaction(STORE_NAME, 'readonly');
-                    const store = tx.objectStore(STORE_NAME);
-                    const req = store.get(chunkKey);
-                    req.onsuccess = () => resolve(req.result);
-                    req.onerror = () => resolve(null);
-                });
+                let chunkRecord = memoryChunks[chunkKey];
+
+                if (!chunkRecord || !chunkRecord.data) {
+                    try {
+                        const db = await openDB();
+                        chunkRecord = await new Promise((resolve) => {
+                            const tx = db.transaction(STORE_NAME, 'readonly');
+                            const store = tx.objectStore(STORE_NAME);
+                            const req = store.get(chunkKey);
+                            req.onsuccess = () => resolve(req.result);
+                            req.onerror = () => resolve(null);
+                        });
+                    } catch (dbErr) {
+                        console.warn(`[Queue] Could not read chunk #${item.index} from IndexedDB:`, dbErr && dbErr.message);
+                    }
+                }
+
+                if (chunkRecord && chunkRecord.data) {
+                    chunkData = chunkRecord.data;
+                    item.data = chunkData;
+                }
             }
 
-            if (!chunkRecord || !chunkRecord.data) {
-                console.warn(`[Queue] Chunk #${item.index} data not found in DB. Skipping to prevent lock.`);
+            if (!chunkData) {
+                console.error(`[Queue] Chunk #${item.index} data is gone from storage — the recording will have a gap here.`);
+                if (socket) {
+                    socket.emit('proctor_log', {
+                        exam_session_id: sessionInfo.id,
+                        event_type: 'error',
+                        event_message: `Recording chunk #${item.index} was lost from browser storage before it could be uploaded. The video will skip this point.`
+                    });
+                }
                 uploadQueue.shift();
                 continue;
             }
 
             console.log(`[Queue] Uploading chunk #${item.index} (attempt ${item.attempts + 1})...`);
-            const response = await fetch('/api/session/upload-chunk', { 
-                method: 'POST', 
+            const response = await fetch('/api/session/upload-chunk', {
+                method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
                     exam_session_id: sessionInfo.id,
                     chunk_index: item.index,
-                    base64_video: chunkRecord.data,
+                    base64_video: chunkData,
                     token: sessionToken
                 })
             });
-            
+
             if (response.ok) {
                 success = true;
                 console.log(`[Queue] Chunk #${item.index} upload success. Deleting from IndexedDB.`);
@@ -2391,13 +2480,29 @@ async function processUploadQueue() {
             } else {
                 const errorData = await response.json().catch(() => ({}));
                 console.warn(`[Queue] Chunk #${item.index} rejected by server (HTTP ${response.status}):`, errorData.error);
+                // 413 means something between the browser and Node — usually a reverse
+                // proxy's client_max_body_size — is refusing the payload. Retrying is
+                // futile and the operator needs to know, because every chunk this size
+                // will be lost the same way.
+                if (response.status === 413 && !item.reportedTooLarge) {
+                    item.reportedTooLarge = true;
+                    const kb = Math.round(chunkData.length / 1024);
+                    console.error(`[Queue] Chunk #${item.index} (${kb}KB encoded) was rejected as too large. Raise the reverse proxy body limit.`);
+                    if (socket) {
+                        socket.emit('proctor_log', {
+                            exam_session_id: sessionInfo.id,
+                            event_type: 'error',
+                            event_message: `Upload of chunk #${item.index} was rejected as too large (${kb}KB). Server upload size limit needs raising; recording will be incomplete.`
+                        });
+                    }
+                }
             }
         } catch (err) {
             console.warn(`[Queue] Chunk #${item.index} upload network exception:`, err.message);
         } finally {
             activeUploads--;
         }
-        
+
         if (success) {
             uploadQueue.shift(); // Remove successfully uploaded item
         } else {
@@ -2409,7 +2514,7 @@ async function processUploadQueue() {
                     socket.emit('proctor_log', {
                         exam_session_id: sessionInfo.id,
                         event_type: 'error',
-                        event_message: `Chunk #${item.index} upload failed permanently after 100 attempts.`
+                        event_message: `Chunk #${item.index} upload failed permanently after 100 attempts. The video will be missing everything from this point in the attempt onward unless later chunks recovered.`
                     });
                 }
                 uploadQueue.shift(); // Discard failed item
