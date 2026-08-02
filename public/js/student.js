@@ -3602,6 +3602,22 @@ window.addEventListener('beforeunload', (event) => {
         event.returnValue = 'Your proctoring recording is still uploading. Leaving now will leave it incomplete.';
     }
 
+    // Don't fire the beacon while the clean submit path is still draining.
+    //
+    // Observed on a real 90-second attempt: the beacon reached /api/session/end with
+    // total_chunks = 17 while the recorder still had chunks 18 and 19 to deliver.
+    // Assembly started immediately, satisfied by 17 contiguous chunks, and the last
+    // ~4 seconds arrived too late to be included — the server logged "Kept 2 chunk(s)
+    // that arrived after assembly began".
+    //
+    // The clean path calls /api/session/end itself once the queue is empty, and if
+    // the browser kills the page mid-drain the socket-disconnect handler still
+    // finalizes the session. So staying quiet here loses nothing and stops the race.
+    if (isFinalizingUpload) {
+        console.log('[Exit] Suppressing unload beacon: the submit path is still draining uploads.');
+        return;
+    }
+
     if (sessionInfo && sessionInfo.id) {
         const url = `/api/session/end?token=${encodeURIComponent(sessionToken)}`;
         const exitType = isExamCompleted ? 'completed' : 'unexpected';

@@ -80,6 +80,21 @@ function isFlagEvent(type) {
 // authenticated session on this origin — which is privilege escalation from
 // student to instructor, not just defacement. Annotations get the same treatment;
 // they are instructor-authored, but there is no reason to leave the hole open.
+// Only let same-origin paths and https URLs reach an href.
+//
+// The room-scan / ID / signature links in the report take their href from a log's
+// event_message. The server writes those as internal paths, but event_message is
+// also whatever the student's own browser posted to /api/session/log — so a student
+// could log event_type 'room_scan_video' with a `javascript:` URL and have it run in
+// the instructor's session the moment the link is clicked. Escaping the HTML does
+// not help here; the scheme is the problem.
+function safeUrl(value) {
+    const raw = String(value === null || value === undefined ? '' : value).trim();
+    if (!raw) return '#';
+    if (raw.startsWith('/') || /^https:\/\//i.test(raw)) return escapeHtml(raw);
+    return '#';
+}
+
 function escapeHtml(value) {
     if (value === null || value === undefined) return '';
     return String(value)
@@ -1316,8 +1331,8 @@ function viewStudentReport(sessionId, examId) {
             if (session.mobile_drive_file_id) {
                 mobileBlock = `
                     <div style="flex: 1; min-width: 280px;">
-                        <div style="font-size: 11px; font-weight: 600; color: #94a3b8; margin-bottom: 6px; text-transform: uppercase; letter-spacing: 0.05em;">Secondary Mobile Room View</div>
-                        <div style="background: #000; border-radius: 8px; overflow: hidden; aspect-ratio: 16/9; border: 1px solid #334155;">
+                        <div style="font-size: 11px; font-weight: 600; color: #8b83a3; margin-bottom: 6px; text-transform: uppercase; letter-spacing: 0.05em;">Secondary Mobile Room View</div>
+                        <div style="background: #000; border-radius: 8px; overflow: hidden; aspect-ratio: 16/9; border: 1px solid #e2dff0;">
                             <iframe src="https://drive.google.com/file/d/${session.mobile_drive_file_id}/preview" style="width:100%; height:100%; border:none;" allow="autoplay"></iframe>
                         </div>
                     </div>`;
@@ -1325,21 +1340,21 @@ function viewStudentReport(sessionId, examId) {
             videoContainerHtml = `
                 <div style="display: flex; gap: 15px; flex-wrap: wrap; width: 100%; margin-bottom: 12px;">
                     <div style="flex: 1; min-width: 280px;">
-                        <div style="font-size: 11px; font-weight: 600; color: #94a3b8; margin-bottom: 6px; text-transform: uppercase; letter-spacing: 0.05em; display: flex; align-items: center; gap: 5px;">
+                        <div style="font-size: 11px; font-weight: 600; color: #8b83a3; margin-bottom: 6px; text-transform: uppercase; letter-spacing: 0.05em; display: flex; align-items: center; gap: 5px;">
                             Webcam / Screen Recording ${driveLink}
-                            <span style="font-weight:400; text-transform:none; color:#64748b;">— click timeline flags to seek</span>
+                            <span style="font-weight:400; text-transform:none; color:#8b83a3;">— click timeline flags to seek</span>
                         </div>
-                        <div style="background: #000; border-radius: 8px; overflow: hidden; aspect-ratio: 16/9; border: 1px solid #334155;">${primaryHtml}</div>
-                        <div id="report-flag-markers" style="position:relative; height:10px; margin-top:6px; background:#1e293b; border-radius:4px; overflow:hidden;"></div>
+                        <div style="background: #000; border-radius: 8px; overflow: hidden; aspect-ratio: 16/9; border: 1px solid #e2dff0;">${primaryHtml}</div>
+                        <div id="report-flag-markers" style="position:relative; height:10px; margin-top:6px; background:#ffffff; border-radius:4px; overflow:hidden;"></div>
                     </div>
                     ${mobileBlock}
                 </div>`;
         }
     } else {
         videoContainerHtml = `
-            <div style="margin-bottom: 20px; background: rgba(255, 255, 255, 0.02); border: 1px dashed #334155; border-radius: 8px; padding: 30px; text-align: center; color: #94a3b8;">
+            <div style="margin-bottom: 20px; background: rgba(255, 255, 255, 0.02); border: 1px dashed #e2dff0; border-radius: 8px; padding: 30px; text-align: center; color: #8b83a3;">
                 <span style="font-size: 32px; display:block; margin-bottom: 8px;">🎥</span>
-                ${session.video_archived ? '<strong style="color:#f8fafc;">Video Footage Archived Off-Site</strong><br><span style="font-size:12px;">This recording was hard purged to reclaim storage space.</span>' : '<strong style="color:#f8fafc;">Video Recording Finalizing...</strong><br><span style="font-size:12px;">The footage is still being assembled and uploaded in the background.</span>'}
+                ${session.video_archived ? '<strong style="color:#241d38;">Video Footage Archived Off-Site</strong><br><span style="font-size:12px;">This recording was hard purged to reclaim storage space.</span>' : '<strong style="color:#241d38;">Video Recording Finalizing...</strong><br><span style="font-size:12px;">The footage is still being assembled and uploaded in the background.</span>'}
             </div>`;
     }
 
@@ -1351,9 +1366,9 @@ function viewStudentReport(sessionId, examId) {
             <div style="background: rgba(139, 92, 246, 0.08); border: 1px solid rgba(139, 92, 246, 0.2); border-radius: 8px; padding: 16px; display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
                 <div>
                     <h5 style="margin:0; font-size:13px; font-weight:700; color:#c084fc;">Environment Room Scan</h5>
-                    <p style="margin: 4px 0 0 0; font-size:11px; color:#94a3b8;">360&deg; workspace scan completed before starting the exam.</p>
+                    <p style="margin: 4px 0 0 0; font-size:11px; color:#8b83a3;">360&deg; workspace scan completed before starting the exam.</p>
                 </div>
-                <a href="${roomScanLog.event_message}" target="_blank" style="background: #8b5cf6; color: white; padding: 6px 12px; border-radius: 6px; font-weight: bold; text-decoration: none; font-size: 12px; display: inline-flex; align-items: center; gap: 5px;">
+                <a href="${safeUrl(roomScanLog.event_message)}" target="_blank" rel="noopener noreferrer" style="background: #8b5cf6; color: white; padding: 6px 12px; border-radius: 6px; font-weight: bold; text-decoration: none; font-size: 12px; display: inline-flex; align-items: center; gap: 5px;">
                     👁️ View Scan
                 </a>
             </div>`;
@@ -1364,9 +1379,9 @@ function viewStudentReport(sessionId, examId) {
             <div style="background: rgba(16, 185, 129, 0.08); border: 1px solid rgba(16, 185, 129, 0.2); border-radius: 8px; padding: 16px; display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
                 <div>
                     <h5 style="margin:0; font-size:13px; font-weight:700; color:#34d399;">ID Verification Card</h5>
-                    <p style="margin: 4px 0 0 0; font-size:11px; color:#94a3b8;">Government or student ID image captured during pre-checks.</p>
+                    <p style="margin: 4px 0 0 0; font-size:11px; color:#8b83a3;">Government or student ID image captured during pre-checks.</p>
                 </div>
-                <a href="${idVerificationLog.event_message}" target="_blank" style="background: #10b981; color: white; padding: 6px 12px; border-radius: 6px; font-weight: bold; text-decoration: none; font-size: 12px; display: inline-flex; align-items: center; gap: 5px;">
+                <a href="${safeUrl(idVerificationLog.event_message)}" target="_blank" rel="noopener noreferrer" style="background: #10b981; color: white; padding: 6px 12px; border-radius: 6px; font-weight: bold; text-decoration: none; font-size: 12px; display: inline-flex; align-items: center; gap: 5px;">
                     👁️ View ID Image
                 </a>
             </div>`;
@@ -1377,9 +1392,9 @@ function viewStudentReport(sessionId, examId) {
             <div style="background: rgba(245, 158, 11, 0.08); border: 1px solid rgba(245, 158, 11, 0.2); border-radius: 8px; padding: 16px; display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
                 <div>
                     <h5 style="margin:0; font-size:13px; font-weight:700; color:#fbbf24;">Signature Agreement</h5>
-                    <p style="margin: 4px 0 0 0; font-size:11px; color:#94a3b8;">Digitally signed agreement before exam launch.</p>
+                    <p style="margin: 4px 0 0 0; font-size:11px; color:#8b83a3;">Digitally signed agreement before exam launch.</p>
                 </div>
-                <a href="${signatureLog.event_message}" target="_blank" style="background: #f59e0b; color: white; padding: 6px 12px; border-radius: 6px; font-weight: bold; text-decoration: none; font-size: 12px; display: inline-flex; align-items: center; gap: 5px;">
+                <a href="${safeUrl(signatureLog.event_message)}" target="_blank" rel="noopener noreferrer" style="background: #f59e0b; color: white; padding: 6px 12px; border-radius: 6px; font-weight: bold; text-decoration: none; font-size: 12px; display: inline-flex; align-items: center; gap: 5px;">
                     👁️ View Signature
                 </a>
             </div>`;
@@ -1389,9 +1404,9 @@ function viewStudentReport(sessionId, examId) {
             <div style="background: rgba(59, 130, 246, 0.08); border: 1px solid rgba(59, 130, 246, 0.2); border-radius: 8px; padding: 16px; display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
                 <div>
                     <h5 style="margin:0; font-size:13px; font-weight:700; color:#60a5fa;">DOM Quiz Screenshots</h5>
-                    <p style="margin: 4px 0 0 0; font-size:11px; color:#94a3b8;">ZIP folder containing full-page quiz capture screenshots.</p>
+                    <p style="margin: 4px 0 0 0; font-size:11px; color:#8b83a3;">ZIP folder containing full-page quiz capture screenshots.</p>
                 </div>
-                <a href="https://drive.google.com/uc?export=download&id=${session.drive_snapshots_id}" target="_blank" style="background: #3b82f6; color: white; padding: 6px 12px; border-radius: 6px; font-weight: bold; text-decoration: none; font-size: 12px; display: inline-flex; align-items: center; gap: 5px;">
+                <a href="https://drive.google.com/uc?export=download&id=${session.drive_snapshots_id}" target="_blank" style="background: #5b3fa8; color: white; padding: 6px 12px; border-radius: 6px; font-weight: bold; text-decoration: none; font-size: 12px; display: inline-flex; align-items: center; gap: 5px;">
                     📥 Download ZIP
                 </a>
             </div>`;
@@ -1404,62 +1419,62 @@ function viewStudentReport(sessionId, examId) {
     const focusCount = logs.filter(l => ['tab_blur', 'window_blur', 'fullscreen_exit'].includes(l.event_type)).length;
 
     const modalContentHtml = `
-        <div style="background: #0f172a; border-bottom: 1px solid #334155; padding: 16px 24px; display: flex; justify-content: space-between; align-items: center; border-radius: 12px 12px 0 0;">
+        <div style="background: #f7f6fb; border-bottom: 1px solid #e2dff0; padding: 16px 24px; display: flex; justify-content: space-between; align-items: center; border-radius: 12px 12px 0 0;">
             <div style="display: flex; align-items: center; gap: 15px;">
-                <h2 style="margin: 0; font-size: 18px; font-weight: 600; color: #3b82f6; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;">Proctored Exam Report: ${escapeHtml(session.student_name || session.student_canvas_id)}</h2>
+                <h2 style="margin: 0; font-size: 18px; font-weight: 600; color: #5b3fa8; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;">Proctored Exam Report: ${escapeHtml(session.student_name || session.student_canvas_id)}</h2>
                 <span style="padding: 4px 10px; border-radius: 6px; font-size: 12px; font-weight: bold; background: ${riskBadgeBg}; color: ${riskBadgeColor}; border: 1px solid ${riskBadgeBorder}; text-transform: uppercase; letter-spacing: 0.05em;">
                     Risk: ${riskTier} (${riskScore})
                 </span>
             </div>
             <div style="display: flex; align-items: center; gap: 12px;">
-                <span style="font-size: 12px; color: #94a3b8; font-family: monospace;">Exam: ${escapeHtml(exam.title)} | Attempt ${session.attempt_number || 1} | ${new Date(session.started_at).toLocaleString()}</span>
-                <button class="modal-close" onclick="closeModal()" style="background: transparent; border: none; color: #94a3b8; font-size: 28px; cursor: pointer; line-height: 1;">&times;</button>
+                <span style="font-size: 12px; color: #8b83a3; font-family: monospace;">Exam: ${escapeHtml(exam.title)} | Attempt ${session.attempt_number || 1} | ${new Date(session.started_at).toLocaleString()}</span>
+                <button class="modal-close" onclick="closeModal()" style="background: transparent; border: none; color: #8b83a3; font-size: 28px; cursor: pointer; line-height: 1;">&times;</button>
             </div>
         </div>
-        <div style="display: flex; flex: 1; overflow: hidden; background: #1e293b;">
+        <div style="display: flex; flex: 1; overflow: hidden; background: #ffffff;">
             <!-- Left Pane: Media & Downloads -->
-            <div style="flex: 6.5; padding: 24px; background: #090d16; display: flex; flex-direction: column; overflow-y: auto; border-right: 1px solid #334155;">
+            <div style="flex: 6.5; padding: 24px; background: #090d16; display: flex; flex-direction: column; overflow-y: auto; border-right: 1px solid #e2dff0;">
                 ${videoContainerHtml}
                 ${extraPanelsHtml}
             </div>
 
             <!-- Right Pane: Timeline & Filters & Annotations -->
-            <div style="flex: 3.5; display: flex; flex-direction: column; background: #0f172a; overflow: hidden;">
+            <div style="flex: 3.5; display: flex; flex-direction: column; background: #f7f6fb; overflow: hidden;">
                 <!-- Tabbar -->
-                <div style="display: flex; background: #0b0f19; border-bottom: 1px solid #334155;">
-                    <button id="tab-timeline-btn" onclick="switchReportTab('timeline')" style="flex: 1; padding: 12px; border: none; background: transparent; color: #3b82f6; border-bottom: 2px solid #3b82f6; font-weight: 700; font-size: 13px; cursor: pointer; outline: none;">Timeline</button>
-                    <button id="tab-annotations-btn" onclick="switchReportTab('annotations')" style="flex: 1; padding: 12px; border: none; background: transparent; color: #94a3b8; border-bottom: 2px solid transparent; font-weight: 500; font-size: 13px; cursor: pointer; outline: none;">Annotations (${session.annotations ? session.annotations.length : 0})</button>
+                <div style="display: flex; background: #0b0f19; border-bottom: 1px solid #e2dff0;">
+                    <button id="tab-timeline-btn" onclick="switchReportTab('timeline')" style="flex: 1; padding: 12px; border: none; background: transparent; color: #5b3fa8; border-bottom: 2px solid #5b3fa8; font-weight: 700; font-size: 13px; cursor: pointer; outline: none;">Timeline</button>
+                    <button id="tab-annotations-btn" onclick="switchReportTab('annotations')" style="flex: 1; padding: 12px; border: none; background: transparent; color: #8b83a3; border-bottom: 2px solid transparent; font-weight: 500; font-size: 13px; cursor: pointer; outline: none;">Annotations (${session.annotations ? session.annotations.length : 0})</button>
                 </div>
                 
                 <!-- Timeline Section Container -->
                 <div id="report-timeline-container" style="display: flex; flex-direction: column; flex: 1; overflow: hidden;">
-                    <div style="padding: 16px; border-bottom: 1px solid #334155;">
-                        <h4 style="margin: 0 0 10px 0; font-size: 13px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; color: #94a3b8;">Proctoring Log Timeline</h4>
+                    <div style="padding: 16px; border-bottom: 1px solid #e2dff0;">
+                        <h4 style="margin: 0 0 10px 0; font-size: 13px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; color: #8b83a3;">Proctoring Log Timeline</h4>
 
                         <!-- Metrics -->
                         <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; margin-bottom: 12px;">
                             <div style="background: rgba(59, 130, 246, 0.08); border: 1px solid rgba(59, 130, 246, 0.15); padding: 6px 4px; border-radius: 6px; text-align: center;">
-                                <div style="font-size: 13px; font-weight: 700; color: #f8fafc;">${gazeCount}</div>
-                                <div style="font-size: 8px; color: #94a3b8; text-transform: uppercase;">Gaze</div>
+                                <div style="font-size: 13px; font-weight: 700; color: #241d38;">${gazeCount}</div>
+                                <div style="font-size: 8px; color: #8b83a3; text-transform: uppercase;">Gaze</div>
                             </div>
                             <div style="background: rgba(245, 158, 11, 0.08); border: 1px solid rgba(245, 158, 11, 0.15); padding: 6px 4px; border-radius: 6px; text-align: center;">
-                                <div style="font-size: 13px; font-weight: 700; color: #f8fafc;">${deviceCount}</div>
-                                <div style="font-size: 8px; color: #94a3b8; text-transform: uppercase;">Devices</div>
+                                <div style="font-size: 13px; font-weight: 700; color: #241d38;">${deviceCount}</div>
+                                <div style="font-size: 8px; color: #8b83a3; text-transform: uppercase;">Devices</div>
                             </div>
                             <div style="background: rgba(239, 68, 68, 0.08); border: 1px solid rgba(239, 68, 68, 0.15); padding: 6px 4px; border-radius: 6px; text-align: center;">
-                                <div style="font-size: 13px; font-weight: 700; color: #f8fafc;">${voiceCount}</div>
-                                <div style="font-size: 8px; color: #94a3b8; text-transform: uppercase;">Speaking</div>
+                                <div style="font-size: 13px; font-weight: 700; color: #241d38;">${voiceCount}</div>
+                                <div style="font-size: 8px; color: #8b83a3; text-transform: uppercase;">Speaking</div>
                             </div>
                             <div style="background: rgba(16, 185, 129, 0.08); border: 1px solid rgba(16, 185, 129, 0.15); padding: 6px 4px; border-radius: 6px; text-align: center;">
-                                <div style="font-size: 13px; font-weight: 700; color: #f8fafc;">${focusCount}</div>
-                                <div style="font-size: 8px; color: #94a3b8; text-transform: uppercase;">Tab Leaves</div>
+                                <div style="font-size: 13px; font-weight: 700; color: #241d38;">${focusCount}</div>
+                                <div style="font-size: 8px; color: #8b83a3; text-transform: uppercase;">Tab Leaves</div>
                             </div>
                         </div>
 
                         <!-- Search & Filter -->
                         <div style="display: flex; gap: 8px;">
-                            <input type="text" id="log-search-input" placeholder="Search events..." style="flex: 1; padding: 8px 12px; background: #1e293b; border: 1px solid #475569; border-radius: 6px; color: #f8fafc; font-size: 13px; box-sizing: border-box; outline: none;" />
-                            <select id="log-severity-select" style="padding: 8px 12px; background: #1e293b; border: 1px solid #475569; border-radius: 6px; color: #f8fafc; font-size: 13px; cursor: pointer;">
+                            <input type="text" id="log-search-input" placeholder="Search events..." style="flex: 1; padding: 8px 12px; background: #ffffff; border: 1px solid #e2dff0; border-radius: 6px; color: #241d38; font-size: 13px; box-sizing: border-box; outline: none;" />
+                            <select id="log-severity-select" style="padding: 8px 12px; background: #ffffff; border: 1px solid #e2dff0; border-radius: 6px; color: #241d38; font-size: 13px; cursor: pointer;">
                                 <option value="all">All Events</option>
                                 <option value="flag">Warnings / Flags</option>
                                 <option value="info">Info Logs</option>
@@ -1473,12 +1488,12 @@ function viewStudentReport(sessionId, examId) {
 
                 <!-- Annotations Section Container -->
                 <div id="report-annotations-container" style="display: none; flex-direction: column; flex: 1; overflow: hidden;">
-                    <div style="padding: 16px; border-bottom: 1px solid #334155; display: flex; flex-direction: column; gap: 8px;">
+                    <div style="padding: 16px; border-bottom: 1px solid #e2dff0; display: flex; flex-direction: column; gap: 8px;">
                         <div style="display: flex; gap: 8px;">
-                            <input type="text" id="new-annotation-note" placeholder="Add note at current playback time..." style="flex: 1; padding: 8px 12px; background: #1e293b; border: 1px solid #475569; border-radius: 6px; color: #f8fafc; font-size: 13px; outline: none; box-sizing: border-box;" />
-                            <button onclick="addAnnotation(${session.id}, ${exam.id})" style="padding: 8px 16px; background: #3b82f6; color: white; border: none; border-radius: 6px; font-weight: bold; cursor: pointer; font-size: 13px;">Add</button>
+                            <input type="text" id="new-annotation-note" placeholder="Add note at current playback time..." style="flex: 1; padding: 8px 12px; background: #ffffff; border: 1px solid #e2dff0; border-radius: 6px; color: #241d38; font-size: 13px; outline: none; box-sizing: border-box;" />
+                            <button onclick="addAnnotation(${session.id}, ${exam.id})" style="padding: 8px 16px; background: #5b3fa8; color: white; border: none; border-radius: 6px; font-weight: bold; cursor: pointer; font-size: 13px;">Add</button>
                         </div>
-                        <div style="font-size: 11px; color: #94a3b8;">Annotations will lock to the exact video playback timestamp.</div>
+                        <div style="font-size: 11px; color: #8b83a3;">Annotations will lock to the exact video playback timestamp.</div>
                     </div>
                     <div id="modal-annotations-list" style="flex: 1; overflow-y: auto; padding: 12px;">
                         <!-- Rendered dynamically -->
@@ -1486,13 +1501,13 @@ function viewStudentReport(sessionId, examId) {
                 </div>
             </div>
         </div>
-        <div style="background: #0f172a; border-top: 1px solid #334155; padding: 12px 24px; display: flex; justify-content: space-between; align-items: center; border-radius: 0 0 12px 12px;">
+        <div style="background: #f7f6fb; border-top: 1px solid #e2dff0; padding: 12px 24px; display: flex; justify-content: space-between; align-items: center; border-radius: 0 0 12px 12px;">
             <div style="display:flex; gap: 8px; flex-wrap:wrap;">
-                <button class="btn btn-secondary btn-sm" onclick="exportSessionReport(${session.id}, ${exam.id})" style="background: rgba(59, 130, 246, 0.15); color: #60a5fa; border: 1px solid #334155;">Export Report</button>
-                <button class="btn btn-secondary btn-sm" onclick="grantExtraAttempt(${exam.id}, ${JSON.stringify(String(session.student_canvas_id || '')).replace(/"/g, '&quot;')})" style="background: rgba(100, 116, 139, 0.15); color: #94a3b8; border: 1px solid #475569;">+1 Override Pass</button>
+                <button class="btn btn-secondary btn-sm" onclick="exportSessionReport(${session.id}, ${exam.id})" style="background: rgba(59, 130, 246, 0.15); color: #60a5fa; border: 1px solid #e2dff0;">Export Report</button>
+                <button class="btn btn-secondary btn-sm" onclick="grantExtraAttempt(${exam.id}, ${JSON.stringify(String(session.student_canvas_id || '')).replace(/"/g, '&quot;')})" style="background: rgba(100, 116, 139, 0.15); color: #8b83a3; border: 1px solid #e2dff0;">+1 Override Pass</button>
                 <button class="btn btn-danger btn-sm" onclick="deleteStudentAttempt(${session.id}, ${exam.id})" style="background: rgba(239, 68, 68, 0.1); color: #ef4444; border: 1px solid rgba(239, 68, 68, 0.2);">Delete Session</button>
             </div>
-            <button class="btn btn-primary btn-sm" onclick="closeModal()" style="background: #3b82f6; color: white; border: none;">Done</button>
+            <button class="btn btn-primary btn-sm" onclick="closeModal()" style="background: #5b3fa8; color: white; border: none;">Done</button>
         </div>
     `;
     
@@ -1501,8 +1516,8 @@ function viewStudentReport(sessionId, examId) {
     modalContainer.style.maxWidth = '1200px';
     modalContainer.style.width = '95%';
     modalContainer.style.padding = '0';
-    modalContainer.style.background = '#1e293b';
-    modalContainer.style.border = '1px solid #334155';
+    modalContainer.style.background = '#ffffff';
+    modalContainer.style.border = '1px solid #e2dff0';
     modalContainer.style.borderRadius = '12px';
     modalContainer.style.display = 'flex';
     modalContainer.style.flexDirection = 'column';
@@ -1519,20 +1534,20 @@ function viewStudentReport(sessionId, examId) {
         const annotationsContainer = document.getElementById('report-annotations-container');
         
         if (tabName === 'timeline') {
-            timelineBtn.style.color = '#3b82f6';
-            timelineBtn.style.borderBottom = '2px solid #3b82f6';
+            timelineBtn.style.color = '#5b3fa8';
+            timelineBtn.style.borderBottom = '2px solid #5b3fa8';
             timelineBtn.style.fontWeight = '700';
-            annotationsBtn.style.color = '#94a3b8';
+            annotationsBtn.style.color = '#8b83a3';
             annotationsBtn.style.borderBottom = '2px solid transparent';
             annotationsBtn.style.fontWeight = '500';
             timelineContainer.style.display = 'flex';
             annotationsContainer.style.display = 'none';
         } else {
-            timelineBtn.style.color = '#94a3b8';
+            timelineBtn.style.color = '#8b83a3';
             timelineBtn.style.borderBottom = '2px solid transparent';
             timelineBtn.style.fontWeight = '500';
-            annotationsBtn.style.color = '#3b82f6';
-            annotationsBtn.style.borderBottom = '2px solid #3b82f6';
+            annotationsBtn.style.color = '#5b3fa8';
+            annotationsBtn.style.borderBottom = '2px solid #5b3fa8';
             annotationsBtn.style.fontWeight = '700';
             timelineContainer.style.display = 'none';
             annotationsContainer.style.display = 'flex';
@@ -1553,7 +1568,7 @@ function viewStudentReport(sessionId, examId) {
     window.renderAnnotations = async function(sessionId) {
         const list = document.getElementById('modal-annotations-list');
         if (!list) return;
-        list.innerHTML = '<div style="text-align:center; padding:20px; color:#94a3b8;"><div class="spinner"></div></div>';
+        list.innerHTML = '<div style="text-align:center; padding:20px; color:#8b83a3;"><div class="spinner"></div></div>';
         
         try {
             const res = await apiFetch(`/api/session/${sessionId}/annotations`);
@@ -1569,7 +1584,7 @@ function viewStudentReport(sessionId, examId) {
             }
             
             if (annotations.length === 0) {
-                list.innerHTML = '<div style="text-align:center; padding:35px; color:#94a3b8; font-size:13px;">No annotations left on this session yet. Type above to add one.</div>';
+                list.innerHTML = '<div style="text-align:center; padding:35px; color:#8b83a3; font-size:13px;">No annotations left on this session yet. Type above to add one.</div>';
                 return;
             }
             
@@ -1580,10 +1595,10 @@ function viewStudentReport(sessionId, examId) {
                 const timeStr = min + ':' + sec.toString().padStart(2, '0');
                 
                 html += `
-                    <div style="background: rgba(255, 255, 255, 0.03); border: 1px solid #334155; padding: 12px; border-radius: 8px; margin-bottom: 8px; display: flex; justify-content: space-between; align-items: flex-start; gap: 10px;">
+                    <div style="background: rgba(255, 255, 255, 0.03); border: 1px solid #e2dff0; padding: 12px; border-radius: 8px; margin-bottom: 8px; display: flex; justify-content: space-between; align-items: flex-start; gap: 10px;">
                         <div>
-                            <span style="font-family: monospace; font-size:12px; font-weight:700; color:#3b82f6; cursor:pointer; text-decoration: underline;" onclick="seekVideo(${a.timestamp_seconds})">[${timeStr}]</span>
-                            <p style="margin: 4px 0 0 0; color:#f8fafc; font-size:13px; line-height: 1.4; word-break: break-word;">${escapeHtml(a.note)}</p>
+                            <span style="font-family: monospace; font-size:12px; font-weight:700; color:#5b3fa8; cursor:pointer; text-decoration: underline;" onclick="seekVideo(${a.timestamp_seconds})">[${timeStr}]</span>
+                            <p style="margin: 4px 0 0 0; color:#241d38; font-size:13px; line-height: 1.4; word-break: break-word;">${escapeHtml(a.note)}</p>
                         </div>
                         <button onclick="deleteAnnotation(${a.id}, ${sessionId})" style="background:transparent; border:none; color:#ef4444; font-size:18px; cursor:pointer; line-height:1;" title="Delete note">&times;</button>
                     </div>
@@ -1680,7 +1695,7 @@ function viewStudentReport(sessionId, examId) {
             const isDanger = ['tab_blur', 'window_blur', 'fullscreen_exit', 'audio_violation', 'mic_muted', 'booted', 'error', 'fail', 'phone_detected', 'multiple_faces'].includes(l.event_type) || isAI;
             const isWarning = ['audio_threshold_exceeded', 'gaze_off_screen'].includes(l.event_type) || l.event_type.includes('transcript') || l.event_type.includes('voice') || l.event_type.includes('speaking') || l.event_type.includes('blur') || l.event_type.includes('focus');
 
-            let borderColor = '#3b82f6';
+            let borderColor = '#5b3fa8';
             let bgColor = 'rgba(59, 130, 246, 0.05)';
             if (isDanger) { borderColor = '#ef4444'; bgColor = 'rgba(239, 68, 68, 0.05)'; }
             else if (isWarning) { borderColor = '#f59e0b'; bgColor = 'rgba(245, 158, 11, 0.05)'; }
@@ -1694,16 +1709,16 @@ function viewStudentReport(sessionId, examId) {
             logsHtml += `
                 <div style="padding: 10px 12px; margin-bottom: 8px; border-radius: 8px; background: ${bgColor}; border-left: 4px solid ${borderColor}; cursor: pointer; transition: transform 0.15s, background 0.15s;"
                      onclick="seekVideo(${offsetSec})"
-                     onmouseenter="this.style.transform='translateX(4px)'; this.style.background='#334155';"
+                     onmouseenter="this.style.transform='translateX(4px)'; this.style.background='#faf8ff';"
                      onmouseleave="this.style.transform='translateX(0)'; this.style.background='${bgColor}';">
-                    <div style="font-size: 11px; color: #94a3b8; margin-bottom: 4px;">[${timeStr}] - ${escapeHtml(String(l.event_type || '').replace(/_/g, ' ').toUpperCase())}</div>
-                    <div style="font-size: 12px; line-height: 1.4; color: #f8fafc; word-break: break-word;">${escapeHtml(l.event_message)}</div>
+                    <div style="font-size: 11px; color: #8b83a3; margin-bottom: 4px;">[${timeStr}] - ${escapeHtml(String(l.event_type || '').replace(/_/g, ' ').toUpperCase())}</div>
+                    <div style="font-size: 12px; line-height: 1.4; color: #241d38; word-break: break-word;">${escapeHtml(l.event_message)}</div>
                 </div>
             `;
         });
 
         if (filteredLogs.filter(l => l.event_type !== 'room_scan_video').length === 0) {
-            logsHtml = `<div style="text-align:center; padding:20px; color:#94a3b8; font-size:13px;">No matching events found.</div>`;
+            logsHtml = `<div style="text-align:center; padding:20px; color:#8b83a3; font-size:13px;">No matching events found.</div>`;
         }
         container.innerHTML = logsHtml;
     };
