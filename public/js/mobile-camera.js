@@ -6,6 +6,10 @@ let chunkIndex = 0;
 let isRecording = false;
 let recordIntervalId = null;
 let wakeLockSentinel = null;
+// chunkIndex is a session-wide high-water mark that survives reloads, so it can
+// start above zero. The watchdog needs to know whether *this* recorder run has
+// produced anything, which is a different question.
+let chunksProducedThisRun = 0;
 
 const urlParams = new URLSearchParams(window.location.search);
 const token = urlParams.get('token');
@@ -26,14 +30,252 @@ let isProcessingQueue = false;
 // large, so the cause is reported one time instead of once per doomed chunk.
 let uploadTooLargeReported = false;
 
+// ---------------------------------------------------------------------------
+// Chunk persistence
+//
+// The queue used to live only in the array above. A phone that lost signal piled
+// chunks up in memory, and anything still unsent when the tab was reloaded,
+// backgrounded and evicted, or killed by the OS was gone for good — while the
+// desktop recorder had survived exactly that through IndexedDB from the start.
+// Every chunk is now written to storage *before* it is queued, so losing the
+// network — or the page — costs time rather than footage.
+// ---------------------------------------------------------------------------
+const MOBILE_DB_NAME = 'ProctorGuardMobileDB';
+const MOBILE_STORE = 'mobile_chunks';
+// Keyed on the session token so a reload recovers this attempt's chunks and
+// never picks up a previous student's.
+const RESUME_KEY = `pg_mobile_next_index_${token || 'unknown'}`;
+
+let useMobileMemoryStorage = false;
+const mobileMemoryChunks = {};
+try {
+    if (!window.indexedDB) useMobileMemoryStorage = true;
+} catch (e) {
+    useMobileMemoryStorage = true;
+}
+
+function openMobileDB() {
+    if (useMobileMemoryStorage) return Promise.reject(new Error('IndexedDB unavailable'));
+    return new Promise((resolve, reject) => {
+        try {
+            const request = indexedDB.open(MOBILE_DB_NAME, 1);
+            request.onupgradeneeded = (e) => {
+                const db = e.target.result;
+                if (!db.objectStoreNames.contains(MOBILE_STORE)) {
+                    db.createObjectStore(MOBILE_STORE, { keyPath: 'key' });
+                }
+            };
+            request.onsuccess = (e) => resolve(e.target.result);
+            request.onerror = (e) => {
+                useMobileMemoryStorage = true;
+                reject(e.target.error);
+            };
+        } catch (err) {
+            useMobileMemoryStorage = true;
+            reject(err);
+        }
+    });
+}
+
+// Returns true when the chunk is safely stored somewhere the caller can get it
+// back from. Never throws: the caller still holds the bytes in memory and a
+// storage failure must not stop the upload attempt.
+async function saveMobileChunk(index, data) {
+    const key = `${token}_${index}`;
+    const record = { key, session_token: token, index, data };
+    if (useMobileMemoryStorage) {
+        mobileMemoryChunks[key] = record;
+        return true;
+    }
+    try {
+        const db = await openMobileDB();
+        await new Promise((resolve, reject) => {
+            const tx = db.transaction(MOBILE_STORE, 'readwrite');
+            tx.objectStore(MOBILE_STORE).put(record);
+            tx.oncomplete = () => resolve();
+            tx.onerror = () => reject(tx.error);
+            tx.onabort = () => reject(tx.error || new Error('transaction aborted'));
+        });
+        return true;
+    } catch (e) {
+        // Quota is reached exactly when a slow connection has let chunks pile up,
+        // which is precisely when losing them matters most. Keep them in memory
+        // and route later reads there too, or the chunk becomes invisible.
+        console.warn(`[DB Mobile] Could not persist chunk #${index}, holding in memory:`, e && e.message);
+        useMobileMemoryStorage = true;
+        try {
+            mobileMemoryChunks[key] = record;
+            return true;
+        } catch (memErr) {
+            return false;
+        }
+    }
+}
+
+async function readMobileChunk(index) {
+    const key = `${token}_${index}`;
+    if (useMobileMemoryStorage) return mobileMemoryChunks[key] || null;
+    try {
+        const db = await openMobileDB();
+        return await new Promise((resolve, reject) => {
+            const tx = db.transaction(MOBILE_STORE, 'readonly');
+            const req = tx.objectStore(MOBILE_STORE).get(key);
+            req.onsuccess = () => resolve(req.result || null);
+            req.onerror = () => reject(req.error);
+        });
+    } catch (e) {
+        return mobileMemoryChunks[key] || null;
+    }
+}
+
+async function deleteMobileChunk(index) {
+    const key = `${token}_${index}`;
+    if (useMobileMemoryStorage) {
+        delete mobileMemoryChunks[key];
+        return;
+    }
+    try {
+        const db = await openMobileDB();
+        await new Promise((resolve, reject) => {
+            const tx = db.transaction(MOBILE_STORE, 'readwrite');
+            tx.objectStore(MOBILE_STORE).delete(key);
+            tx.oncomplete = () => resolve();
+            tx.onerror = () => reject(tx.error);
+        });
+    } catch (e) {
+        delete mobileMemoryChunks[key];
+    }
+}
+
+async function getPersistedMobileChunks() {
+    if (useMobileMemoryStorage) {
+        return Object.values(mobileMemoryChunks)
+            .filter(c => c.session_token === token)
+            .sort((a, b) => a.index - b.index);
+    }
+    try {
+        const db = await openMobileDB();
+        return await new Promise((resolve, reject) => {
+            const tx = db.transaction(MOBILE_STORE, 'readonly');
+            const req = tx.objectStore(MOBILE_STORE).getAll();
+            req.onsuccess = () => resolve((req.result || [])
+                .filter(c => c.session_token === token)
+                .sort((a, b) => a.index - b.index));
+            req.onerror = () => reject(req.error);
+        });
+    } catch (e) {
+        return [];
+    }
+}
+
+// The recorder restarts from index 0 on every page load. Without a high-water
+// mark a reload mid-exam would re-emit #0, #1, #2… and overwrite the chunks
+// already on the server, destroying the footage it had successfully saved.
+// Assembly treats the post-reload run as a new segment, which is exactly what it
+// is, so continuing the numbering is both safe and necessary.
+function readResumeIndex() {
+    try {
+        const n = parseInt(localStorage.getItem(RESUME_KEY) || '0', 10);
+        return Number.isFinite(n) && n > 0 ? n : 0;
+    } catch (e) {
+        return 0;
+    }
+}
+
+function writeResumeIndex(nextIndex) {
+    try { localStorage.setItem(RESUME_KEY, String(nextIndex)); } catch (e) {}
+}
+
+// Base64 chunks are large, and holding every one of a long backlog in memory as
+// well as in storage is how a phone runs itself out of RAM. Past the first few,
+// drop the in-memory copy and re-read it from storage at upload time.
+const MOBILE_QUEUE_MEMORY_LIMIT = 6;
+function trimMobileQueueMemory() {
+    if (useMobileMemoryStorage) return; // memory is the only copy — nothing to drop
+    for (let i = MOBILE_QUEUE_MEMORY_LIMIT; i < uploadQueue.length; i++) {
+        if (uploadQueue[i] && uploadQueue[i].data) uploadQueue[i].data = null;
+    }
+}
+
+// Chunks from earlier sessions would otherwise accumulate on a shared phone
+// forever. Keys carry the token, so identifying them needs no data reads.
+async function purgeForeignMobileChunks() {
+    if (useMobileMemoryStorage || !token) return;
+    try {
+        const db = await openMobileDB();
+        const keys = await new Promise((resolve, reject) => {
+            const tx = db.transaction(MOBILE_STORE, 'readonly');
+            const req = tx.objectStore(MOBILE_STORE).getAllKeys();
+            req.onsuccess = () => resolve(req.result || []);
+            req.onerror = () => reject(req.error);
+        });
+        const foreign = keys.filter(k => typeof k === 'string' && k.indexOf(`${token}_`) !== 0);
+        if (!foreign.length) return;
+        await new Promise((resolve, reject) => {
+            const tx = db.transaction(MOBILE_STORE, 'readwrite');
+            const store = tx.objectStore(MOBILE_STORE);
+            foreign.forEach(k => store.delete(k));
+            tx.oncomplete = () => resolve();
+            tx.onerror = () => reject(tx.error);
+        });
+        console.log(`[DB Mobile] Cleared ${foreign.length} leftover chunk(s) from earlier sessions.`);
+    } catch (e) { /* best effort — never block recording on housekeeping */ }
+}
+
+// Re-queue anything a previous load of this page recorded but never delivered.
+let recoveryAttempted = false;
+async function recoverPersistedChunks() {
+    if (!token || recoveryAttempted) return;
+    recoveryAttempted = true;
+    await purgeForeignMobileChunks();
+    let pending = [];
+    try {
+        pending = await getPersistedMobileChunks();
+    } catch (e) {
+        return;
+    }
+    if (!pending.length) return;
+
+    const queued = new Set(uploadQueue.map(t => t.index));
+    let recovered = 0;
+    pending.forEach(rec => {
+        if (queued.has(rec.index)) return;
+        uploadQueue.push({ index: rec.index, data: rec.data, attempts: 0, recovered: true });
+        recovered++;
+    });
+    if (!recovered) return;
+
+    uploadQueue.sort((a, b) => a.index - b.index);
+    trimMobileQueueMemory();
+    console.log(`[Upload Mobile] Recovered ${recovered} chunk(s) left over from an earlier load — resuming upload.`);
+    if (socket && socket.connected) {
+        socket.emit('mobile_violation', {
+            token: token,
+            event_type: 'info',
+            event_message: `Secondary camera page reloaded; ${recovered} previously recorded segment(s) recovered from device storage and re-queued.`
+        });
+    }
+    processUploadQueue();
+}
+
 // Update status visual helper
+// Both of these tolerate a missing element on purpose. The finalize screen replaces
+// document.body, destroying these nodes, and the socket 'disconnect' handler calls
+// updateStatus — so a network drop during upload used to throw on every reconnect
+// attempt, in precisely the situation the upload queue is trying to survive.
 function updateStatus(state, message) {
-    stateText.innerText = message;
-    stateDot.style.background = `var(--${state})`;
-    stateDot.style.boxShadow = `0 0 10px var(--${state})`;
+    if (stateText) stateText.innerText = message;
+    if (stateDot) {
+        stateDot.style.background = `var(--${state})`;
+        stateDot.style.boxShadow = `0 0 10px var(--${state})`;
+    }
 }
 
 function showError(msg) {
+    if (!setupError) {
+        console.error('[Mobile]', msg);
+        return;
+    }
     setupError.innerText = msg;
     setupError.style.display = 'block';
 }
@@ -50,6 +292,9 @@ if (!token || !examId) {
         socket.on('connect', () => {
             console.log("[Socket] Connected to server, pairing mobile...");
             socket.emit('mobile_pair', { token, exam_id: parseInt(examId) });
+            // Anything an earlier load of this page recorded but never managed to send
+            // is still on the device. Send it now, before this run adds more.
+            recoverPersistedChunks();
         });
 
         socket.on('mobile_paired', (data) => {
@@ -188,7 +433,13 @@ function startRecordingSequence() {
     isRecording = true;
     recBadge.style.display = 'flex';
     updateStatus('success', 'PROCTORING ACTIVE');
-    chunkIndex = 0;
+    // Resume the numbering rather than restarting it, so a reload mid-exam cannot
+    // overwrite chunks the server already holds.
+    chunkIndex = readResumeIndex();
+    chunksProducedThisRun = 0;
+    if (chunkIndex > 0) {
+        console.log(`[Recorder] Resuming secondary camera numbering at chunk #${chunkIndex}.`);
+    }
 
     try {
         const mimeType = pickMobileMimeType();
@@ -225,11 +476,18 @@ function startRecordingSequence() {
         mediaRecorder.ondataavailable = (e) => {
             if (e.data && e.data.size > 0) {
                 const thisIndex = chunkIndex++;
+                chunksProducedThisRun++;
+                writeResumeIndex(chunkIndex);
                 const reader = new FileReader();
-                reader.onloadend = () => {
+                reader.onloadend = async () => {
                     const base64data = reader.result;
-                    // Push to queue for sequential processing
+                    // Persist before queueing. If this page dies between now and a
+                    // successful upload — signal loss then an OS tab eviction is the
+                    // usual way — the next load recovers this chunk instead of the
+                    // footage simply ending here.
+                    await saveMobileChunk(thisIndex, base64data);
                     uploadQueue.push({ index: thisIndex, data: base64data, attempts: 0 });
+                    trimMobileQueueMemory();
                     processUploadQueue();
                 };
                 reader.onerror = () => {
@@ -302,7 +560,7 @@ function startMobileChunkWatchdog() {
         if (!isRecording || !mediaRecorder) return;
 
         // Data is flowing — nothing more to check for the rest of the exam.
-        if (chunkIndex > 0) {
+        if (chunksProducedThisRun > 0) {
             clearInterval(mobileWatchdogInterval);
             mobileWatchdogInterval = null;
             return;
@@ -378,6 +636,27 @@ async function processUploadQueue() {
     // delivered, so a failure cannot silently drop it.
     const task = uploadQueue[0];
 
+    // The in-memory copy is trimmed once a backlog builds, so storage is the source
+    // of truth from here on.
+    if (!task.data) {
+        const record = await readMobileChunk(task.index);
+        if (record && record.data) task.data = record.data;
+    }
+    if (!task.data) {
+        console.error(`[Upload Mobile] Chunk #${task.index} is missing from device storage — the secondary recording will have a gap here.`);
+        if (socket) {
+            socket.emit('mobile_violation', {
+                token: token,
+                event_type: 'system_error',
+                event_message: `Secondary camera chunk #${task.index} was lost from device storage before it could be uploaded. The secondary recording will skip this point.`
+            });
+        }
+        uploadQueue.shift();
+        isProcessingQueue = false;
+        processUploadQueue();
+        return;
+    }
+
     // Retry policy matches the desktop recorder. It was 3 attempts over roughly two
     // seconds, after which the chunk was discarded — and because these are
     // MediaRecorder timeslices, losing one corrupts the stream from that point on.
@@ -425,17 +704,23 @@ async function processUploadQueue() {
     }
 
     if (delivered) {
+        await deleteMobileChunk(task.index);
         uploadQueue.shift();
     } else if (task.discard) {
-        // Already reported with its actual cause; drop it without adding another alert.
+        // Already reported with its actual cause. It will never be accepted at this
+        // size, so free the storage too rather than leaving it to be retried forever.
+        await deleteMobileChunk(task.index);
         uploadQueue.shift();
     } else if (task.attempts >= MAX_ATTEMPTS) {
-        console.error(`[Upload Mobile] Chunk #${task.index} discarded after ${MAX_ATTEMPTS} attempts.`);
+        // Out of the live queue, but deliberately left in device storage. If the
+        // network was down for the whole retry window, reopening this page recovers
+        // and re-sends it — so a long outage delays the footage rather than losing it.
+        console.error(`[Upload Mobile] Chunk #${task.index} undelivered after ${MAX_ATTEMPTS} attempts — retained in device storage for recovery.`);
         if (socket) {
             socket.emit('mobile_violation', {
                 token: token,
                 event_type: 'system_error',
-                event_message: `Secondary camera chunk #${task.index} could not be uploaded after ${MAX_ATTEMPTS} attempts. The secondary recording will be incomplete from this point.`
+                event_message: `Secondary camera chunk #${task.index} could not be uploaded after ${MAX_ATTEMPTS} attempts (likely a network outage). It is still stored on the phone — reopening the secondary camera link on that device will finish sending it.`
             });
         }
         uploadQueue.shift();
@@ -519,14 +804,20 @@ async function stopRecordingSequence() {
             heading.style.color = 'var(--success)';
         }
         if (detail) detail.innerText = 'Your secondary camera recording was uploaded in full. You may close this page.';
+        try { localStorage.removeItem(RESUME_KEY); } catch (e) {}
         notifyUploadComplete();
     } else {
         if (heading) {
-            heading.innerText = 'Upload did not finish';
-            heading.style.color = 'var(--danger)';
+            heading.innerText = 'Upload still finishing';
+            heading.style.color = 'var(--warning)';
         }
         if (detail) {
-            detail.innerText = `${uploadQueue.length} segment(s) could not be sent. Tell your instructor the secondary camera upload did not complete.`;
+            // The footage is on the device, not lost, so the instruction that actually
+            // helps is "keep this page reachable" rather than "tell your instructor it
+            // failed" — reopening this link resumes the upload from storage.
+            detail.innerText = `${uploadQueue.length} segment(s) have not been sent yet — they are saved on this phone, not lost. ` +
+                `Reconnect to Wi-Fi and leave this page open, or open the same camera link again, and they will finish uploading. ` +
+                `Let your instructor know if this message does not clear.`;
         }
     }
 }

@@ -2,6 +2,7 @@ require('dotenv').config();
 const express = require('express');
 const session = require('express-session');
 const bodyParser = require('body-parser');
+const uploadPathHealth = require('./services/uploadPathHealth');
 const cors = require('cors');
 const path = require('path');
 const { v4: uuidv4 } = require('uuid');
@@ -641,6 +642,23 @@ app.get('/api/dev/check-config', requireDevEndpoints, (req, res) => {
         secret_length: secret === 'NOT_SET' ? 0 : secret.length,
         base_url: process.env.BASE_URL || 'NOT_SET'
     });
+});
+
+// Target of the startup upload probe. Deliberately unauthenticated in the session
+// sense — it authenticates on a nonce generated in memory at boot, so only this
+// process can drive it, and it never touches the database or the filesystem.
+app.post('/api/health/upload-probe', (req, res) => {
+    if (!uploadPathHealth.isProbeNonce(req.body && req.body.nonce)) {
+        return res.status(403).json({ error: 'Invalid probe nonce.' });
+    }
+    const bytes = req.body.filler ? Buffer.byteLength(req.body.filler, 'utf8') : 0;
+    res.json({ ok: true, bytes });
+});
+
+// Read by the instructor dashboard so a broken upload path is visible where it will
+// actually be seen, rather than only in the startup log.
+app.get('/api/health/upload-path', (req, res) => {
+    res.json(uploadPathHealth.getHealth());
 });
 
 app.get('/api/dev/logs', requireDevEndpoints, (req, res) => {
@@ -4027,10 +4045,33 @@ function auditSecretsAtStartup() {
     }
 }
 
+// Prove the upload path works before students depend on it.
+//
+// Runs after listen() so the probe can reach this process, and through the public
+// origin so it traverses the reverse proxy — which is where the limit that broke
+// recordings actually lives.
+async function verifyUploadPathAtStartup() {
+    const result = await uploadPathHealth.probeUploadPath(process.env.BASE_URL);
+    if (result.ok === true) {
+        console.log(`[Startup] Upload path OK — ${result.reason}`);
+    } else if (result.ok === false) {
+        console.error(`\n${'='.repeat(60)}\n🔴 RECORDING UPLOADS ARE BROKEN\n${'='.repeat(60)}`);
+        console.error('  ' + result.reason);
+        console.error('='.repeat(60) + '\n');
+    } else {
+        console.warn(`[Startup] Upload path not verified — ${result.reason}`);
+    }
+}
+
 initDatabase().then(() => {
     auditSecretsAtStartup();
     server.listen(PORT, () => {
         console.log(`Secure Exam Proctor running on port ${PORT}`);
+        // Small delay so the probe isn't racing the listener it targets.
+        setTimeout(() => {
+            verifyUploadPathAtStartup().catch(err =>
+                console.warn('[Startup] Upload path check could not run:', err && err.message));
+        }, 2000);
     });
 }).catch(console.error);
 

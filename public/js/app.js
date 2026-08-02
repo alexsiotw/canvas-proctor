@@ -512,6 +512,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     overlay.style.display = 'none';
     app.style.display = '';
     checkDatabaseCapacity();
+    checkUploadPathHealth();
     loadExams();
 });
 
@@ -532,6 +533,7 @@ async function submitPasscode() {
             document.getElementById('passcode-overlay').style.display = 'none';
             document.getElementById('app').style.display = '';
             checkDatabaseCapacity();
+            checkUploadPathHealth();
             loadExams();
         } else {
             errorEl.innerText = data.error || 'Incorrect passcode';
@@ -560,6 +562,35 @@ async function checkDatabaseCapacity() {
         }
     } catch(err) {
         console.error("Capacity check failed", err);
+    }
+}
+
+// Surface a broken upload path here, not just in the startup log.
+//
+// A reverse proxy left at nginx's default 1m body limit rejected every camera-only
+// recording chunk with a 413 for an unknown length of time. Nothing was watching, so
+// it was found only when a student's attempt produced no video at all. The server now
+// probes its own public origin at boot; this puts the verdict where it gets read.
+async function checkUploadPathHealth() {
+    try {
+        const res = await fetch('/api/health/upload-path');
+        if (!res.ok) return;
+        const health = await res.json();
+        if (health.ok !== false) return; // true = fine, null = undetermined, don't cry wolf
+
+        const banner = document.createElement('div');
+        banner.style.background = 'var(--danger)';
+        banner.style.color = 'white';
+        banner.style.padding = '12px 20px';
+        banner.style.textAlign = 'center';
+        banner.style.fontWeight = 'bold';
+        banner.style.lineHeight = '1.5';
+        banner.innerHTML = `&#9888;&#65039; CRITICAL: recording uploads are being rejected before they reach ProctorGuard. ` +
+            `Student video will be lost until this is fixed.<br>` +
+            `<span style="font-weight:600; font-size:13px; opacity:.95;">${escapeHtml(health.reason || '')}</span>`;
+        document.body.insertBefore(banner, document.body.firstChild);
+    } catch (err) {
+        console.error('Upload path health check failed', err);
     }
 }
 
