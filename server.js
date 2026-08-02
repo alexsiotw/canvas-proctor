@@ -356,10 +356,60 @@ app.post('/lti/launch', (req, res) => {
     const consumerKey = process.env.LTI_KEY || 'proctor-lti-key';
     const consumerSecret = process.env.LTI_SECRET || 'proctor-lti-secret';
 
+    // A signature check against a secret published in this repository proves nothing:
+    // anyone who can read the source can sign their own launch and claim
+    // roles=Instructor. Treat the fallback values as equivalent to no verification at
+    // all rather than letting them look like security.
+    if (!process.env.LTI_SECRET || consumerSecret === 'proctor-lti-secret') {
+        if (process.env.ALLOW_UNSIGNED_LTI !== 'true') {
+            console.error('[LTI] Refused launch: LTI_SECRET is unset or still the repository default.');
+            return res.status(500).send(`<!DOCTYPE html><html><body style="font-family:sans-serif;text-align:center;margin-top:100px;color:#374151;">
+                <h2>ProctorGuard is not configured</h2>
+                <p>The LTI shared secret has not been set on this server, so launches cannot be verified.</p>
+                <p style="color:#6b7280;font-size:13px;">Administrator: set LTI_SECRET (and LTI_KEY) to match the Canvas External Tool configuration, then restart.</p>
+            </body></html>`);
+        }
+        console.warn('[LTI] LTI_SECRET is unset or default; launches are effectively unverified.');
+    }
+
     const provider = new lti.Provider(consumerKey, consumerSecret);
     provider.valid_request(req, (err, isValid) => {
+        // ============================================================
+        // The OAuth signature is now ENFORCED.
+        //
+        // This block previously logged "validation skipped/failed (expected in DEV)"
+        // and then carried on regardless. Because the role is read straight from
+        // req.body a few lines below, that meant a single unauthenticated POST —
+        //
+        //     POST /lti/launch   roles=Instructor&user_id=anything&context_id=anything
+        //
+        // — minted a full instructor session for anyone on the internet. Every
+        // requireInstructor endpoint followed from that: all student recordings, all
+        // reports, exam configuration, the Drive vault. It also defeated the socket
+        // authentication added earlier, since the resulting cookie was a genuinely
+        // issued instructor session.
+        //
+        // ALLOW_UNSIGNED_LTI exists only because refusing unsigned launches will take
+        // the tool offline if the Canvas consumer key/secret pair is misconfigured.
+        // It is a diagnostic escape hatch, not a setting to leave on.
+        // ============================================================
         if (err || !isValid) {
-            console.log('LTI validation skipped/failed (expected in DEV), proceeding with request body');
+            const reason = err ? err.message : 'signature did not validate';
+            if (process.env.ALLOW_UNSIGNED_LTI === 'true') {
+                console.warn('=================================================================');
+                console.warn(` INSECURE: accepted an UNSIGNED LTI launch (${reason}).`);
+                console.warn(' ALLOW_UNSIGNED_LTI=true is set, so anyone who can POST to');
+                console.warn(' /lti/launch can mint an instructor session. Fix the Canvas');
+                console.warn(' key/secret and remove this variable.');
+                console.warn('=================================================================');
+            } else {
+                console.error(`[LTI] Rejected launch: ${reason}`);
+                return res.status(401).send(`<!DOCTYPE html><html><body style="font-family:sans-serif;text-align:center;margin-top:100px;color:#374151;">
+                    <h2>This launch could not be verified</h2>
+                    <p>ProctorGuard could not confirm this request came from Canvas, so it was refused.</p>
+                    <p style="color:#6b7280;font-size:13px;">If you are an administrator: check that the consumer key and shared secret configured on the Canvas External Tool match LTI_KEY and LTI_SECRET on the server.</p>
+                </body></html>`);
+            }
         }
 
         const userId = req.body.user_id || 'demo_user';

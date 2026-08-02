@@ -71,6 +71,110 @@ function isFlagEvent(type) {
         t.includes('resize') || t.includes('blur') || t.includes('tab_switch');
 }
 
+// ================================================================
+// Exam option icons.
+//
+// Ported verbatim from the extension's quiz-settings panel so the two surfaces
+// show the same glyphs. The dashboard previously loaded these as <img> files from
+// /icons/, which rendered as heavy filled shapes that did not match anything else
+// in the UI. Inline stroke SVGs inherit currentColor, so they also pick up the
+// selected/unselected state of their card instead of staying a fixed colour.
+// ================================================================
+const PG_ICONS = {
+    cam:    `<svg viewBox="0 0 24 24"><path d="M23 7l-7 5 7 5V7z"/><rect x="1" y="5" width="15" height="14" rx="2"/></svg>`,
+    mic:    `<svg viewBox="0 0 24 24"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg>`,
+    screen: `<svg viewBox="0 0 24 24"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/><path d="M8 8l2 2 4-4"/></svg>`,
+    traffic:`<svg viewBox="0 0 24 24"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>`,
+    desk:   `<svg viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="13" rx="2"/><path d="M8 21h8M12 16v5"/><circle cx="12" cy="10" r="3"/></svg>`,
+    fs:     `<svg viewBox="0 0 24 24"><path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"/></svg>`,
+    one:    `<svg viewBox="0 0 24 24"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>`,
+    ntab:   `<svg viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="15" rx="2"/><path d="M3 10h18"/><line x1="16" y1="5" x2="16" y2="10"/></svg>`,
+    ctab:   `<svg viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="15" rx="2"/><path d="M3 10h18"/><line x1="9" y1="15" x2="15" y2="15"/><line x1="12" y1="12" x2="12" y2="18"/></svg>`,
+    print:  `<svg viewBox="0 0 24 24"><polyline points="6 9 6 2 18 2 18 9"/><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/><rect x="6" y="14" width="12" height="8"/></svg>`,
+    clip:   `<svg viewBox="0 0 24 24"><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/><rect x="8" y="2" width="8" height="4" rx="1"/></svg>`,
+    dl:     `<svg viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>`,
+    cache:  `<svg viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/></svg>`,
+    rc:     `<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><line x1="12" y1="3" x2="12" y2="12"/><line x1="12" y1="12" x2="21" y2="12"/></svg>`,
+    reen:   `<svg viewBox="0 0 24 24"><path d="M15 9l3 3-3 3"/><path d="M18 12H6"/><line x1="21" y1="3" x2="21" y2="21"/></svg>`,
+    mobile: `<svg viewBox="0 0 24 24"><rect x="5" y="2" width="14" height="20" rx="2"/><line x1="12" y1="18" x2="12.01" y2="18"/></svg>`,
+    vvid:   `<svg viewBox="0 0 24 24"><path d="M23 7l-7 5 7 5V7z"/><rect x="1" y="5" width="15" height="14" rx="2"/><path d="M4 19l1.5 1.5L9 17"/></svg>`,
+    vaud:   `<svg viewBox="0 0 24 24"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="22"/><path d="M15 21l1.5 1.5L20 19"/></svg>`,
+    vdesk:  `<svg viewBox="0 0 24 24"><rect x="2" y="3" width="20" height="13" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="16" x2="12" y2="21"/><path d="M16 18l1.5 1.5L21 16"/></svg>`,
+    vid:    `<svg viewBox="0 0 24 24"><rect x="2" y="5" width="20" height="14" rx="2"/><circle cx="8" cy="12" r="3"/><path d="M15 9h4M15 12h4M15 15h3"/></svg>`,
+    vsig:   `<svg viewBox="0 0 24 24"><path d="M3 17c1.5-2 2.5-4 4-4s2 3 3.5 3 2.5-3 4-3 2 2 3.5 4"/><line x1="3" y1="21" x2="21" y2="21"/></svg>`,
+    calc:   `<svg viewBox="0 0 24 24"><rect x="4" y="2" width="16" height="20" rx="2"/><line x1="8" y1="6" x2="16" y2="6"/><line x1="8" y1="10" x2="8" y2="10" stroke-width="3"/><line x1="12" y1="10" x2="12" y2="10" stroke-width="3"/><line x1="16" y1="10" x2="16" y2="10" stroke-width="3"/><line x1="8" y1="14" x2="8" y2="14" stroke-width="3"/><line x1="12" y1="14" x2="12" y2="14" stroke-width="3"/><line x1="16" y1="14" x2="16" y2="18" stroke-width="3"/><line x1="8" y1="18" x2="8" y2="18" stroke-width="3"/><line x1="12" y1="18" x2="12" y2="18" stroke-width="3"/></svg>`,
+    wb:     `<svg viewBox="0 0 24 24"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/><path d="M7 10l3 3 5-5"/></svg>`
+};
+
+// Which option each card shows, keyed by its visible label rather than by the icon
+// filename it used to load — two of those files were reused for different options
+// ("Mobile Camera" and "Allow Mobile Devices" both used secondary-mobile-camera.svg),
+// so the filename cannot distinguish them.
+const PG_ICON_BY_LABEL = {
+    'Record Webcam': 'cam', 'Record Video': 'cam', 'Record Audio': 'mic',
+    'Record Screen': 'screen', 'Record Web Traffic': 'traffic',
+    'Room / Desk Scan': 'desk', 'Mobile Camera': 'desk',
+    'Secondary Mobile Camera': 'desk',
+    'Force Full Screen': 'fs', 'Only One Screen': 'one',
+    'Disable New Tabs': 'ntab', 'Close Open Tabs': 'ctab',
+    'Disable Printing': 'print', 'Disable Clipboard': 'clip',
+    'Block Downloads': 'dl', 'Clear Cache': 'cache',
+    'Disable Right Click': 'rc', 'Prevent Re-entry': 'reen',
+    'Allow Mobile Devices': 'mobile',
+    'Verify Video': 'vvid', 'Verify Audio': 'vaud', 'Verify Desktop': 'vdesk',
+    'Verify ID': 'vid', 'Verify Signature': 'vsig',
+    'Calculator': 'calc', 'Whiteboard': 'wb'
+};
+
+// Options that only the browser extension can enforce.
+//
+// The dashboard offered these as ordinary checkboxes, so an instructor could tick
+// "Disable New Tabs", save, and reasonably believe tabs were blocked — when nothing
+// in the web system can block a tab. Only the extension can, and it is currently
+// paused for students. The extension's own settings panel already greys these out
+// and labels them; the dashboard did not, which made it the less honest of the two
+// surfaces about what it actually enforces.
+const PG_EXTENSION_ONLY_LABELS = ['Record Web Traffic', 'Disable New Tabs', 'Close Open Tabs', 'Clear Cache'];
+
+function applyOptionCardIcons(root) {
+    if (!root) return;
+
+    // Stroke icons, injected once. Inheriting currentColor is the point: the glyph
+    // picks up its card's selected/unselected colour instead of being a fixed image.
+    if (!document.getElementById('pg-option-icon-styles')) {
+        const st = document.createElement('style');
+        st.id = 'pg-option-icon-styles';
+        st.textContent = `
+            .proctorio-icon svg { width: 26px; height: 26px; fill: none; stroke: currentColor;
+                stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; display: block; }
+            .proctorio-card.pg-ext-only { opacity: 0.45; cursor: not-allowed; }
+            .pg-ext-only-badge { font-size: 9px; font-weight: 700; color: var(--text-muted);
+                margin-top: 2px; letter-spacing: 0.3px; }
+        `;
+        document.head.appendChild(st);
+    }
+
+    root.querySelectorAll('.proctorio-card').forEach(card => {
+        const titleEl = card.querySelector('.proctorio-title');
+        const iconEl = card.querySelector('.proctorio-icon');
+        if (!titleEl || !iconEl) return;
+
+        const label = titleEl.textContent.trim();
+        const key = PG_ICON_BY_LABEL[label];
+        if (key && PG_ICONS[key]) iconEl.innerHTML = PG_ICONS[key];
+
+        if (PG_EXTENSION_ONLY_LABELS.includes(label)) {
+            card.classList.add('pg-ext-only');
+            card.removeAttribute('onclick');
+            card.title = 'Needs the student browser extension, which is currently paused. ' +
+                'Everything else on this page is enforced by ProctorGuard itself.';
+            if (!titleEl.querySelector('.pg-ext-only-badge')) {
+                titleEl.insertAdjacentHTML('beforeend', '<div class="pg-ext-only-badge">EXTENSION ONLY</div>');
+            }
+        }
+    });
+}
+
 // m:ss for video offsets.
 function formatClock(totalSeconds) {
     const s = Math.max(0, Math.floor(Number(totalSeconds) || 0));
@@ -2578,7 +2682,8 @@ function showCreateExamModal(examId = null) {
     };
 
     document.getElementById('modal-content').innerHTML = html;
-    
+    applyOptionCardIcons(document.getElementById('modal-content'));
+
     // Initialize metric segments visually
     setTimeout(() => {
         updateMetricSlider('navigating-away', weightNavigatingAway, false);
