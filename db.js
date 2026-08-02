@@ -148,6 +148,9 @@ async function initDatabase() {
       -- overstates the attempt length and shifts every log video-marker out of
       -- sync with the footage it points at.
       ALTER TABLE exam_sessions ADD COLUMN IF NOT EXISTS recording_started_at TIMESTAMP;
+      -- The phone may record a different container than the laptop (Safari gives
+      -- MP4 where Chrome gives WebM), so the secondary recording needs its own.
+      ALTER TABLE exam_sessions ADD COLUMN IF NOT EXISTS mobile_mime_type VARCHAR(255);
       ALTER TABLE exam_sessions ADD COLUMN IF NOT EXISTS mobile_drive_file_id VARCHAR(255);
       ALTER TABLE exam_sessions ADD COLUMN IF NOT EXISTS room_scan_drive_file_id VARCHAR(255);
       ALTER TABLE exam_sessions ADD COLUMN IF NOT EXISTS verify_id_image TEXT;

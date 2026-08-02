@@ -249,6 +249,19 @@ function injectSidebarFallbackLink(rightSide) {
 // would show up as black text on transparent backgrounds rather than as an
 // error. Every injector calls this first.
 // ============================================================
+// Escape untrusted text before it reaches innerHTML. Student-supplied proctor log
+// messages are rendered in this panel, which runs on the Canvas origin inside a
+// teacher's session — so an unescaped message is a student-to-teacher escalation.
+function prcEscapeHtml(value) {
+    if (value === null || value === undefined) return '';
+    return String(value)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+}
+
 function ensurePgThemeTokens() {
   if (document.getElementById('pg-theme-tokens')) return;
   const tokens = document.createElement('style');
@@ -598,8 +611,8 @@ function updateReviewCenterModalBody(modalEl, sessions, loadError) {
         </button>
       </td>
       <td>
-        <div style="font-weight:700;color:var(--prc-text);line-height:1.2;margin-bottom:2px;">${s.student_name.split(' ')[0]}</div>
-        <div style="font-weight:700;color:var(--prc-text);line-height:1.2;">${s.student_name.split(' ').slice(1).map(n=>n[0]+'.').join(' ')}</div>
+        <div style="font-weight:700;color:var(--prc-text);line-height:1.2;margin-bottom:2px;">${prcEscapeHtml(String(s.student_name || '').split(' ')[0])}</div>
+        <div style="font-weight:700;color:var(--prc-text);line-height:1.2;">${prcEscapeHtml(String(s.student_name || '').split(' ').slice(1).map(n => (n[0] || '') + '.').join(' '))}</div>
       </td>
       <td>
         <div style="color:var(--prc-text-2);font-size:13px;line-height:1.4;">${new Date(s.started_at).toLocaleDateString('en-US', {month:'short',day:'numeric'})},</div>
@@ -1275,7 +1288,11 @@ async function loadSessionInModal(modal, session) {
     
     let details = `<span class="prm-log-ts">${ts}</span> · ${isAl ? 'Violation #' + (index + 1) : 'Logged event'}`;
     // The mockup had "0:25 · 3 sec · Violation #1" and "Browser minimized". We can put log.event_message if available, or a generic duration.
-    let desc = log.event_message ? log.event_message : (isAl ? 'Proctoring rule triggered' : 'Event recorded');
+    // Escaped: event_message is written by the student's own browser via
+    // /api/session/log, and this innerHTML runs on the Canvas origin inside a
+    // teacher's authenticated session. Unescaped, a student could log an <img
+    // onerror=...> payload and have it execute as the teacher.
+    let desc = log.event_message ? prcEscapeHtml(log.event_message) : (isAl ? 'Proctoring rule triggered' : 'Event recorded');
 
     el.innerHTML = `
       <div style="padding:16px 20px; border-bottom:1px solid var(--prc-border); display:flex; flex-direction:column; gap:4px;">
