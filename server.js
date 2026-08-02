@@ -2239,7 +2239,7 @@ async function assembleAndUploadSessionVideo(exam_session_id, total_chunks) {
 
         if (!fs.existsSync(chunkDir)) {
             console.log(`No local chunks found for session ${exam_session_id}`);
-            await logSessionEvent(exam_session_id, 'error',
+            await logSessionEvent(exam_session_id, 'system_error',
                 'No recording chunks were found on the server for this attempt. No video could be produced.');
             return;
         }
@@ -2250,7 +2250,7 @@ async function assembleAndUploadSessionVideo(exam_session_id, total_chunks) {
 
         if (orderedChunks.length === 0) {
             console.log(`No chunk files in directory for session ${exam_session_id}`);
-            await logSessionEvent(exam_session_id, 'error',
+            await logSessionEvent(exam_session_id, 'system_error',
                 'The recording directory for this attempt contained no usable chunks. No video could be produced.');
             return;
         }
@@ -2362,7 +2362,7 @@ async function assembleAndUploadSessionVideo(exam_session_id, total_chunks) {
 
         if (skippedSegments.length > 0) {
             const lostChunks = skippedSegments.reduce((sum, seg) => sum + seg.files.length, 0);
-            await logSessionEvent(exam_session_id, 'error',
+            await logSessionEvent(exam_session_id, 'system_error',
                 `Recording damage: ${lostChunks} uploaded chunk(s) across ${skippedSegments.length} span(s) could not be decoded ` +
                 `because no stream header was ever received for them. That footage is missing from the video.`);
         }
@@ -2411,7 +2411,7 @@ async function assembleAndUploadSessionVideo(exam_session_id, total_chunks) {
                     } catch (segErr) {
                         console.error(`[Assemble] Segment ${i + 1}/${segmentRawPaths.length} failed (${segErr.message}). Continuing with the remaining segments.`);
                         try { if (fs.existsSync(segMp4)) fs.unlinkSync(segMp4); } catch (e) {}
-                        await logSessionEvent(exam_session_id, 'error',
+                        await logSessionEvent(exam_session_id, 'system_error',
                             `A span of the recording (segment ${i + 1} of ${segmentRawPaths.length}) could not be decoded ` +
                             `and is missing from the video.`);
                     }
@@ -2438,7 +2438,7 @@ async function assembleAndUploadSessionVideo(exam_session_id, total_chunks) {
             } catch (transcodeErr) {
                 console.error(`Transcoding failed for session ${exam_session_id}, falling back to the raw recording:`, transcodeErr.message);
                 const droppedSegments = segmentRawPaths.length - 1;
-                await logSessionEvent(exam_session_id, 'error',
+                await logSessionEvent(exam_session_id, 'system_error',
                     `Video transcoding failed (${transcodeErr.message}). The raw recording was preserved instead` +
                     (droppedSegments > 0
                         ? `, but only the first of ${segmentRawPaths.length} recorded spans could be kept — the video is incomplete.`
@@ -2478,7 +2478,7 @@ async function assembleAndUploadSessionVideo(exam_session_id, total_chunks) {
             if (recordedWindowSec > 30 && coverage < 0.85) {
                 const shortfall = Math.round(recordedWindowSec - assembledDurationSec);
                 console.warn(`[Assemble] Session ${exam_session_id} video is short by ${shortfall}s.`);
-                await logSessionEvent(exam_session_id, 'error',
+                await logSessionEvent(exam_session_id, 'system_error',
                     `Recording is shorter than the monitored window: ${Math.round(assembledDurationSec)}s of video for ` +
                     `${Math.round(recordedWindowSec)}s of recording (${Math.round(coverage * 100)}% covered, ` +
                     `${shortfall}s missing). This excludes the ${Math.round(setupLeadInSec)}s of setup before recording ` +

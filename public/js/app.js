@@ -59,15 +59,52 @@ const FLAG_EVENT_TYPES = [
 
 function isFlagEvent(type) {
     if (!type) return false;
+    // Kept in step with getEventWeightCategory below — the flag count and the risk
+    // score must never disagree about what counts as a violation.
+    if (NON_BEHAVIOURAL_EVENT_TYPES.includes(normaliseEventType(type))) return false;
     if (type.startsWith('AI_')) return true;
     if (FLAG_EVENT_TYPES.includes(type)) return true;
-    const t = type.toLowerCase();
+    const t = normaliseEventType(type);
+    if (t === 'tab_blocked' || t === 'incognito_blocked' ||
+        t === 'multi_monitor_detected' || t === 'prohibited_process') return true;
     return t.includes('clipboard') || t.includes('copy') || t.includes('paste') ||
         t.includes('resize') || t.includes('blur') || t.includes('tab_switch');
 }
 
+// Diagnostics and lifecycle notes. These describe the software's own state, not
+// the student's conduct, and must never raise a risk score.
+//
+// This list matters because 'error' is in FLAG_EVENT_TYPES: without it, a failed
+// chunk upload or a damaged recording — infrastructure problems, often the
+// student's wifi — would be counted as integrity flags against the person sitting
+// the exam. A network fault is not cheating.
+const NON_BEHAVIOURAL_EVENT_TYPES = [
+    'heartbeat', 'info', 'system_error', 'upload_incomplete',
+    'exam_ended', 'exam_started', 'screen_share_resolved', 'page_hidden'
+];
+
+// Normalise event types before matching.
+//
+// The extension reports human-readable types with capitals and spaces
+// ("Tab Blocked", "Multi-Monitor Detected", "Incognito Blocked") while this
+// taxonomy matches lowercase/underscore patterns. Unmatched types return null and
+// computeSessionRisk skips them, so every violation the extension detected —
+// blocked tabs, second monitors, incognito windows — was scoring zero and was
+// missing from the instructor's flag count entirely.
+function normaliseEventType(type) {
+    return String(type || '').trim().toLowerCase().replace(/[\s-]+/g, '_');
+}
+
 function getEventWeightCategory(type) {
     if (!type) return null;
+
+    const norm = normaliseEventType(type);
+    if (NON_BEHAVIOURAL_EVENT_TYPES.includes(norm)) return null;
+
+    // Extension-reported lockdown violations.
+    if (norm === 'tab_blocked' || norm === 'incognito_blocked') return 'away';
+    if (norm === 'multi_monitor_detected' || norm === 'prohibited_process') return 'device';
+
     if (type.startsWith('AI_GAZE') || type === 'gaze_off_screen') return 'head';
     if (type.startsWith('AI_DEVICE') || type === 'phone_detected') return 'device';
     if (type.startsWith('AI_PEOPLE') || type === 'multiple_faces' || type === 'no_face') return 'face';
