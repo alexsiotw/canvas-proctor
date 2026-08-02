@@ -576,7 +576,7 @@ function renderExams() {
         
         if (linkedExam) {
             // Enabled state (Dashboard, Settings, Disable buttons)
-            titleHtml = `<a href="javascript:void(0)" onclick="loadExamDashboard(${linkedExam.id})" style="color: var(--accent); font-weight: 700; text-decoration:none; transition:var(--transition); font-size: 14px; font-family: var(--font-sans);">${q.title}</a>`;
+            titleHtml = `<a href="javascript:void(0)" onclick="loadExamDashboard(${linkedExam.id})" style="color: var(--accent); font-weight: 700; text-decoration:none; transition:var(--transition); font-size: 14px; font-family: var(--font-sans);">${escapeHtml(q.title)}</a>`;
             actionsHtml = `
                 <div style="display:flex; gap:6px; justify-content:flex-end;">
                     <button class="btn btn-slate btn-sm" onclick="loadExamDashboard(${linkedExam.id})" style="font-weight:700;">Dashboard</button>
@@ -586,11 +586,11 @@ function renderExams() {
             `;
         } else {
             // Disabled state (Enable button)
-            titleHtml = `<span style="color: var(--text-primary); font-weight: 500; font-size: 14px; font-family: var(--font-sans);">${q.title}</span>`;
+            titleHtml = `<span style="color: var(--text-primary); font-weight: 500; font-size: 14px; font-family: var(--font-sans);">${escapeHtml(q.title)}</span>`;
             actionsHtml = `
                 <div style="display:flex; justify-content:flex-end; align-items:center; gap: 10px;">
                     <span style="color: #ea580c; font-size:16px;">➔</span>
-                    <button class="btn btn-primary btn-sm" onclick="enableQuizProctoring('${q.title.replace(/'/g, "\\'")}', '${q.quiz_url}')" style="font-weight:700; padding: 6px 18px;">Enable</button>
+                    <button class="btn btn-primary btn-sm" onclick="enableQuizProctoring(${JSON.stringify(String(q.title || '')).replace(/"/g, '&quot;')}, ${JSON.stringify(String(q.quiz_url || '')).replace(/"/g, '&quot;')})" style="font-weight:700; padding: 6px 18px;">Enable</button>
                 </div>
             `;
         }
@@ -658,7 +658,7 @@ function loadExamDashboard(examId) {
             <div>
                 <button class="btn btn-secondary" style="margin-bottom: 12px;" onclick="closeExamDashboard()">← Back to Exams</button>
                 <div style="display:flex; align-items:center; gap: 15px;">
-                    <h1 class="page-title" style="font-size: 24px; font-weight: 800; letter-spacing: -0.5px;">${exam.title} Workspace</h1>
+                    <h1 class="page-title" style="font-size: 24px; font-weight: 800; letter-spacing: -0.5px;">${escapeHtml(exam.title)} Workspace</h1>
                     <button class="btn" id="status-toggle-btn" 
                         style="padding: 6px 16px; font-size: 12px; border-radius: 20px; font-weight: 700; border: none; cursor: pointer; transition: var(--transition);
                         ${exam.is_open ? 'background:var(--success); color:white;' : 'background:var(--danger); color:white;'}"
@@ -1412,7 +1412,7 @@ function viewStudentReport(sessionId, examId) {
                 </span>
             </div>
             <div style="display: flex; align-items: center; gap: 12px;">
-                <span style="font-size: 12px; color: #94a3b8; font-family: monospace;">Exam: ${exam.title} | Attempt ${session.attempt_number || 1} | ${new Date(session.started_at).toLocaleString()}</span>
+                <span style="font-size: 12px; color: #94a3b8; font-family: monospace;">Exam: ${escapeHtml(exam.title)} | Attempt ${session.attempt_number || 1} | ${new Date(session.started_at).toLocaleString()}</span>
                 <button class="modal-close" onclick="closeModal()" style="background: transparent; border: none; color: #94a3b8; font-size: 28px; cursor: pointer; line-height: 1;">&times;</button>
             </div>
         </div>
@@ -1772,8 +1772,17 @@ function exportExamReportsCsv(examId) {
             (s.annotations && s.annotations.length) || 0
         ]);
     });
+    // Neutralise spreadsheet formulas before writing the cell.
+    //
+    // The quoting below is correct CSV, but Excel and Sheets still evaluate a field
+    // beginning with = + - @ or a control character even inside quotes. Student names
+    // come from Canvas and are student-editable in many configurations, so a name
+    // like =HYPERLINK("http://…"&A1) would execute when an instructor opens the
+    // exported report. Prefixing with an apostrophe makes it literal text.
     const csv = rows.map(row => row.map(cell => {
-        const str = String(cell).replace(/"/g, '""');
+        let str = String(cell);
+        if (/^[=+\-@\t\r]/.test(str)) str = `'${str}`;
+        str = str.replace(/"/g, '""');
         return `"${str}"`;
     }).join(',')).join('\n');
     const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
@@ -1837,7 +1846,7 @@ function showAccommodationsPanel(examId) {
     modalContainer.style.overflow = '';
     modalContainer.innerHTML = `
         <div class="modal-header">
-            <h2 class="modal-title">Accommodations — ${exam.title}</h2>
+            <h2 class="modal-title">Accommodations — ${escapeHtml(exam.title)}</h2>
             <button class="modal-close" onclick="closeModal()">&times;</button>
         </div>
         <p style="color:var(--text-secondary); font-size:13px; line-height:1.5; margin-bottom:16px;">
@@ -1935,7 +1944,7 @@ function showCreateExamModal(examId = null) {
         <div style="max-height: 70vh; overflow-y: auto; padding-right: 8px;">
             <div class="form-group">
                 <label class="form-label">Exam Title</label>
-                <input type="text" id="exam-title" class="form-input" placeholder="e.g. Midterm Physics" value="${exam ? exam.title : ''}">
+                <input type="text" id="exam-title" class="form-input" placeholder="e.g. Midterm Physics" value="${exam ? escapeHtml(exam.title) : ''}">
             </div>
             <div class="form-group" style="display: flex; gap: 10px;">
                 <div style="flex:1;">
@@ -1954,7 +1963,7 @@ function showCreateExamModal(examId = null) {
             </div>
             <div class="form-group">
                 <label class="form-label">LMS Quiz URL</label>
-                <input type="text" id="exam-url" class="form-input" placeholder="https://canvas.instructure.com/courses/1/quizzes/1" value="${exam ? exam.canvas_quiz_url : ''}">
+                <input type="text" id="exam-url" class="form-input" placeholder="https://canvas.instructure.com/courses/1/quizzes/1" value="${exam ? escapeHtml(exam.canvas_quiz_url) : ''}">
             </div>
             <div class="form-group">
                 <label class="form-label">Canvas Quiz Password / Access Code (Optional)</label>
