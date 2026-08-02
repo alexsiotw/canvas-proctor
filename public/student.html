@@ -328,7 +328,15 @@
     </div>
   </div>
 
-  <div id="code-container" style="display: flex; flex-direction: column; align-items: center; justify-content: center; min-height: 100vh; padding: 20px;">
+  <!-- Neutral boot state. Shown until the client knows whether an access code is
+       actually required, so students launching from a Canvas placement — which is
+       most of them — no longer see an access-code prompt flash past before setup. -->
+  <div id="boot-loading" style="display: flex; flex-direction: column; align-items: center; justify-content: center; min-height: 60vh; gap: 14px; padding: 20px;">
+      <div class="spinner" style="width: 26px; height: 26px; border-width: 3px;"></div>
+      <div style="font-size: 14px; color: var(--text-secondary);">Preparing your proctored session&hellip;</div>
+  </div>
+
+  <div id="code-container" style="display: none; flex-direction: column; align-items: center; justify-content: center; min-height: 100vh; padding: 20px;">
       <div class="check-card">
           <h1>Exam Access Code</h1>
           <p style="color: var(--text-secondary); margin-bottom: 20px;">
@@ -652,7 +660,7 @@
       </div>
   </div>
 
-  <script src="/js/student.js?v=3.3.0"></script>
+  <script src="/js/student.js?v=3.4.0"></script>
 </body>
 
 </html>

@@ -463,18 +463,39 @@ function initLtiFrameResize() {
     setTimeout(sendResize, 1000);
 }
 
-window.addEventListener('load', () => {
+function hideBootLoading() {
+    const boot = document.getElementById('boot-loading');
+    if (boot) boot.style.display = 'none';
+}
+
+// Runs on DOMContentLoaded rather than window.load.
+//
+// `load` waits for every subresource — including the quiz iframe — so the routing
+// decision was arriving a second or two after first paint. Since the access-code
+// container used to be visible by default, that delay was the flash: students
+// launching from a Canvas placement saw a code prompt they never needed to answer.
+// None of the work below depends on images or frames, only on the DOM.
+function bootStudentSession() {
     initLtiFrameResize();
+
     if (isPracticeMode) {
+        hideBootLoading();
         startPracticeMode();
         return;
     }
+
     if ((placementId || directExamId) && sessionToken) {
-        document.getElementById('code-container').style.display = 'none';
+        // Launched from a placement — no code required. The neutral boot panel stays
+        // up until verifyPlacement swaps in the wizard, so nothing flashes.
         verifyPlacement(placementId, directExamId);
     } else if (autoExamCode && sessionToken) {
         document.getElementById('access-code-input').value = autoExamCode;
         verifyExamCode();
+    } else {
+        // Nothing in the URL identifies the exam, so the student genuinely has to
+        // type a code. This is the only path that should ever show that screen.
+        hideBootLoading();
+        document.getElementById('code-container').style.display = 'flex';
     }
 
     document.addEventListener('fullscreenchange', () => {
@@ -494,7 +515,15 @@ window.addEventListener('load', () => {
             }
         }
     });
-});
+}
+
+// This script is a classic tag at the end of <body>, so DOMContentLoaded has not
+// fired yet — but guard anyway rather than depending on load order.
+if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', bootStudentSession);
+} else {
+    bootStudentSession();
+}
 
 // Wait for explicit verification
 async function verifyExamCode() {
@@ -525,6 +554,7 @@ async function verifyExamCode() {
         
         examConfig = data;
         if (!applyExamAccessGates(examConfig)) return;
+        hideBootLoading();
         document.getElementById('code-container').style.display = 'none';
         document.getElementById('setup-container').style.display = 'flex';
         initStepWizard();
@@ -560,11 +590,13 @@ async function verifyPlacement(pId, eId = null) {
         
         examConfig = data;
         if (!applyExamAccessGates(examConfig)) return;
+        hideBootLoading();
         document.getElementById('code-container').style.display = 'none';
         document.getElementById('setup-container').style.display = 'flex';
         initStepWizard();
     } catch(err) {
         // If automatic placement check fails, show code container and display error
+        hideBootLoading();
         document.getElementById('code-container').style.display = 'flex';
         errorMsg.innerText = err.message;
         errorMsg.style.display = 'block';
@@ -660,6 +692,9 @@ function applyExamAccessGates(exam) {
     const hideCode = () => {
         const code = document.getElementById('code-container');
         if (code) code.style.display = 'none';
+        // Blocking overlays replace the boot panel too, otherwise the spinner sits
+        // behind them saying "preparing your session" while the student is refused.
+        hideBootLoading();
     };
     const show = (id) => {
         const o = document.getElementById(id);

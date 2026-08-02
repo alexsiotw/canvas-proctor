@@ -398,6 +398,18 @@ async function processUploadQueue() {
             });
         }
         uploadQueue.shift();
+    } else if (task.attempts % 3 === 0 && uploadQueue.length > 1) {
+        // Rotate a persistently failing chunk to the back instead of letting it block
+        // everything behind it.
+        //
+        // The queue was strictly FIFO, so one chunk the server kept rejecting stalled
+        // every later chunk — which is how a single bad upload turns into "14 segments
+        // could not be sent" even when thirteen of them would have gone through fine.
+        // Out-of-order delivery is safe: the server writes each chunk to a filename
+        // derived from its index, and assembly sorts numerically and handles gaps.
+        console.warn(`[Upload Mobile] Chunk #${task.index} still failing after ${task.attempts} attempts — moving it behind the others.`);
+        uploadQueue.push(uploadQueue.shift());
+        await new Promise(resolve => setTimeout(resolve, 1000));
     } else {
         // Exponential backoff capped at 15s — long enough to ride out a tunnel or a
         // lift, short enough to catch up afterwards.
