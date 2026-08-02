@@ -71,6 +71,12 @@ function isFlagEvent(type) {
         t.includes('resize') || t.includes('blur') || t.includes('tab_switch');
 }
 
+// m:ss for video offsets.
+function formatClock(totalSeconds) {
+    const s = Math.max(0, Math.floor(Number(totalSeconds) || 0));
+    return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
+}
+
 // Escape text before it goes anywhere near innerHTML.
 //
 // Proctor log messages are student-supplied: the student's own browser posts
@@ -1345,7 +1351,8 @@ function viewStudentReport(sessionId, examId) {
                             <span style="font-weight:400; text-transform:none; color:#8b83a3;">— click timeline flags to seek</span>
                         </div>
                         <div style="background: #000; border-radius: 8px; overflow: hidden; aspect-ratio: 16/9; border: 1px solid #e2dff0;">${primaryHtml}</div>
-                        <div id="report-flag-markers" style="position:relative; height:10px; margin-top:6px; background:#ffffff; border-radius:4px; overflow:hidden;"></div>
+                        <div id="report-flag-strip" style="display:flex; gap:1px; height:16px; margin-top:8px; border-radius:3px; overflow:hidden; background:#e2dff0; cursor:pointer;"></div>
+                        <div id="report-flag-axis" style="display:flex; justify-content:space-between; margin-top:4px; font-size:10px; color:#8b83a3; font-variant-numeric:tabular-nums;"></div>
                     </div>
                     ${mobileBlock}
                 </div>`;
@@ -1737,16 +1744,51 @@ function viewStudentReport(sessionId, examId) {
     // Paint flag markers on scrubber once video metadata loads
     const reportVideo = document.getElementById('report-video-player');
     if (reportVideo) {
+        // Segmented severity strip across the whole recording, matching the extension
+        // panel: every block is green for a clean stretch or red for one containing a
+        // flag. The previous version drew a few 3px ticks on an otherwise empty bar,
+        // which read as broken — especially once the retheme made that bar white, so
+        // the clean majority of the recording rendered as blank nothing.
         const paintMarkers = () => {
-            const bar = document.getElementById('report-flag-markers');
-            if (!bar || !reportVideo.duration || !isFinite(reportVideo.duration)) return;
-            const startMs = new Date(session.started_at).getTime();
-            const flagLogs = logs.filter(l => isFlagEvent(l.event_type));
-            bar.innerHTML = flagLogs.map(l => {
-                const offset = Math.max(0, (new Date(l.event_timestamp).getTime() - startMs) / 1000);
-                const pct = Math.min(100, (offset / reportVideo.duration) * 100);
-                return `<div title="${(l.event_type || '').replace(/"/g, '')}" onclick="seekVideo(${Math.floor(offset)})" style="position:absolute; left:${pct}%; top:0; width:3px; height:100%; background:#ef4444; cursor:pointer; transform:translateX(-50%);"></div>`;
+            const strip = document.getElementById('report-flag-strip');
+            const axis = document.getElementById('report-flag-axis');
+            if (!strip || !reportVideo.duration || !isFinite(reportVideo.duration)) return;
+
+            const duration = reportVideo.duration;
+            // Anchored to recording start, like the timeline markers — measuring from
+            // started_at shifted every block by the setup lead-in.
+            const epochMs = new Date(session.recording_started_at || session.started_at).getTime();
+
+            const SEGMENTS = 64;
+            const buckets = Array.from({ length: SEGMENTS }, () => []);
+            logs.filter(l => isFlagEvent(l.event_type)).forEach(l => {
+                const offset = (new Date(l.event_timestamp).getTime() - epochMs) / 1000;
+                if (offset < 0 || offset > duration) return;
+                const idx = Math.min(SEGMENTS - 1, Math.floor((offset / duration) * SEGMENTS));
+                buckets[idx].push((l.event_type || '').replace(/_/g, ' '));
+            });
+
+            const segSec = duration / SEGMENTS;
+            strip.innerHTML = buckets.map((hits, i) => {
+                const at = Math.floor(i * segSec);
+                const flagged = hits.length > 0;
+                const title = flagged
+                    ? `${formatClock(at)} — ${hits.join(', ')}`
+                    : `${formatClock(at)} — no flags`;
+                return `<div title="${escapeHtml(title)}" data-seek="${at}" style="flex:1; background:${flagged ? '#d32130' : '#17845a'};"></div>`;
             }).join('');
+
+            // One delegated handler rather than an inline onclick per block.
+            strip.onclick = (e) => {
+                const cell = e.target.closest('[data-seek]');
+                if (cell) seekVideo(parseInt(cell.dataset.seek, 10));
+            };
+
+            if (axis) {
+                axis.innerHTML = [0, 0.25, 0.5, 0.75, 1]
+                    .map(f => `<span>${formatClock(Math.floor(duration * f))}</span>`)
+                    .join('');
+            }
         };
         reportVideo.addEventListener('loadedmetadata', paintMarkers);
         if (reportVideo.readyState >= 1) paintMarkers();
