@@ -47,6 +47,15 @@ if (socket) {
     socket.on('mobile_paired', (data) => {
         console.log("[Socket Mobile] Secondary camera successfully paired!");
         window.isMobileCameraPaired = true;
+
+        // Clear the mid-exam blocker if the phone came back.
+        showMobileCameraBlocker(false);
+        try {
+            if (currentStep !== 10) {
+                logProctorEvent('mobile_camera_restored', 'Secondary mobile camera reconnected.');
+            }
+        } catch (e) {}
+
         if (currentStep === 10) {
             const statusDiv = document.getElementById('mobile-pairing-status');
             if (statusDiv) {
@@ -67,13 +76,27 @@ if (socket) {
     socket.on('mobile_disconnected', () => {
         console.warn("[Socket Mobile] Secondary camera disconnected!");
         window.isMobileCameraPaired = false;
+
+        // Record it regardless of which screen the student is on. Previously this was
+        // only handled during the pairing step, so a disconnect mid-exam left no trace
+        // at all — the instructor had no way to know the secondary camera stopped.
+        try {
+            logProctorEvent('mobile_camera_lost', 'Secondary mobile camera disconnected during the session.');
+        } catch (e) {}
+
+        // If the exam is underway and this exam requires the phone, block until it
+        // returns. Without this the student simply carries on unmonitored.
+        if (currentStep !== 10 && !isExamCompleted && examConfig && examConfig.require_mobile_camera) {
+            showMobileCameraBlocker(true);
+        }
+
         if (currentStep === 10) {
             const statusDiv = document.getElementById('mobile-pairing-status');
             if (statusDiv) {
                 statusDiv.style.background = 'rgba(239, 68, 68, 0.1)';
                 statusDiv.style.borderColor = 'rgba(239, 68, 68, 0.3)';
                 statusDiv.style.color = '#ef4444';
-                statusDiv.innerHTML = '❌ Connection lost. Re-scan the QR code.';
+                statusDiv.innerHTML = '❌ Connection lost. Re-scan the QR code above.';
             }
             const nextBtn = document.getElementById('btn-next-step');
             if (nextBtn) {
@@ -588,7 +611,12 @@ function getEffectiveRequirements(exam, client) {
         requireCompanion: !!(exam.require_companion_app && !client.isCompanion),
         // Screen share / multi-monitor / forced fullscreen are desktop concepts
         requireScreen: !!((exam.require_screen || exam.verify_desktop) && !client.isSEB && !onPhoneOrTablet),
-        requireFullscreen: !!(exam.require_fullscreen && !onPhoneOrTablet),
+        // Safe Exam Browser is already a kiosk: the window is full-screen, enforced at
+        // the OS level, and the student cannot leave it. Asking for the Fullscreen API
+        // on top of that is not just redundant — SEB may treat requestFullscreen() as a
+        // no-op, leaving document.fullscreenElement null, which keeps the wizard's
+        // "Next Step" button disabled and strands the student on that step.
+        requireFullscreen: !!(exam.require_fullscreen && !client.isSEB && !onPhoneOrTablet),
         onlyOneScreen: !!(exam.only_one_screen && !onPhoneOrTablet),
         // Secondary phone camera is for watching the room while on a laptop.
         // If the exam device IS already a phone/tablet, skip QR pairing entirely.
@@ -1988,6 +2016,32 @@ async function startMainExamSession() {
         }
         alert("Failed to initialize proctoring session: " + err.message);
     }
+}
+
+// Show or clear the mid-exam secondary-camera blocker, re-rendering the pairing QR
+// so the student can actually act on it. The status message used to tell them to
+// "re-scan the QR code" on a screen that no longer had one.
+function showMobileCameraBlocker(show) {
+    const overlay = document.getElementById('mobile-camera-blocker-overlay');
+    if (!overlay) return;
+
+    if (!show) {
+        overlay.style.display = 'none';
+        return;
+    }
+
+    const img = document.getElementById('mobile-reconnect-qr');
+    if (img) {
+        img.style.display = 'block';
+        // Cache-busted so a previously failed load is retried rather than reused.
+        img.src = `/api/session/mobile-qr?exam_id=${encodeURIComponent(examConfig.id)}&t=${Date.now()}`;
+    }
+    const fallback = document.getElementById('mobile-reconnect-fallback');
+    if (fallback) {
+        fallback.style.display = 'none';
+        fallback.innerText = `${window.location.origin}/mobile-camera.html?token=${sessionToken}&exam_id=${examConfig.id}`;
+    }
+    overlay.style.display = 'flex';
 }
 
 function handleScreenShareStopped() {

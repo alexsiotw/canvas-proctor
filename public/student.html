@@ -585,6 +585,31 @@
               Please return to your seat and look directly at the webcam to resume the exam.
           </p>
       </div>
+  <!-- Secondary Mobile Camera Blocker.
+       The disconnect handler previously only updated a status line, and only while
+       the student was still on the pairing step. Once the exam had started it did
+       nothing at all — so a student could pair a phone, pass the check, unplug it,
+       and sit the whole exam with no secondary camera and nothing recorded about it.
+       This blocks the exam the same way losing screen share does. -->
+  <div id="mobile-camera-blocker-overlay" style="display: none; position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; background: rgba(15, 23, 42, 0.98); z-index: 999999; justify-content: center; align-items: center; flex-direction: column; color: white; font-family: var(--font-sans); text-align: center;">
+      <div style="background: #1e293b; border: 2px solid #ef4444; padding: 36px; border-radius: var(--radius-lg); max-width: 560px; width: 90%; box-shadow: 0 20px 25px -5px rgba(0,0,0,0.5);">
+          <h1 style="color: #ef4444; font-size: 24px; font-weight: 800; margin: 0 0 14px 0;">Secondary Camera Disconnected</h1>
+          <p style="color: #94a3b8; font-size: 15px; line-height: 1.6; margin-bottom: 20px;">
+              Your phone is no longer connected. This exam requires the secondary camera to stay
+              active, so the exam is paused until it reconnects.
+          </p>
+          <div style="background: white; padding: 12px; border-radius: var(--radius-sm); display: inline-block; margin-bottom: 16px;">
+              <img id="mobile-reconnect-qr" src="" alt="Re-pairing QR code" style="width: 170px; height: 170px; display: block;"
+                   onerror="var f=document.getElementById('mobile-reconnect-fallback'); if (f) f.style.display='block'; this.style.display='none';" />
+          </div>
+          <div id="mobile-reconnect-fallback" style="display:none; font-family: var(--font-mono); font-size: 11px; color: #cbd5e1; word-break: break-all; margin-bottom: 14px;"></div>
+          <p style="color: #cbd5e1; font-size: 13px; line-height: 1.5; margin: 0;">
+              Scan this on your phone to reconnect. Your exam timer keeps running, and this
+              interruption has been recorded for your instructor.
+          </p>
+      </div>
+  </div>
+
   <!-- Screen Share Blocker Overlay -->
   <div id="screen-share-blocker-overlay" style="display: none; position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; background: rgba(15, 23, 42, 0.98); z-index: 999999; justify-content: center; align-items: center; flex-direction: column; color: white; font-family: var(--font-sans); text-align: center;">
       <div style="background: #1e293b; border: 2px solid #ef4444; padding: 40px; border-radius: 16px; max-width: 550px; width: 90%; box-shadow: 0 20px 25px -5px rgba(0,0,0,0.5);">
@@ -597,7 +622,7 @@
       </div>
   </div>
 
-  <script src="/js/student.js?v=2.9.0"></script>
+  <script src="/js/student.js?v=3.0.0"></script>
 </body>
 
 </html>
