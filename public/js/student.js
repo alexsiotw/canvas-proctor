@@ -56,13 +56,35 @@ if (socket) {
             }
         } catch (e) {}
 
+        // Paired, but the camera is not necessarily on yet — the student still has to
+        // grant permission on the phone. Report the intermediate state honestly and
+        // leave "Next Step" locked until mobile_camera_ready arrives.
+        if (currentStep === 10) {
+            const statusDiv = document.getElementById('mobile-pairing-status');
+            if (statusDiv) {
+                statusDiv.style.background = 'rgba(245, 158, 11, 0.1)';
+                statusDiv.style.borderColor = 'rgba(245, 158, 11, 0.3)';
+                statusDiv.style.color = '#b45309';
+                statusDiv.innerHTML = '<div class="spinner" style="width:16px; height:16px; border-width:2px;"></div>' +
+                    '<span>Phone connected — now tap <strong>Authorize Camera Access</strong> on your phone.</span>';
+            }
+        }
+    });
+
+    // The camera is genuinely live on the phone. This, not pairing, is what unlocks
+    // the step.
+    socket.on('mobile_camera_ready', () => {
+        console.log("[Socket Mobile] Secondary camera is live.");
+        window.isMobileCameraLive = true;
+        showMobileCameraBlocker(false);
+
         if (currentStep === 10) {
             const statusDiv = document.getElementById('mobile-pairing-status');
             if (statusDiv) {
                 statusDiv.style.background = 'rgba(16, 185, 129, 0.1)';
                 statusDiv.style.borderColor = 'rgba(16, 185, 129, 0.3)';
-                statusDiv.style.color = '#10b981';
-                statusDiv.innerHTML = '✅ Phone Connected Successfully!';
+                statusDiv.style.color = '#047857';
+                statusDiv.innerHTML = '✅ Phone camera active and streaming.';
             }
             const nextBtn = document.getElementById('btn-next-step');
             if (nextBtn) {
@@ -76,6 +98,7 @@ if (socket) {
     socket.on('mobile_disconnected', () => {
         console.warn("[Socket Mobile] Secondary camera disconnected!");
         window.isMobileCameraPaired = false;
+        window.isMobileCameraLive = false;
 
         // Record it regardless of which screen the student is on. Previously this was
         // only handled during the pairing step, so a disconnect mid-exam left no trace

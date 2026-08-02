@@ -2920,10 +2920,17 @@ app.post('/api/session/end', requireAuth, async (req, res) => {
             });
         }
 
-        // Notify mobile phone to stop recording
+        // Notify mobile phone to stop recording.
+        //
+        // Emit to every token linked to this attempt, not just rows[0]. A student who
+        // relaunched has several lti_sessions rows pointing at the same
+        // exam_session_id, and the phone paired against whichever token was current —
+        // so an unordered rows[0] could signal a stale room and leave the phone
+        // recording after the exam ended. Signalling a dead room is harmless; missing
+        // the live one is not.
         const sessionLtiQuery = await pool.query('SELECT session_token FROM lti_sessions WHERE exam_session_id = $1', [exam_session_id]);
         if (sessionLtiQuery.rows.length > 0) {
-            io.to('lti_' + sessionLtiQuery.rows[0].session_token).emit('mobile_stop_record');
+            sessionLtiQuery.rows.forEach(r => io.to('lti_' + r.session_token).emit('mobile_stop_record'));
         }
 
         // Trigger assembly and upload in background
@@ -3773,6 +3780,13 @@ io.on('connection', (socket) => {
             console.error('[Socket Mobile] Pair error:', err);
             socket.emit('mobile_pair_error', { error: err.message });
         }
+    });
+
+    // Relayed from the phone once getUserMedia has actually succeeded, so the laptop
+    // can gate its pre-flight on a live camera rather than on the page merely opening.
+    socket.on('mobile_camera_ready', (data) => { // { token }
+        if (!data || !data.token || !socket.pgAuth || data.token !== socket.pgAuth.sessionToken) return;
+        io.to('lti_' + data.token).emit('mobile_camera_ready');
     });
 
     socket.on('laptop_begin_exam', (data) => { // { token }

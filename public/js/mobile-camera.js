@@ -101,6 +101,16 @@ async function requestMobileCamera() {
         
         btnGrant.style.display = 'none';
         updateStatus('success', 'Camera Active & Paired');
+
+        // Tell the laptop the camera is genuinely live.
+        //
+        // `mobile_paired` only means this page loaded and joined the room — it says
+        // nothing about camera permission. The laptop used to unlock "Next Step" on
+        // pairing alone, so a student could open the link, decline or ignore the camera
+        // prompt, and still be waved through the check with no secondary camera at all.
+        if (socket) {
+            socket.emit('mobile_camera_ready', { token: token });
+        }
         
         // Keep phone awake if supported (via wake lock API).
         //
