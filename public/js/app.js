@@ -1323,7 +1323,7 @@ function viewStudentReport(sessionId, examId) {
     if (showVideo) {
         const primaryHtml = `<video id="report-video-player" src="/api/session/video-playback/${session.id}" controls style="width:100%; height:100%; object-fit:contain; background:#000;"></video>`;
         const driveLink = session.drive_file_id
-            ? `<a href="https://drive.google.com/file/d/${session.drive_file_id}/view" target="_blank" style="font-size:11px; color:#60a5fa; margin-left:8px;">Open in Drive</a>`
+            ? `<a href="https://drive.google.com/file/d/${session.drive_file_id}/view" target="_blank" style="font-size:11px; color:#1e40af; margin-left:8px;">Open in Drive</a>`
             : '';
 
         if (session.mobile_drive_file_id || true) {
@@ -1378,7 +1378,7 @@ function viewStudentReport(sessionId, examId) {
         extraPanelsHtml += `
             <div style="background: rgba(16, 185, 129, 0.08); border: 1px solid rgba(16, 185, 129, 0.2); border-radius: 8px; padding: 16px; display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
                 <div>
-                    <h5 style="margin:0; font-size:13px; font-weight:700; color:#34d399;">ID Verification Card</h5>
+                    <h5 style="margin:0; font-size:13px; font-weight:700; color:#065f46;">ID Verification Card</h5>
                     <p style="margin: 4px 0 0 0; font-size:11px; color:#8b83a3;">Government or student ID image captured during pre-checks.</p>
                 </div>
                 <a href="${safeUrl(idVerificationLog.event_message)}" target="_blank" rel="noopener noreferrer" style="background: #10b981; color: white; padding: 6px 12px; border-radius: 6px; font-weight: bold; text-decoration: none; font-size: 12px; display: inline-flex; align-items: center; gap: 5px;">
@@ -1391,7 +1391,7 @@ function viewStudentReport(sessionId, examId) {
         extraPanelsHtml += `
             <div style="background: rgba(245, 158, 11, 0.08); border: 1px solid rgba(245, 158, 11, 0.2); border-radius: 8px; padding: 16px; display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
                 <div>
-                    <h5 style="margin:0; font-size:13px; font-weight:700; color:#fbbf24;">Signature Agreement</h5>
+                    <h5 style="margin:0; font-size:13px; font-weight:700; color:#92400e;">Signature Agreement</h5>
                     <p style="margin: 4px 0 0 0; font-size:11px; color:#8b83a3;">Digitally signed agreement before exam launch.</p>
                 </div>
                 <a href="${safeUrl(signatureLog.event_message)}" target="_blank" rel="noopener noreferrer" style="background: #f59e0b; color: white; padding: 6px 12px; border-radius: 6px; font-weight: bold; text-decoration: none; font-size: 12px; display: inline-flex; align-items: center; gap: 5px;">
@@ -1403,7 +1403,7 @@ function viewStudentReport(sessionId, examId) {
         extraPanelsHtml += `
             <div style="background: rgba(59, 130, 246, 0.08); border: 1px solid rgba(59, 130, 246, 0.2); border-radius: 8px; padding: 16px; display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
                 <div>
-                    <h5 style="margin:0; font-size:13px; font-weight:700; color:#60a5fa;">DOM Quiz Screenshots</h5>
+                    <h5 style="margin:0; font-size:13px; font-weight:700; color:#1e40af;">DOM Quiz Screenshots</h5>
                     <p style="margin: 4px 0 0 0; font-size:11px; color:#8b83a3;">ZIP folder containing full-page quiz capture screenshots.</p>
                 </div>
                 <a href="https://drive.google.com/uc?export=download&id=${session.drive_snapshots_id}" target="_blank" style="background: #5b3fa8; color: white; padding: 6px 12px; border-radius: 6px; font-weight: bold; text-decoration: none; font-size: 12px; display: inline-flex; align-items: center; gap: 5px;">
@@ -1433,7 +1433,7 @@ function viewStudentReport(sessionId, examId) {
         </div>
         <div style="display: flex; flex: 1; overflow: hidden; background: #ffffff;">
             <!-- Left Pane: Media & Downloads -->
-            <div style="flex: 6.5; padding: 24px; background: #090d16; display: flex; flex-direction: column; overflow-y: auto; border-right: 1px solid #e2dff0;">
+            <div style="flex: 6.5; padding: 24px; background: #f7f6fb; display: flex; flex-direction: column; overflow-y: auto; border-right: 1px solid #e2dff0;">
                 ${videoContainerHtml}
                 ${extraPanelsHtml}
             </div>
@@ -1441,7 +1441,7 @@ function viewStudentReport(sessionId, examId) {
             <!-- Right Pane: Timeline & Filters & Annotations -->
             <div style="flex: 3.5; display: flex; flex-direction: column; background: #f7f6fb; overflow: hidden;">
                 <!-- Tabbar -->
-                <div style="display: flex; background: #0b0f19; border-bottom: 1px solid #e2dff0;">
+                <div style="display: flex; background: #ffffff; border-bottom: 1px solid #e2dff0;">
                     <button id="tab-timeline-btn" onclick="switchReportTab('timeline')" style="flex: 1; padding: 12px; border: none; background: transparent; color: #5b3fa8; border-bottom: 2px solid #5b3fa8; font-weight: 700; font-size: 13px; cursor: pointer; outline: none;">Timeline</button>
                     <button id="tab-annotations-btn" onclick="switchReportTab('annotations')" style="flex: 1; padding: 12px; border: none; background: transparent; color: #8b83a3; border-bottom: 2px solid transparent; font-weight: 500; font-size: 13px; cursor: pointer; outline: none;">Annotations (${session.annotations ? session.annotations.length : 0})</button>
                 </div>
@@ -1700,8 +1700,16 @@ function viewStudentReport(sessionId, examId) {
             if (isDanger) { borderColor = '#ef4444'; bgColor = 'rgba(239, 68, 68, 0.05)'; }
             else if (isWarning) { borderColor = '#f59e0b'; bgColor = 'rgba(245, 158, 11, 0.05)'; }
 
-            // Calculate video offset
-            const offsetSec = Math.max(0, Math.floor((new Date(l.event_timestamp) - new Date(session.started_at)) / 1000));
+            // Calculate video offset.
+            //
+            // Anchored to when the recorder started, not when the attempt did. Setup —
+            // camera warm-up and quiz load — happens before any footage exists, so
+            // measuring from started_at made every flag land late by that lead-in. On a
+            // 90-second attempt with a 9-second lead-in, "TAB BLUR at 1:38" seeked to
+            // 1:47 of an 86-second video, i.e. past the end. Falls back to started_at
+            // for attempts recorded before recording_started_at was captured.
+            const videoEpoch = session.recording_started_at || session.started_at;
+            const offsetSec = Math.max(0, Math.floor((new Date(l.event_timestamp) - new Date(videoEpoch)) / 1000));
             const min = Math.floor(offsetSec / 60);
             const sec = offsetSec % 60;
             const timeStr = min + ':' + sec.toString().padStart(2, '0');

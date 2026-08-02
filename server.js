@@ -2258,7 +2258,7 @@ async function assembleAndUploadSessionVideo(exam_session_id, total_chunks) {
 
         // Get student/exam info for nice filename and mime type
         const sessionInfo = await pool.query(`
-            SELECT es.student_name, es.attempt_number, es.started_at, es.recording_started_at, es.end_time, es.mime_type, e.title, e.require_mobile_camera
+            SELECT es.student_name, es.attempt_number, es.started_at, es.recording_started_at, es.end_time, es.mime_type, es.mobile_mime_type, e.title, e.require_mobile_camera
             FROM exam_sessions es
             JOIN exams e ON es.exam_id = e.id
             WHERE es.id = $1
@@ -2544,78 +2544,117 @@ async function assembleAndUploadSessionVideo(exam_session_id, total_chunks) {
                 await new Promise(r => setTimeout(r, 1000));
             }
 
+            // The secondary recording goes through the same segment-aware pipeline as
+            // the primary one. It previously used naive byte concatenation with no
+            // gap or header handling, and derived its container from the *desktop*
+            // mime type — so a phone recording MP4 inside a WebM session produced a
+            // file labelled .webm that nothing could play.
             const mobileChunkDir = path.join(os.tmpdir(), `chunks-mobile-${exam_session_id}`);
             if (fs.existsSync(mobileChunkDir)) {
                 console.log(`[Assemble] Assembling mobile video for session ${exam_session_id}...`);
-                const mobileFiles = fs.readdirSync(mobileChunkDir).sort();
-                if (mobileFiles.length > 0) {
-                    const rawMobilePath = path.join(os.tmpdir(), `session-${exam_session_id}-mobile-raw.${rawExt}`);
-                    const mobileWriteStream = fs.createWriteStream(rawMobilePath);
-                    for (const file of mobileFiles) {
-                        const filePath = path.join(mobileChunkDir, file);
-                        const data = fs.readFileSync(filePath);
-                        mobileWriteStream.write(data);
-                    }
-                    mobileWriteStream.end();
-                    await new Promise((resolve) => mobileWriteStream.on('finish', resolve));
+                const mobileMime = (sessionInfo.rows[0].mobile_mime_type) || mimeTypeFromDb || 'video/webm';
+                const mobileIsWebm = mobileMime.includes('webm');
+                const mobileRawExt = mobileIsWebm ? 'webm' : 'mp4';
 
-                    let tempMobileOutFile = path.join(os.tmpdir(), `session-${exam_session_id}-mobile.${finalExt}`);
-                    
-                    if (isWebm && process.env.TRANSCODE_TO_MP4 === 'true') {
-                        console.log(`[Assemble] Transcoding WebM to MP4 for secondary mobile video...`);
+                const mobileOrdered = readOrderedChunks(mobileChunkDir);
+                if (mobileOrdered.length > 0) {
+                    const mobileSegments = groupChunksIntoSegments(mobileChunkDir, mobileOrdered);
+                    const mobileHeaderSeg = mobileSegments.find(s => s.hasOwnHeader);
+                    const mobileInit = mobileHeaderSeg
+                        ? extractInitSegment(path.join(mobileChunkDir, mobileHeaderSeg.files[0]))
+                        : null;
+
+                    const mobileLowest = mobileOrdered[0].index;
+                    const mobileHighest = mobileOrdered[mobileOrdered.length - 1].index;
+                    const mobileMissing = (mobileHighest - mobileLowest + 1) - mobileOrdered.length;
+                    console.log(`[Assemble] Mobile: chunks #${mobileLowest}-#${mobileHighest}, ` +
+                        `${mobileSegments.length} segment(s), ${mobileMissing} missing.`);
+                    if (mobileMissing > 0) {
+                        await logSessionEvent(exam_session_id, 'warning',
+                            `Secondary camera gap: ${mobileMissing} chunk(s) never reached the server. ` +
+                            `The secondary recording skips those moments.`);
+                    }
+
+                    const mobileRawPaths = [];
+                    for (let i = 0; i < mobileSegments.length; i++) {
+                        const p = path.join(os.tmpdir(), `session-${exam_session_id}-mobile-seg${i}-raw.${mobileRawExt}`);
+                        if (writeSegmentFile(mobileChunkDir, mobileSegments[i], p, mobileInit)) {
+                            mobileRawPaths.push(p);
+                        } else {
+                            console.warn(`[Assemble] Mobile segment ${i + 1} has no usable header. Skipping.`);
+                        }
+                    }
+
+                    let tempMobileOutFile = null;
+                    let mobileFinalMime = mobileMime;
+                    let mobileFinalExt = mobileRawExt;
+
+                    if (mobileRawPaths.length === 0) {
+                        console.error(`[Assemble] No decodable mobile segments for session ${exam_session_id}.`);
+                        await logSessionEvent(exam_session_id, 'system_error',
+                            'The secondary camera recording could not be decoded and no video was produced for it.');
+                    } else if (mobileRawPaths.length > 1 || process.env.TRANSCODE_TO_MP4 === 'true') {
                         const mp4MobileOut = path.join(os.tmpdir(), `session-${exam_session_id}-mobile.mp4`);
+                        const mobileMp4s = [];
                         try {
-                            await new Promise((resolve, reject) => {
-                                const command = ffmpeg(rawMobilePath)
-                                    .outputOptions('-c:v libx264')
-                                    .outputOptions('-pix_fmt yuv420p')
-                                    .outputOptions('-preset ultrafast')
-                                    .outputOptions('-crf 30')
-                                    .outputOptions('-threads 2')
-                                    .outputOptions('-vsync vfr')
-                                    .outputOptions('-c:a aac')
-                                    .on('end', () => {
-                                        clearTimeout(timeoutId);
-                                        resolve();
-                                    })
-                                    .on('error', (err) => {
-                                        clearTimeout(timeoutId);
-                                        reject(err);
-                                    });
-                                const timeoutId = setTimeout(() => {
-                                    command.kill('SIGKILL');
-                                    reject(new Error("Transcode timeout"));
-                                }, 120000);
-                                command.save(mp4MobileOut);
-                            });
+                            for (let i = 0; i < mobileRawPaths.length; i++) {
+                                const segMp4 = path.join(os.tmpdir(), `session-${exam_session_id}-mobile-seg${i}.mp4`);
+                                try {
+                                    const dur = await transcodeSegmentToMp4(mobileRawPaths[i], segMp4);
+                                    if (dur <= 0) throw new Error('no decodable output');
+                                    mobileMp4s.push(segMp4);
+                                } catch (segErr) {
+                                    console.error(`[Assemble] Mobile segment ${i + 1} failed: ${segErr.message}`);
+                                    try { if (fs.existsSync(segMp4)) fs.unlinkSync(segMp4); } catch (e) {}
+                                }
+                            }
+                            if (mobileMp4s.length === 0) throw new Error('no mobile segment decoded');
+                            if (mobileMp4s.length === 1) {
+                                fs.renameSync(mobileMp4s[0], mp4MobileOut);
+                            } else {
+                                await concatMp4Segments(mobileMp4s, mp4MobileOut, os.tmpdir());
+                                for (const m of mobileMp4s) {
+                                    try { if (fs.existsSync(m)) fs.unlinkSync(m); } catch (e) {}
+                                }
+                            }
                             tempMobileOutFile = mp4MobileOut;
-                            if (fs.existsSync(rawMobilePath)) fs.unlinkSync(rawMobilePath);
-                        } catch(transErr) {
-                            console.error("Mobile transcode failed, falling back:", transErr);
-                            tempMobileOutFile = path.join(os.tmpdir(), `session-${exam_session_id}-mobile.webm`);
-                            fs.renameSync(rawMobilePath, tempMobileOutFile);
+                            mobileFinalMime = 'video/mp4';
+                            mobileFinalExt = 'mp4';
+                        } catch (transErr) {
+                            console.error("Mobile transcode failed, falling back to the raw first segment:", transErr.message);
+                            tempMobileOutFile = path.join(os.tmpdir(), `session-${exam_session_id}-mobile.${mobileRawExt}`);
+                            fs.copyFileSync(mobileRawPaths[0], tempMobileOutFile);
                         }
                     } else {
-                        fs.renameSync(rawMobilePath, tempMobileOutFile);
+                        tempMobileOutFile = path.join(os.tmpdir(), `session-${exam_session_id}-mobile.${mobileRawExt}`);
+                        fs.copyFileSync(mobileRawPaths[0], tempMobileOutFile);
                     }
 
-                    const driveMobileFileName = `${studentName}_${examTitle}_Session_${exam_session_id}_Attempt_${attempt}_Secondary.${finalExt}`;
-                    console.log(`Uploading secondary mobile video ${driveMobileFileName} to Google Drive...`);
-                    try {
-                        mobileDriveFileId = await uploadVideoToDrive(tempMobileOutFile, driveMobileFileName, finalMimeType, attemptFolderId);
-                        console.log(`Uploaded secondary mobile video. File ID: ${mobileDriveFileId}`);
-                    } catch(upErr) {
-                        console.error("Failed to upload secondary mobile video:", upErr);
+                    for (const p of mobileRawPaths) {
+                        try { if (fs.existsSync(p)) fs.unlinkSync(p); } catch (e) {}
                     }
 
-                    // Clean up temp mobile out file and dir
-                    try { if (fs.existsSync(tempMobileOutFile)) fs.unlinkSync(tempMobileOutFile); } catch(e){}
-                    try {
-                        const files = fs.readdirSync(mobileChunkDir);
-                        for (const file of files) {
-                            fs.unlinkSync(path.join(mobileChunkDir, file));
+                    if (tempMobileOutFile) {
+                        const driveMobileFileName = `${studentName}_${examTitle}_Session_${exam_session_id}_Attempt_${attempt}_Secondary.${mobileFinalExt}`;
+                        console.log(`Uploading secondary mobile video ${driveMobileFileName} to Google Drive...`);
+                        try {
+                            mobileDriveFileId = await uploadVideoToDrive(tempMobileOutFile, driveMobileFileName, mobileFinalMime, attemptFolderId);
+                            console.log(`Uploaded secondary mobile video. File ID: ${mobileDriveFileId}`);
+                        } catch(upErr) {
+                            console.error("Failed to upload secondary mobile video:", upErr);
                         }
-                        fs.rmdirSync(mobileChunkDir);
+                        try { if (fs.existsSync(tempMobileOutFile)) fs.unlinkSync(tempMobileOutFile); } catch(e){}
+                    }
+
+                    // Delete only the chunks consumed, matching the primary path.
+                    try {
+                        for (const entry of mobileOrdered) {
+                            const fp = path.join(mobileChunkDir, entry.file);
+                            try { if (fs.existsSync(fp)) fs.unlinkSync(fp); } catch (e) {}
+                        }
+                        if (fs.existsSync(mobileChunkDir) && fs.readdirSync(mobileChunkDir).length === 0) {
+                            fs.rmdirSync(mobileChunkDir);
+                        }
                     } catch(e){}
                 }
             }
@@ -2912,6 +2951,30 @@ app.post('/api/session/upload-mobile-chunk', async (req, res) => {
     }
 });
 
+// API: Record the container the phone is recording in.
+//
+// The mobile assembly derived its extension from the session's mime_type, which is
+// set by the *desktop* recorder. A phone recording MP4 inside a WebM session was
+// therefore assembled and uploaded with the wrong container, which players reject.
+app.post('/api/session/mobile-format', async (req, res) => {
+    try {
+        const { token, mime_type } = req.body;
+        if (!token) return res.status(400).json({ error: 'Missing token' });
+        const ltiResult = await pool.query('SELECT exam_session_id FROM lti_sessions WHERE session_token = $1', [token]);
+        if (ltiResult.rows.length === 0 || !ltiResult.rows[0].exam_session_id) {
+            return res.status(404).json({ error: 'No active exam session for this token' });
+        }
+        await pool.query(
+            'UPDATE exam_sessions SET mobile_mime_type = $1 WHERE id = $2',
+            [mime_type || 'video/webm', ltiResult.rows[0].exam_session_id]
+        );
+        res.json({ success: true });
+    } catch (err) {
+        console.error('[Mobile Format] Error:', err.message);
+        res.status(500).json({ error: err.message });
+    }
+});
+
 // API: Receive Mobile Upload Complete Notification
 app.post('/api/session/mobile-upload-complete', async (req, res) => {
     const { token, total_chunks } = req.body;
@@ -3183,7 +3246,10 @@ app.get('/api/exams/:exam_id/reports', requireInstructor, async (req, res) => {
         const { exam_id } = req.params;
         const { canvasCourseId } = req.session.lti;
         
-        const sessions = await pool.query('SELECT id, exam_id, student_canvas_id, student_name, status, started_at, attempt_number, video_archived, drive_file_id, mobile_drive_file_id FROM exam_sessions WHERE exam_id = $1', [exam_id]);
+        // recording_started_at is needed by the report view: the video timeline starts
+        // when the recorder started, not when the attempt did, and without it every
+        // "click to seek" flag lands late by the setup lead-in.
+        const sessions = await pool.query('SELECT id, exam_id, student_canvas_id, student_name, status, started_at, recording_started_at, end_time, attempt_number, video_archived, drive_file_id, mobile_drive_file_id FROM exam_sessions WHERE exam_id = $1', [exam_id]);
         const logs = await pool.query(`
             SELECT pl.* FROM proctor_logs pl 
             JOIN exam_sessions es ON pl.exam_session_id = es.id 
