@@ -3084,6 +3084,49 @@ app.post('/api/session/upload-chunk', requireAuth, async (req, res) => {
     }
 });
 
+// Pairing QR, generated on this server.
+//
+// The student page previously built the QR by calling api.qrserver.com with the
+// mobile pairing URL in the query string — which meant the live session token, the
+// one thing authorizing secondary-camera upload, was sent to an unrelated third
+// party on every exam. It also breaks under Safe Exam Browser the moment URL
+// filtering is enabled, and in a kiosk with no address bar a failed image is a dead
+// end for the student.
+//
+// Generated here instead: same origin, no external request, and the token is read
+// from the caller's own session rather than passed in by the client, so it never
+// appears in a URL the browser or anything else can see.
+let QRCode = null;
+try {
+    QRCode = require('qrcode');
+} catch (e) {
+    console.warn('[QR] The "qrcode" module is not installed — pairing QR codes will be unavailable. Run: npm install qrcode');
+}
+
+app.get('/api/session/mobile-qr', requireAuth, async (req, res) => {
+    try {
+        if (!QRCode) {
+            return res.status(503).json({ error: 'QR generation unavailable on this server.' });
+        }
+        const token = req.session.lti && req.session.lti.sessionToken;
+        if (!token) return res.status(401).json({ error: 'No session token for this launch.' });
+
+        const examId = req.query.exam_id || '';
+        const base = `${req.protocol}://${req.get('host')}`;
+        const target = `${base}/mobile-camera.html?token=${encodeURIComponent(token)}` +
+            `&exam_id=${encodeURIComponent(examId)}`;
+
+        const svg = await QRCode.toString(target, { type: 'svg', margin: 1, width: 240 });
+        res.setHeader('Content-Type', 'image/svg+xml');
+        // Contains a session token in encoded form — must not sit in a shared cache.
+        res.setHeader('Cache-Control', 'no-store, private');
+        res.send(svg);
+    } catch (err) {
+        console.error('[QR] Generation failed:', err.message);
+        res.status(500).json({ error: 'Could not generate pairing code.' });
+    }
+});
+
 // API: Mark the moment recording actually started.
 //
 // Called by the client immediately after mediaRecorder.start(), which is the

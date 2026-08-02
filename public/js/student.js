@@ -1059,8 +1059,12 @@ function goToStep(step) {
             
         case 10:
             const mobileUrl = `${window.location.origin}/mobile-camera.html?token=${encodeURIComponent(sessionToken)}&exam_id=${encodeURIComponent(examConfig.id)}`;
-            const qrApiUrl = `https://api.qrserver.com/v1/create-qr-code/?size=160x160&data=${encodeURIComponent(mobileUrl)}`;
-            
+            // Served from this origin now, not api.qrserver.com — the token no longer
+            // leaves the server, and it still renders under Safe Exam Browser's URL
+            // filter. The server reads the token from the session, so it is not in
+            // this URL either.
+            const qrApiUrl = `/api/session/mobile-qr?exam_id=${encodeURIComponent(examConfig.id)}`;
+
             contentEl.innerHTML = `
                 <div>
                     <h2 class="step-title">Secondary Mobile Camera</h2>
@@ -1070,7 +1074,8 @@ function goToStep(step) {
                     
                     <div style="display: flex; gap: 20px; align-items: center; flex-wrap: wrap; margin-top: 15px;">
                         <div style="background: white; padding: 12px; border-radius: 8px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); width: 160px; height: 160px; display: flex; align-items: center; justify-content: center;">
-                            <img src="${qrApiUrl}" style="width: 160px; height: 160px; image-rendering: pixelated;" alt="QR Code" />
+                            <img src="${qrApiUrl}" style="width: 160px; height: 160px;" alt="Pairing QR code"
+                                 onerror="document.getElementById('qr-fallback').style.display='block'; this.style.display='none';" />
                         </div>
                         <div style="flex-grow: 1; min-width: 250px;">
                             <div id="mobile-pairing-status" style="margin-bottom: 15px; padding: 12px 15px; border-radius: 6px; background: rgba(245, 158, 11, 0.1); border: 1px solid rgba(245, 158, 11, 0.3); color: #f59e0b; font-size: 14px; font-weight: 600; display: flex; align-items: center; gap: 8px;">
@@ -1078,6 +1083,14 @@ function goToStep(step) {
                                 <span>Waiting for phone to connect...</span>
                             </div>
                             
+                            <!-- If the QR cannot render — no network, a URL filter, a
+                                 missing module on the server — the student is otherwise
+                                 stuck, with no address bar to work around it. -->
+                            <div id="qr-fallback" style="display:none; margin-bottom:12px; padding:10px 12px; border:1px solid var(--border); border-radius:var(--radius-sm); background:#fbf4e4; font-size:12px; line-height:1.5; color:#6b4e11;">
+                                <strong>QR code unavailable.</strong> Open this address on your phone instead:
+                                <div style="margin-top:6px; font-family:var(--font-mono); font-size:11px; word-break:break-all; user-select:all;">${mobileUrl}</div>
+                            </div>
+
                             <div style="font-size: 13px; color: #475569; line-height: 1.5;">
                                 <strong>Instructions:</strong>
                                 <ul style="margin: 4px 0 0 0; padding-left: 18px;">
