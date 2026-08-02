@@ -7,6 +7,47 @@ let liveViewFilter = 'all'; // all | online | flagged
 let liveViewLayout = 'grid'; // grid | large
 let socket = io();
 
+// The socket now requires an authenticated identity, which for an instructor comes
+// from the session cookie. That cookie may not exist yet on the first load of a
+// dashboard tab — the LTI launch establishes it — so the handshake can be rejected
+// and, because socket.io only dials once, the page would sit there permanently
+// silent until someone happened to refresh.
+//
+// An empty live view is indistinguishable from "no students are in the exam", which
+// on a proctoring dashboard is the worst possible way to fail. So: retry, and if it
+// still will not connect, say so instead of showing a convincing blank.
+let pgSocketRetries = 0;
+
+socket.on('connect_error', (err) => {
+    pgSocketRetries++;
+    console.warn(`[Socket] Connection refused (${err && err.message}). Attempt ${pgSocketRetries}.`);
+
+    if (pgSocketRetries <= 4) {
+        // Give the LTI launch time to establish the session, then dial again.
+        setTimeout(() => {
+            if (!socket.connected) socket.connect();
+        }, 1500 * pgSocketRetries);
+        return;
+    }
+
+    const banner = document.getElementById('pg-socket-banner') || (() => {
+        const el = document.createElement('div');
+        el.id = 'pg-socket-banner';
+        el.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:99998;padding:10px 16px;' +
+            'background:var(--danger);color:#fff;font-size:13px;font-weight:600;text-align:center;';
+        document.body.appendChild(el);
+        return el;
+    })();
+    banner.innerHTML = 'Live monitoring is not connected &mdash; this view is not showing real-time activity. ' +
+        '<a href="#" onclick="window.location.reload();return false;" style="color:#fff;text-decoration:underline;">Reload</a>';
+});
+
+socket.on('connect', () => {
+    pgSocketRetries = 0;
+    const banner = document.getElementById('pg-socket-banner');
+    if (banner) banner.remove();
+});
+
 // Shared flag taxonomy + risk scoring (one source of truth for live, list, and detail views)
 const FLAG_EVENT_TYPES = [
     'tab_blur', 'window_blur', 'fullscreen_exit', 'tab_switched', 'tab_blurred',
