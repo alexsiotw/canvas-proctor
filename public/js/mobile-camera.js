@@ -216,6 +216,18 @@ function startRecordingSequence() {
 
         mediaRecorder.start(5000); // Emit chunk every 5 seconds
 
+        // Tell the session timeline what this device actually chose. Without it there
+        // is no way to know after the fact whether a phone recorded as WebM or MP4, or
+        // which hardware produced a given result — so nobody learns anything from a
+        // failure in the field.
+        if (socket) {
+            socket.emit('mobile_violation', {
+                token: token,
+                event_type: 'info',
+                event_message: `Secondary camera started. Container: ${mediaRecorder.mimeType || mimeType || 'browser default'}. Device: ${navigator.userAgent}`
+            });
+        }
+
         // Mobile browsers are unreliable about honouring the timeslice — Safari in
         // particular can withhold every chunk until stop(), which an OS kill then
         // destroys. A periodic forced flush keeps each five seconds recoverable.
@@ -225,12 +237,81 @@ function startRecordingSequence() {
                 try { mediaRecorder.requestData(); } catch (e) {}
             }
         }, 15000);
+
+        startMobileChunkWatchdog();
     } catch (err) {
         console.error("Failed to start MediaRecorder:", err);
         showError("MediaRecorder error: " + err.message);
         isRecording = false;
         updateStatus('danger', 'Recording failed');
     }
+}
+
+// Watchdog: prove the recorder is actually producing data on this device.
+//
+// The codec ladder above picks a container this browser claims to support, but
+// "isTypeSupported returned true" is not the same as "frames are being emitted".
+// Mobile Safari in particular can run a recorder that withholds everything until
+// stop(). Combined with a phone that gets backgrounded and killed, that yields the
+// worst outcome available: the page says PROCTORING ACTIVE for the whole exam and
+// the server receives nothing.
+//
+// So rather than trusting the ladder, verify it — and if no data appears, say so on
+// the phone, where the student can still do something about it, and on the session
+// timeline, where the instructor will see it afterwards.
+let mobileWatchdogInterval = null;
+
+function startMobileChunkWatchdog() {
+    if (mobileWatchdogInterval) return;
+
+    const startedAt = Date.now();
+    let forcedFlushes = 0;
+    let reported = false;
+
+    mobileWatchdogInterval = setInterval(() => {
+        if (!isRecording || !mediaRecorder) return;
+
+        // Data is flowing — nothing more to check for the rest of the exam.
+        if (chunkIndex > 0) {
+            clearInterval(mobileWatchdogInterval);
+            mobileWatchdogInterval = null;
+            return;
+        }
+
+        const elapsedMs = Date.now() - startedAt;
+
+        if (elapsedMs > 12000 && mediaRecorder.state === 'recording') {
+            try {
+                mediaRecorder.requestData();
+                forcedFlushes++;
+                console.warn(`[Recorder] No mobile chunks after ${Math.round(elapsedMs / 1000)}s — forcing flush ${forcedFlushes}.`);
+            } catch (e) {
+                console.error('[Recorder] requestData() failed on mobile:', e && e.message);
+            }
+        }
+
+        if (elapsedMs > 25000 && !reported) {
+            reported = true;
+            console.error('[Recorder] Secondary camera is producing no data on this device.');
+
+            updateStatus('danger', 'RECORDING NOT WORKING');
+            showError(
+                'This phone is not able to record video for proctoring. Your camera is on, but no ' +
+                'footage is being saved. Please tell your instructor now, or try a different phone ' +
+                'or browser — do not rely on this device for your exam.'
+            );
+
+            if (socket) {
+                socket.emit('mobile_violation', {
+                    token: token,
+                    event_type: 'system_error',
+                    event_message: `Secondary camera produced no data after ${Math.round(elapsedMs / 1000)}s ` +
+                        `(state: ${mediaRecorder.state}, container: ${mediaRecorder.mimeType || 'unknown'}). ` +
+                        `Device: ${navigator.userAgent}. There is likely no secondary footage for this attempt.`
+                });
+            }
+        }
+    }, 3000);
 }
 
 let notifiedComplete = false;
@@ -325,6 +406,10 @@ async function stopRecordingSequence() {
     if (recordIntervalId) {
         clearInterval(recordIntervalId);
         recordIntervalId = null;
+    }
+    if (mobileWatchdogInterval) {
+        clearInterval(mobileWatchdogInterval);
+        mobileWatchdogInterval = null;
     }
 
     if (mediaRecorder && mediaRecorder.state !== 'inactive') {

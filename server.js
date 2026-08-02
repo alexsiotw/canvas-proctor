@@ -3745,6 +3745,11 @@ io.on('connection', (socket) => {
     socket.on('mobile_violation', async (data) => {
         try {
             const { token, event_type, event_message } = data;
+            // Only your own session. The token was read straight from the payload and
+            // looked up, so an authenticated socket could write log entries into any
+            // other student's session by supplying their token instead — the same gap
+            // closed on the other handlers.
+            if (!token || !socket.pgAuth || token !== socket.pgAuth.sessionToken) return;
             const ltiResult = await pool.query('SELECT exam_session_id FROM lti_sessions WHERE session_token = $1', [token]);
             if (ltiResult.rows.length > 0 && ltiResult.rows[0].exam_session_id) {
                 const sessionId = ltiResult.rows[0].exam_session_id;
