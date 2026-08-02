@@ -1440,25 +1440,37 @@ function viewStudentReport(sessionId, examId) {
             let mobileBlock = '';
             if (session.mobile_drive_file_id) {
                 mobileBlock = `
-                    <div style="flex: 1; min-width: 280px;">
-                        <div style="font-size: 11px; font-weight: 600; color: #8b83a3; margin-bottom: 6px; text-transform: uppercase; letter-spacing: 0.05em;">Secondary Mobile Room View</div>
-                        <div style="background: #000; border-radius: 8px; overflow: hidden; aspect-ratio: 16/9; border: 1px solid #e2dff0;">
+                    <div style="width: 300px; flex-shrink: 0;">
+                        <div style="font-size: 11px; font-weight: 600; color: #8b83a3; margin-bottom: 6px; text-transform: uppercase; letter-spacing: 0.05em; white-space: nowrap;">Secondary Mobile Room View</div>
+                        <div style="background: #000; border-radius: 8px; overflow: hidden; aspect-ratio: 4/3; border: 1px solid #e2dff0;">
                             <iframe src="https://drive.google.com/file/d/${session.mobile_drive_file_id}/preview" style="width:100%; height:100%; border:none;" allow="autoplay"></iframe>
                         </div>
                     </div>`;
             }
+            // The primary recording gets the full width of this pane on its own row.
+            //
+            // It used to sit in a flex row as a sibling of the secondary camera, so the
+            // two split the space 50/50 and both ended up too small to read screen text
+            // in — which is the entire point of a screen recording. The secondary is a
+            // supporting view; it belongs below at a fixed size, next to the evidence
+            // panels, which also fills the dead space that was under them.
+            //
+            // 4/3 on the secondary matches what the phone actually records (the mobile
+            // constraints ask for 640x480), so it no longer letterboxes inside a 16/9 box.
             videoContainerHtml = `
-                <div style="display: flex; gap: 15px; flex-wrap: wrap; width: 100%; margin-bottom: 12px;">
-                    <div style="flex: 1; min-width: 280px;">
-                        <div style="font-size: 11px; font-weight: 600; color: #8b83a3; margin-bottom: 6px; text-transform: uppercase; letter-spacing: 0.05em; display: flex; align-items: center; gap: 5px;">
-                            Webcam / Screen Recording ${driveLink}
-                            <span style="font-weight:400; text-transform:none; color:#8b83a3;">— click timeline flags to seek</span>
-                        </div>
-                        <div style="background: #000; border-radius: 8px; overflow: hidden; aspect-ratio: 16/9; border: 1px solid #e2dff0;">${primaryHtml}</div>
-                        <div id="report-flag-strip" style="display:flex; gap:1px; height:16px; margin-top:8px; border-radius:3px; overflow:hidden; background:#e2dff0; cursor:pointer;"></div>
-                        <div id="report-flag-axis" style="display:flex; justify-content:space-between; margin-top:4px; font-size:10px; color:#8b83a3; font-variant-numeric:tabular-nums;"></div>
+                <div style="width: 100%; margin-bottom: 18px;">
+                    <div style="font-size: 11px; font-weight: 600; color: #8b83a3; margin-bottom: 6px; text-transform: uppercase; letter-spacing: 0.05em; display: flex; align-items: center; gap: 6px; flex-wrap: nowrap; white-space: nowrap;">
+                        <span>Webcam / Screen Recording</span>
+                        ${driveLink}
+                        <span style="font-weight:400; text-transform:none; color:#8b83a3;">&mdash; click a block below to seek</span>
                     </div>
+                    <div style="background: #000; border-radius: 8px; overflow: hidden; aspect-ratio: 16/9; border: 1px solid #e2dff0;">${primaryHtml}</div>
+                    <div id="report-flag-strip" style="display:flex; gap:1px; height:18px; margin-top:8px; border-radius:3px; overflow:hidden; background:#e2dff0; cursor:pointer;"></div>
+                    <div id="report-flag-axis" style="display:flex; justify-content:space-between; margin-top:4px; font-size:10px; color:#8b83a3; font-variant-numeric:tabular-nums;"></div>
+                </div>
+                <div id="report-secondary-row" style="display: flex; gap: 16px; align-items: flex-start; flex-wrap: wrap; width: 100%;">
                     ${mobileBlock}
+                    <div id="report-evidence-col" style="flex: 1; min-width: 260px;"></div>
                 </div>`;
         }
     } else {
@@ -1544,13 +1556,13 @@ function viewStudentReport(sessionId, examId) {
         </div>
         <div style="display: flex; flex: 1; overflow: hidden; background: #ffffff;">
             <!-- Left Pane: Media & Downloads -->
-            <div style="flex: 6.5; padding: 24px; background: #f7f6fb; display: flex; flex-direction: column; overflow-y: auto; border-right: 1px solid #e2dff0;">
+            <div style="flex: 1 1 auto; min-width: 0; padding: 24px; background: #f7f6fb; display: flex; flex-direction: column; overflow-y: auto; border-right: 1px solid #e2dff0;">
                 ${videoContainerHtml}
-                ${extraPanelsHtml}
+                <div id="report-extra-panels">${extraPanelsHtml}</div>
             </div>
 
             <!-- Right Pane: Timeline & Filters & Annotations -->
-            <div style="flex: 3.5; display: flex; flex-direction: column; background: #f7f6fb; overflow: hidden;">
+            <div style="flex: 0 0 420px; display: flex; flex-direction: column; background: #f7f6fb; overflow: hidden;">
                 <!-- Tabbar -->
                 <div style="display: flex; background: #ffffff; border-bottom: 1px solid #e2dff0;">
                     <button id="tab-timeline-btn" onclick="switchReportTab('timeline')" style="flex: 1; padding: 12px; border: none; background: transparent; color: #5b3fa8; border-bottom: 2px solid #5b3fa8; font-weight: 700; font-size: 13px; cursor: pointer; outline: none;">Timeline</button>
@@ -1624,15 +1636,18 @@ function viewStudentReport(sessionId, examId) {
     
     const modalOverlay = document.getElementById('modal-overlay');
     const modalContainer = document.getElementById('modal-content');
-    modalContainer.style.maxWidth = '1200px';
-    modalContainer.style.width = '95%';
+    // This is an evidence-review surface, not a dialog — it should use the display it
+    // has. 1200px was capping the primary recording to roughly half the pane once the
+    // secondary camera appeared, which made screen text in the recording unreadable.
+    modalContainer.style.maxWidth = '1800px';
+    modalContainer.style.width = '97%';
     modalContainer.style.padding = '0';
     modalContainer.style.background = '#ffffff';
     modalContainer.style.border = '1px solid #e2dff0';
     modalContainer.style.borderRadius = '12px';
     modalContainer.style.display = 'flex';
     modalContainer.style.flexDirection = 'column';
-    modalContainer.style.height = '85vh';
+    modalContainer.style.height = '92vh';
     modalContainer.style.overflow = 'hidden';
     modalContainer.innerHTML = modalContentHtml;
     modalOverlay.classList.add('active');
@@ -1844,6 +1859,19 @@ function viewStudentReport(sessionId, examId) {
 
     // Initial log timeline draw
     renderLogsTimeline();
+
+    // Move the evidence panels up beside the secondary camera.
+    //
+    // They are built after the video markup, so they cannot be interpolated into it —
+    // relocating them afterwards keeps that ordering intact. When there is no
+    // secondary camera the column is full width, and when there is no video at all the
+    // target does not exist and the panels simply stay where they are.
+    const evidenceCol = document.getElementById('report-evidence-col');
+    const extraPanels = document.getElementById('report-extra-panels');
+    if (evidenceCol && extraPanels && extraPanels.children.length > 0) {
+        while (extraPanels.firstChild) evidenceCol.appendChild(extraPanels.firstChild);
+        extraPanels.remove();
+    }
 
     // Paint flag markers on scrubber once video metadata loads
     const reportVideo = document.getElementById('report-video-player');
