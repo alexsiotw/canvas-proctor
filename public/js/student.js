@@ -2728,9 +2728,18 @@ function setupRecording() {
 
     console.log(`[Recorder] Initialized with: ${mimeType || 'browser default'}`);
     
+    // The 1.5 Mbps target exists to keep shared-screen text legible in the composite
+    // layout, where mostly-static content undershoots it badly and chunks come out
+    // small. A camera-only recording has no screen text to preserve, and at 720p full
+    // motion it genuinely reaches that target: five seconds base64-encodes to roughly
+    // 1.3MB, which a reverse proxy still on nginx's default client_max_body_size (1m)
+    // rejects with a 413 before Node sees the request. Every chunk then fails
+    // identically and the attempt produces no video at all. Cameras get a bitrate that
+    // is ample for identity and behaviour review and stays well inside any sane limit.
+    const recordingIncludesScreen = !!screenStream;
     const options = {
-        videoBitsPerSecond: 1500000, // Legible screen text
-        audioBitsPerSecond: 128000
+        videoBitsPerSecond: recordingIncludesScreen ? 1500000 : 800000,
+        audioBitsPerSecond: recordingIncludesScreen ? 128000 : 96000
     };
     if (mimeType) {
         options.mimeType = mimeType;
@@ -2881,6 +2890,14 @@ async function processUploadQueue() {
                 // proxy's client_max_body_size — is refusing the payload. Retrying is
                 // futile and the operator needs to know, because every chunk this size
                 // will be lost the same way.
+                if (response.status === 413) {
+                    // Deterministic: the same bytes will be refused again, so the
+                    // retry budget below is pure waste. With a fresh 5s chunk arriving
+                    // every 5s, spending 100 attempts and up to 30s of backoff each on
+                    // a doomed upload lets the backlog grow without bound — which is
+                    // how one 413 turns into "165 chunks still pending" and no video.
+                    item.tooLargeForServer = true;
+                }
                 if (response.status === 413 && !item.reportedTooLarge) {
                     item.reportedTooLarge = true;
                     const kb = Math.round(chunkData.length / 1024);
@@ -2902,6 +2919,12 @@ async function processUploadQueue() {
 
         if (success) {
             uploadQueue.shift(); // Remove successfully uploaded item
+        } else if (item.tooLargeForServer) {
+            // Give up on this one immediately and keep the queue moving. The operator
+            // already has one clear message naming the cause; a hundred more would
+            // only bury it.
+            await deleteChunkFromDB(sessionInfo.id, item.index);
+            uploadQueue.shift();
         } else {
             item.attempts++;
             if (item.attempts >= 100) {

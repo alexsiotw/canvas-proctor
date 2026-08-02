@@ -22,6 +22,9 @@ const videoPreview = document.getElementById('mobile-preview');
 // Queue upload variables
 const uploadQueue = [];
 let isProcessingQueue = false;
+// Set once the server (or a proxy in front of it) refuses a chunk for being too
+// large, so the cause is reported one time instead of once per doomed chunk.
+let uploadTooLargeReported = false;
 
 // Update status visual helper
 function updateStatus(state, message) {
@@ -190,9 +193,26 @@ function startRecordingSequence() {
     try {
         const mimeType = pickMobileMimeType();
         console.log(`[Recorder] Mobile recorder using: ${mimeType || 'browser default'}`);
-        mediaRecorder = mimeType
-            ? new MediaRecorder(localStream, { mimeType })
-            : new MediaRecorder(localStream);
+        // Without an explicit bitrate the handset picks its own, and modern phones
+        // choose 2-4 Mbps for 720p. Five-second timeslices then base64-encode to
+        // several megabytes and are rejected with a 413 by any reverse proxy left on
+        // nginx's default 1m body limit — invisibly, because the refusal happens
+        // before Node logs anything, so the phone just retries the same bytes into
+        // the same wall. The secondary view only has to show the room and the
+        // student's hands, so a modest bitrate costs nothing that matters here.
+        const recorderOptions = {
+            videoBitsPerSecond: 600000,
+            audioBitsPerSecond: 64000
+        };
+        if (mimeType) recorderOptions.mimeType = mimeType;
+        try {
+            mediaRecorder = new MediaRecorder(localStream, recorderOptions);
+        } catch (optErr) {
+            console.warn('[Recorder] Bitrate hints refused, using browser defaults:', optErr.message);
+            mediaRecorder = mimeType
+                ? new MediaRecorder(localStream, { mimeType })
+                : new MediaRecorder(localStream);
+        }
 
         // Tell the server which container it will be reassembling. Without this the
         // assembly step assumes WebM and mislabels an MP4 recording.
@@ -378,6 +398,24 @@ async function processUploadQueue() {
         if (res.ok) {
             console.log(`[Upload Mobile] Successfully uploaded chunk #${task.index}`);
             delivered = true;
+        } else if (res.status === 413) {
+            // A 413 is usually the reverse proxy, not Node — it refuses the body before
+            // the request is ever logged server-side, which is why chunks could vanish
+            // with no matching error line. Retrying sends identical bytes into an
+            // identical refusal, so name the real cause once and stop.
+            const kb = Math.round((task.data || '').length / 1024);
+            console.error(`[Upload Mobile] Chunk #${task.index} (${kb}KB encoded) rejected as too large. Raise client_max_body_size on the reverse proxy.`);
+            if (!uploadTooLargeReported) {
+                uploadTooLargeReported = true;
+                if (socket) {
+                    socket.emit('mobile_violation', {
+                        token: token,
+                        event_type: 'system_error',
+                        event_message: `Secondary camera upload rejected as too large (chunk #${task.index}, ${kb}KB encoded). The server's upload size limit is smaller than the recording's chunks, so no secondary footage can be saved until it is raised.`
+                    });
+                }
+            }
+            task.discard = true;
         } else {
             throw new Error("HTTP " + res.status);
         }
@@ -387,6 +425,9 @@ async function processUploadQueue() {
     }
 
     if (delivered) {
+        uploadQueue.shift();
+    } else if (task.discard) {
+        // Already reported with its actual cause; drop it without adding another alert.
         uploadQueue.shift();
     } else if (task.attempts >= MAX_ATTEMPTS) {
         console.error(`[Upload Mobile] Chunk #${task.index} discarded after ${MAX_ATTEMPTS} attempts.`);
