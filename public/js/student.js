@@ -929,6 +929,15 @@ function goToStep(step) {
                     <div class="volume-meter">
                         <div id="mic-volume-fill" class="volume-fill"></div>
                     </div>
+                    <div id="mic-check-status" style="font-size: 13px; font-weight: 600; margin-top: 8px; color: var(--text-muted);">
+                        Select <strong>Check Microphone</strong> to begin.
+                    </div>
+                    <div class="pg-notice" style="margin-top: 14px;">
+                        <span class="pg-notice-icon">&#9888;</span>
+                        <div>Many laptops have a mute key or a physical switch for the microphone. If the
+                        indicator stays flat while you speak, that is usually the cause &mdash; a muted
+                        microphone still connects, but records nothing.</div>
+                    </div>
                     <div id="step-error" style="color: var(--danger); font-size: 14px; margin-top: 10px; display: none;"></div>
                 </div>
                 <div style="display: flex; justify-content: flex-end; gap: 15px; margin-top: 20px;">
@@ -1294,11 +1303,30 @@ async function startMicCheck() {
         
         const meterFill = document.getElementById('mic-volume-fill');
         const nextBtn = document.getElementById('btn-next-step');
-        if (nextBtn) nextBtn.disabled = false;
-        
+
         const checkBtn = document.querySelector('button[onclick="startMicCheck()"]');
         if (checkBtn) checkBtn.style.display = 'none';
-        
+
+        // The check now requires the microphone to actually produce sound.
+        //
+        // It used to enable "Next Step" the moment getUserMedia resolved — before
+        // reading a single sample. A laptop with its hardware mute key engaged still
+        // grants an audio track, so the meter sat at zero and the student was waved
+        // through with a dead microphone. The track being present is not evidence that
+        // anything is being heard.
+        let heardAudioAt = 0;
+        const REQUIRED_LEVEL = 4;      // above idle noise floor on a live mic
+        const REQUIRED_SUSTAIN_MS = 300;
+
+        const statusEl = document.getElementById('mic-check-status');
+        const setStatus = (text, color) => {
+            if (statusEl) {
+                statusEl.innerText = text;
+                statusEl.style.color = color;
+            }
+        };
+        setStatus('Listening… please speak normally for a moment.', 'var(--warning)');
+
         micVolInterval = setInterval(() => {
             micAnalyser.getByteFrequencyData(dataArray);
             let sum = 0;
@@ -1308,6 +1336,30 @@ async function startMicCheck() {
             const average = sum / dataArray.length;
             const percentage = Math.min(100, Math.round((average / 128) * 100));
             if (meterFill) meterFill.style.width = `${percentage}%`;
+
+            // Hardware/system mute shows up as a live track that reports muted.
+            const micTrack = localMicStream && localMicStream.getAudioTracks()[0];
+            if (micTrack && micTrack.muted) {
+                heardAudioAt = 0;
+                if (nextBtn) nextBtn.disabled = true;
+                setStatus('Your microphone is muted — check for a mute key or switch on your device.', 'var(--danger)');
+                return;
+            }
+
+            if (average >= REQUIRED_LEVEL) {
+                if (!heardAudioAt) heardAudioAt = Date.now();
+                if (Date.now() - heardAudioAt >= REQUIRED_SUSTAIN_MS) {
+                    if (nextBtn && nextBtn.disabled) {
+                        nextBtn.disabled = false;
+                        setStatus('Microphone is working.', 'var(--success)');
+                    }
+                }
+            } else {
+                heardAudioAt = 0;
+                if (nextBtn && nextBtn.disabled) {
+                    setStatus('No sound detected yet — speak normally, and check any mute key on your device.', 'var(--warning)');
+                }
+            }
         }, 50);
     } catch (err) {
         showStepError("Microphone access denied or not found: " + err.message);
@@ -2141,9 +2193,12 @@ function startMediaIntegrityMonitor() {
                     handleMediaLoss(label, 'the device is muted or has stopped sending data');
                 }
             } else {
-                // Recovered on its own (an unmute, for instance).
+                // The device is reporting again. Do NOT dismiss the blocker on its own:
+                // auto-clearing meant a student could tap a mute key, watch the overlay
+                // flash by, and keep working — the interruption was effectively
+                // invisible. It stays up until they acknowledge it.
                 if (mediaMutedStreak[label] > 0) mediaMutedStreak[label] = 0;
-                if (mediaLossActive === label) clearMediaLoss(label);
+                if (mediaLossActive === label) markMediaRecoverable(label);
             }
         });
     }, 3000);
@@ -2176,11 +2231,33 @@ function handleMediaLoss(label, reason) {
     if (overlay) overlay.style.display = 'flex';
 }
 
+// The device is healthy again but the student has not acknowledged the interruption.
+function markMediaRecoverable(label) {
+    const desc = document.getElementById('media-loss-desc');
+    const title = document.getElementById('media-loss-title');
+    const pretty = label === 'camera' ? 'Camera' : 'Microphone';
+    if (title) {
+        title.innerText = `${pretty} Is Back`;
+        title.style.color = '#22c55e';
+    }
+    if (desc) {
+        desc.innerText = `Your ${label} is reporting again. Select Resume Exam to continue. ` +
+            `The interruption has been recorded for your instructor.`;
+    }
+    const btn = document.querySelector('#media-loss-blocker-overlay button');
+    if (btn) btn.innerText = 'Resume Exam';
+}
+
 function clearMediaLoss(label) {
     mediaLossActive = null;
     mediaMutedStreak[label] = 0;
     const overlay = document.getElementById('media-loss-blocker-overlay');
     if (overlay) overlay.style.display = 'none';
+    // Reset the panel so a later interruption doesn't inherit the "is back" wording.
+    const title = document.getElementById('media-loss-title');
+    if (title) title.style.color = '#ef4444';
+    const btn = document.querySelector('#media-loss-blocker-overlay button');
+    if (btn) btn.innerText = 'Retry';
     try {
         logProctorEvent(
             label === 'camera' ? 'camera_restored' : 'mic_restored',
@@ -2199,6 +2276,15 @@ function clearMediaLoss(label) {
 async function retryMediaDevices() {
     const label = mediaLossActive;
     if (!label) return;
+
+    // If the existing track is already healthy again — the student just unmuted — there
+    // is nothing to re-acquire. Verify and dismiss.
+    const stream = label === 'camera' ? localCamStream : localMicStream;
+    const kind = label === 'camera' ? 'video' : 'audio';
+    if (trackSetHealthy(stream, kind)) {
+        clearMediaLoss(label);
+        return;
+    }
 
     try {
         if (label === 'camera') {
