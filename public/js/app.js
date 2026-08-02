@@ -66,7 +66,9 @@ function isFlagEvent(type) {
     if (FLAG_EVENT_TYPES.includes(type)) return true;
     const t = normaliseEventType(type);
     if (t === 'tab_blocked' || t === 'incognito_blocked' ||
-        t === 'multi_monitor_detected' || t === 'prohibited_process') return true;
+        t === 'multi_monitor_detected' || t === 'prohibited_process' ||
+        t === 'camera_lost' || t === 'mic_lost' || t === 'mobile_camera_lost' ||
+        t === 'screen_share_disabled') return true;
     return t.includes('clipboard') || t.includes('copy') || t.includes('paste') ||
         t.includes('resize') || t.includes('blur') || t.includes('tab_switch');
 }
@@ -224,7 +226,10 @@ function escapeHtml(value) {
 // the exam. A network fault is not cheating.
 const NON_BEHAVIOURAL_EVENT_TYPES = [
     'heartbeat', 'info', 'system_error', 'upload_incomplete',
-    'exam_ended', 'exam_started', 'screen_share_resolved', 'page_hidden'
+    'exam_ended', 'exam_started', 'screen_share_resolved', 'page_hidden',
+    // Recoveries. The loss is the violation and is scored below; counting the
+    // reconnection too would double-count a single interruption.
+    'camera_restored', 'mic_restored', 'mobile_camera_restored'
 ];
 
 // Normalise event types before matching.
@@ -248,6 +253,14 @@ function getEventWeightCategory(type) {
     // Extension-reported lockdown violations.
     if (norm === 'tab_blocked' || norm === 'incognito_blocked') return 'away';
     if (norm === 'multi_monitor_detected' || norm === 'prohibited_process') return 'device';
+
+    // Monitoring cut off mid-exam. Weighted as heavily as the thing each device was
+    // there to detect: losing the camera hides the student, losing the mic hides the
+    // room, losing the secondary camera hides the desk.
+    if (norm === 'camera_lost') return 'face';
+    if (norm === 'mic_lost') return 'audio';
+    if (norm === 'mobile_camera_lost') return 'device';
+    if (norm === 'screen_share_disabled') return 'away';
 
     if (type.startsWith('AI_GAZE') || type === 'gaze_off_screen') return 'head';
     if (type.startsWith('AI_DEVICE') || type === 'phone_detected') return 'device';
@@ -1442,8 +1455,14 @@ function viewStudentReport(sessionId, examId) {
                 mobileBlock = `
                     <div style="width: 300px; flex-shrink: 0;">
                         <div style="font-size: 11px; font-weight: 600; color: #8b83a3; margin-bottom: 6px; text-transform: uppercase; letter-spacing: 0.05em; white-space: nowrap;">Secondary Mobile Room View</div>
+                        <!-- Streamed through our own endpoint rather than embedded as a
+                             Drive preview iframe. Same native controls as the primary
+                             recording, it inherits the page's styling, and it supports
+                             range requests so scrubbing works — the Drive embed gave a
+                             foreign-looking player with none of that. -->
                         <div style="background: #000; border-radius: 8px; overflow: hidden; aspect-ratio: 4/3; border: 1px solid #e2dff0;">
-                            <iframe src="https://drive.google.com/file/d/${session.mobile_drive_file_id}/preview" style="width:100%; height:100%; border:none;" allow="autoplay"></iframe>
+                            <video id="report-mobile-player" src="/api/session/mobile-video-playback/${session.id}" controls
+                                   style="width:100%; height:100%; object-fit:contain; background:#000;"></video>
                         </div>
                     </div>`;
             }

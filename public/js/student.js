@@ -2067,6 +2067,173 @@ function showMobileCameraBlocker(show) {
     overlay.style.display = 'flex';
 }
 
+// ================================================================
+// Camera / microphone integrity monitor
+//
+// Screen-share loss was already caught via the track's `ended` event, but nothing
+// watched the camera or microphone. Unplugging a webcam, muting a mic in the OS, or
+// revoking permission mid-exam left the session running with no blocker, no student
+// prompt, and nothing on the instructor's timeline.
+//
+// Two detection paths, because one is not enough:
+//   * `ended` fires when a device is physically removed or permission is revoked.
+//   * `muted` covers the quieter case — an OS-level mute or a hardware switch, where
+//     the track stays live but stops carrying data. That one flaps, so it has to be
+//     sustained across polls before it counts.
+// ================================================================
+let mediaIntegrityInterval = null;
+let mediaLossActive = null;          // 'camera' | 'microphone' | null
+const mediaMutedStreak = { camera: 0, microphone: 0 };
+const MUTED_POLLS_BEFORE_BLOCK = 2;  // ~6s at the 3s poll interval
+
+function trackSetHealthy(stream, kind) {
+    if (!stream) return true; // not required / never acquired
+    const tracks = kind === 'audio' ? stream.getAudioTracks() : stream.getVideoTracks();
+    if (tracks.length === 0) return false;
+    return tracks.some(t => t.readyState === 'live' && !t.muted);
+}
+
+function trackSetEnded(stream, kind) {
+    if (!stream) return false;
+    const tracks = kind === 'audio' ? stream.getAudioTracks() : stream.getVideoTracks();
+    if (tracks.length === 0) return true;
+    return tracks.every(t => t.readyState === 'ended');
+}
+
+function startMediaIntegrityMonitor() {
+    if (mediaIntegrityInterval) return;
+
+    const watchCamera = !!(examConfig && examConfig.require_camera) && !!localCamStream;
+    const watchMic = !!(examConfig && examConfig.require_mic) && !!localMicStream;
+    if (!watchCamera && !watchMic) return;
+
+    console.log(`[Integrity] Monitoring devices — camera: ${watchCamera}, microphone: ${watchMic}`);
+
+    // Immediate signal for outright removal, rather than waiting for the next poll.
+    const wireEnded = (stream, kind, label) => {
+        if (!stream) return;
+        const tracks = kind === 'audio' ? stream.getAudioTracks() : stream.getVideoTracks();
+        tracks.forEach(t => {
+            t.addEventListener('ended', () => {
+                console.warn(`[Integrity] ${label} track ended.`);
+                handleMediaLoss(label, 'the device was disconnected or its permission was revoked');
+            });
+        });
+    };
+    if (watchCamera) wireEnded(localCamStream, 'video', 'camera');
+    if (watchMic) wireEnded(localMicStream, 'audio', 'microphone');
+
+    mediaIntegrityInterval = setInterval(() => {
+        if (isExamCompleted) return;
+
+        [['camera', localCamStream, 'video', watchCamera],
+         ['microphone', localMicStream, 'audio', watchMic]].forEach(([label, stream, kind, watched]) => {
+            if (!watched) return;
+
+            if (trackSetEnded(stream, kind)) {
+                handleMediaLoss(label, 'the device was disconnected or its permission was revoked');
+                return;
+            }
+
+            if (!trackSetHealthy(stream, kind)) {
+                mediaMutedStreak[label]++;
+                if (mediaMutedStreak[label] >= MUTED_POLLS_BEFORE_BLOCK) {
+                    handleMediaLoss(label, 'the device is muted or has stopped sending data');
+                }
+            } else {
+                // Recovered on its own (an unmute, for instance).
+                if (mediaMutedStreak[label] > 0) mediaMutedStreak[label] = 0;
+                if (mediaLossActive === label) clearMediaLoss(label);
+            }
+        });
+    }, 3000);
+}
+
+function handleMediaLoss(label, reason) {
+    if (mediaLossActive === label) return; // already blocking on this device
+    mediaLossActive = label;
+
+    const pretty = label === 'camera' ? 'Camera' : 'Microphone';
+    console.error(`[Integrity] ${pretty} lost: ${reason}`);
+
+    // Goes to the DB and, via socket, straight to the instructor's live view.
+    try {
+        logProctorEvent(
+            label === 'camera' ? 'camera_lost' : 'mic_lost',
+            `${pretty} stopped during the exam — ${reason}. The exam was paused until it was restored. ` +
+            `Recording for this period may be missing ${label === 'camera' ? 'video' : 'audio'}.`
+        );
+    } catch (e) {}
+
+    const overlay = document.getElementById('media-loss-blocker-overlay');
+    const title = document.getElementById('media-loss-title');
+    const desc = document.getElementById('media-loss-desc');
+    if (title) title.innerText = `${pretty} Disconnected`;
+    if (desc) {
+        desc.innerText = `Your ${label} is no longer reporting to ProctorGuard — ${reason}. ` +
+            `This exam requires it, so the exam is paused until it is working again.`;
+    }
+    if (overlay) overlay.style.display = 'flex';
+}
+
+function clearMediaLoss(label) {
+    mediaLossActive = null;
+    mediaMutedStreak[label] = 0;
+    const overlay = document.getElementById('media-loss-blocker-overlay');
+    if (overlay) overlay.style.display = 'none';
+    try {
+        logProctorEvent(
+            label === 'camera' ? 'camera_restored' : 'mic_restored',
+            `${label === 'camera' ? 'Camera' : 'Microphone'} reconnected and reporting again.`
+        );
+    } catch (e) {}
+}
+
+// Re-acquire the lost device on the student's request.
+//
+// Honest limitation: MediaRecorder ignores tracks added to its stream after start(),
+// so a re-acquired microphone restores live monitoring (talking detection) but does
+// not restore audio to the recording for the interruption. The camera does recover
+// fully, because video is drawn from the composite canvas and its source element can
+// be repointed. The log entry above says as much rather than implying a clean repair.
+async function retryMediaDevices() {
+    const label = mediaLossActive;
+    if (!label) return;
+
+    try {
+        if (label === 'camera') {
+            const fresh = await navigator.mediaDevices.getUserMedia({
+                video: { facingMode: { ideal: 'user' }, width: { ideal: 1280 }, height: { ideal: 720 } }
+            });
+            localCamStream = fresh;
+            videoStream = fresh;
+            if (compositeVCam) {
+                compositeVCam.srcObject = fresh;
+                await compositeVCam.play().catch(() => {});
+            }
+        } else {
+            const fresh = await navigator.mediaDevices.getUserMedia({
+                audio: { echoCancellation: true, noiseSuppression: false, autoGainControl: true }
+            });
+            localMicStream = fresh;
+            try { setupAudioAnalysis(fresh); } catch (e) {}
+        }
+
+        // Re-arm detection on the replacement tracks.
+        mediaIntegrityInterval && clearInterval(mediaIntegrityInterval);
+        mediaIntegrityInterval = null;
+        clearMediaLoss(label);
+        startMediaIntegrityMonitor();
+    } catch (err) {
+        console.error('[Integrity] Retry failed:', err);
+        const desc = document.getElementById('media-loss-desc');
+        if (desc) {
+            desc.innerText = `Still cannot reach your ${label}: ${err.message}. ` +
+                `Check that it is plugged in and not blocked in your browser or system settings, then try again.`;
+        }
+    }
+}
+
 function handleScreenShareStopped() {
     console.warn("[Proctor] Screen share stopped during exam!");
     logProctorEvent('screen_share_disabled', 'Screen sharing was stopped by the student.');
@@ -2263,6 +2430,7 @@ async function startProctoring() {
             }).catch(err => console.warn('[Recorder] Could not report recording start:', err.message));
 
             startChunkProductionWatchdog();
+            startMediaIntegrityMonitor();
         }
 
         socket.emit('join_student', {

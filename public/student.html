@@ -585,6 +585,26 @@
               Please return to your seat and look directly at the webcam to resume the exam.
           </p>
       </div>
+  <!-- Camera / microphone loss blocker.
+       Only screen-share loss was detected before. Unplugging a webcam or muting a mic
+       at the OS level left the exam running with no indication to the student and
+       nothing on the instructor's timeline — which is a quiet way to sit a proctored
+       exam unmonitored. -->
+  <div id="media-loss-blocker-overlay" style="display: none; position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; background: rgba(15, 23, 42, 0.98); z-index: 999999; justify-content: center; align-items: center; flex-direction: column; color: white; font-family: var(--font-sans); text-align: center;">
+      <div style="background: #1e293b; border: 2px solid #ef4444; padding: 36px; border-radius: var(--radius-lg); max-width: 560px; width: 90%; box-shadow: 0 20px 25px -5px rgba(0,0,0,0.5);">
+          <h1 style="color: #ef4444; font-size: 24px; font-weight: 800; margin: 0 0 14px 0;" id="media-loss-title">Monitoring Interrupted</h1>
+          <p id="media-loss-desc" style="color: #94a3b8; font-size: 15px; line-height: 1.6; margin-bottom: 20px;">
+              A required device is no longer reporting.
+          </p>
+          <div style="background: rgba(239, 68, 68, 0.1); border: 1px solid rgba(239, 68, 68, 0.2); padding: 14px; border-radius: var(--radius-sm); font-size: 13px; color: #fca5a5; margin-bottom: 20px; text-align: left; line-height: 1.6;">
+              Your exam is paused and the timer is still running. This interruption has been
+              recorded and your instructor has been notified. Reconnect the device, then
+              select <strong>Retry</strong>.
+          </div>
+          <button class="btn btn-primary" style="padding: 12px 28px; font-size: 15px;" onclick="retryMediaDevices()">Retry</button>
+      </div>
+  </div>
+
   <!-- Secondary Mobile Camera Blocker.
        The disconnect handler previously only updated a status line, and only while
        the student was still on the pairing step. Once the exam had started it did
@@ -622,7 +642,7 @@
       </div>
   </div>
 
-  <script src="/js/student.js?v=3.1.0"></script>
+  <script src="/js/student.js?v=3.2.0"></script>
 </body>
 
 </html>
