@@ -12,12 +12,29 @@ try {
         // Handle escaped newlines in private key
         const privateKey = credentials.private_key.replace(/\\n/g, '\n');
 
+        // Scope note.
+        //
+        // 'drive' grants read/write over everything this service account can see,
+        // which is far more than this application needs — it only ever creates and
+        // reads back its own recordings. The narrower 'drive.file' scope would limit
+        // a credential leak to files the app itself created.
+        //
+        // It is not a drop-in change: getFolderId() below auto-detects a
+        // pre-existing shared folder by name, and 'drive.file' cannot see files it
+        // did not create. Set GOOGLE_DRIVE_FOLDER_ID (which is checked first, so the
+        // search never runs) and this can be narrowed. Left as-is deliberately
+        // rather than silently breaking uploads.
+        const driveScope = process.env.GOOGLE_DRIVE_NARROW_SCOPE === 'true'
+            ? 'https://www.googleapis.com/auth/drive.file'
+            : 'https://www.googleapis.com/auth/drive';
+
         auth = new google.auth.JWT(
             credentials.client_email,
             null,
             privateKey,
-            ['https://www.googleapis.com/auth/drive']
+            [driveScope]
         );
+        console.log(`Google Drive scope: ${driveScope}`);
         drive = google.drive({ version: 'v3', auth });
         console.log('Google Drive client initialized successfully');
     } else {
@@ -58,9 +75,13 @@ async function getFolderId(folderName = 'Canvas Proctor Videos') {
         console.warn("Failed to list Shared Drives, falling back to folder search:", err.message);
     }
 
-    // 2. Fallback to searching regular folders
+    // 2. Fallback to searching regular folders.
+    // folderName is escaped for the Drive query language: a backslash or apostrophe
+    // in a folder name would otherwise break the query, or alter it if the name ever
+    // became caller-controlled.
+    const safeName = String(folderName).replace(/\\/g, '\\\\').replace(/'/g, "\\'");
     const response = await drive.files.list({
-        q: `name = '${folderName}' and mimeType = 'application/vnd.google-apps.folder' and trashed = false`,
+        q: `name = '${safeName}' and mimeType = 'application/vnd.google-apps.folder' and trashed = false`,
         fields: 'files(id, name)',
         spaces: 'drive',
         supportsAllDrives: true,

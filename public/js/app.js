@@ -71,6 +71,25 @@ function isFlagEvent(type) {
         t.includes('resize') || t.includes('blur') || t.includes('tab_switch');
 }
 
+// Escape text before it goes anywhere near innerHTML.
+//
+// Proctor log messages are student-supplied: the student's own browser posts
+// `event_message` to /api/session/log, and the instructor's report view rendered it
+// straight into an innerHTML template. A student could therefore log
+// `<img src=x onerror=...>` and have it execute inside the instructor's
+// authenticated session on this origin — which is privilege escalation from
+// student to instructor, not just defacement. Annotations get the same treatment;
+// they are instructor-authored, but there is no reason to leave the hole open.
+function escapeHtml(value) {
+    if (value === null || value === undefined) return '';
+    return String(value)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+}
+
 // Diagnostics and lifecycle notes. These describe the software's own state, not
 // the student's conduct, and must never raise a risk score.
 //
@@ -1127,7 +1146,7 @@ function filterReports(examId) {
                 <td style="padding: 12px 16px; cursor: pointer; text-align: center;" onclick="viewStudentReport(${s.id}, ${examId})" title="Open report">
                     <span style="color: var(--accent); font-weight:700;">View</span>
                 </td>
-                <td style="padding: 12px 16px; font-weight: 700; color: var(--text-primary);">${s.student_name || s.student_canvas_id}</td>
+                <td style="padding: 12px 16px; font-weight: 700; color: var(--text-primary);">${escapeHtml(s.student_name || s.student_canvas_id)}</td>
                 <td style="padding: 12px 16px; color: var(--text-secondary);">${submissionDate}</td>
                 <td style="padding: 12px 16px; text-align: center; font-weight: 600;">${s.attempt_number || 1}</td>
                 <td style="padding: 12px 16px; text-align: center; color: var(--text-secondary); font-size:12px;">${statusLabel}</td>
@@ -1387,7 +1406,7 @@ function viewStudentReport(sessionId, examId) {
     const modalContentHtml = `
         <div style="background: #0f172a; border-bottom: 1px solid #334155; padding: 16px 24px; display: flex; justify-content: space-between; align-items: center; border-radius: 12px 12px 0 0;">
             <div style="display: flex; align-items: center; gap: 15px;">
-                <h2 style="margin: 0; font-size: 18px; font-weight: 600; color: #3b82f6; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;">Proctored Exam Report: ${session.student_name || session.student_canvas_id}</h2>
+                <h2 style="margin: 0; font-size: 18px; font-weight: 600; color: #3b82f6; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;">Proctored Exam Report: ${escapeHtml(session.student_name || session.student_canvas_id)}</h2>
                 <span style="padding: 4px 10px; border-radius: 6px; font-size: 12px; font-weight: bold; background: ${riskBadgeBg}; color: ${riskBadgeColor}; border: 1px solid ${riskBadgeBorder}; text-transform: uppercase; letter-spacing: 0.05em;">
                     Risk: ${riskTier} (${riskScore})
                 </span>
@@ -1470,7 +1489,7 @@ function viewStudentReport(sessionId, examId) {
         <div style="background: #0f172a; border-top: 1px solid #334155; padding: 12px 24px; display: flex; justify-content: space-between; align-items: center; border-radius: 0 0 12px 12px;">
             <div style="display:flex; gap: 8px; flex-wrap:wrap;">
                 <button class="btn btn-secondary btn-sm" onclick="exportSessionReport(${session.id}, ${exam.id})" style="background: rgba(59, 130, 246, 0.15); color: #60a5fa; border: 1px solid #334155;">Export Report</button>
-                <button class="btn btn-secondary btn-sm" onclick="grantExtraAttempt(${exam.id}, '${session.student_canvas_id}')" style="background: rgba(100, 116, 139, 0.15); color: #94a3b8; border: 1px solid #475569;">+1 Override Pass</button>
+                <button class="btn btn-secondary btn-sm" onclick="grantExtraAttempt(${exam.id}, ${JSON.stringify(String(session.student_canvas_id || '')).replace(/"/g, '&quot;')})" style="background: rgba(100, 116, 139, 0.15); color: #94a3b8; border: 1px solid #475569;">+1 Override Pass</button>
                 <button class="btn btn-danger btn-sm" onclick="deleteStudentAttempt(${session.id}, ${exam.id})" style="background: rgba(239, 68, 68, 0.1); color: #ef4444; border: 1px solid rgba(239, 68, 68, 0.2);">Delete Session</button>
             </div>
             <button class="btn btn-primary btn-sm" onclick="closeModal()" style="background: #3b82f6; color: white; border: none;">Done</button>
@@ -1564,7 +1583,7 @@ function viewStudentReport(sessionId, examId) {
                     <div style="background: rgba(255, 255, 255, 0.03); border: 1px solid #334155; padding: 12px; border-radius: 8px; margin-bottom: 8px; display: flex; justify-content: space-between; align-items: flex-start; gap: 10px;">
                         <div>
                             <span style="font-family: monospace; font-size:12px; font-weight:700; color:#3b82f6; cursor:pointer; text-decoration: underline;" onclick="seekVideo(${a.timestamp_seconds})">[${timeStr}]</span>
-                            <p style="margin: 4px 0 0 0; color:#f8fafc; font-size:13px; line-height: 1.4; word-break: break-word;">${a.note}</p>
+                            <p style="margin: 4px 0 0 0; color:#f8fafc; font-size:13px; line-height: 1.4; word-break: break-word;">${escapeHtml(a.note)}</p>
                         </div>
                         <button onclick="deleteAnnotation(${a.id}, ${sessionId})" style="background:transparent; border:none; color:#ef4444; font-size:18px; cursor:pointer; line-height:1;" title="Delete note">&times;</button>
                     </div>
@@ -1677,8 +1696,8 @@ function viewStudentReport(sessionId, examId) {
                      onclick="seekVideo(${offsetSec})"
                      onmouseenter="this.style.transform='translateX(4px)'; this.style.background='#334155';"
                      onmouseleave="this.style.transform='translateX(0)'; this.style.background='${bgColor}';">
-                    <div style="font-size: 11px; color: #94a3b8; margin-bottom: 4px;">[${timeStr}] - ${l.event_type.replace(/_/g, ' ').toUpperCase()}</div>
-                    <div style="font-size: 12px; line-height: 1.4; color: #f8fafc; word-break: break-word;">${l.event_message}</div>
+                    <div style="font-size: 11px; color: #94a3b8; margin-bottom: 4px;">[${timeStr}] - ${escapeHtml(String(l.event_type || '').replace(/_/g, ' ').toUpperCase())}</div>
+                    <div style="font-size: 12px; line-height: 1.4; color: #f8fafc; word-break: break-word;">${escapeHtml(l.event_message)}</div>
                 </div>
             `;
         });
