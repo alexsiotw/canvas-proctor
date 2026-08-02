@@ -411,6 +411,17 @@ app.post('/lti/launch', (req, res) => {
                     <p style="color:#6b7280;font-size:13px;">If you are an administrator: check that the consumer key and shared secret configured on the Canvas External Tool match LTI_KEY and LTI_SECRET on the server.</p>
                 </body></html>`);
             }
+        } else {
+            // Positive confirmation, so enforcement can be switched on in two safe steps
+            // instead of one blind one.
+            //
+            // Turning enforcement on with a mismatched key/secret pair returns 401 on
+            // every launch — it has already taken this tool offline once. With this line,
+            // the real secret can be configured while ALLOW_UNSIGNED_LTI is still set:
+            // launch once, and if this appears, removing the flag is verified safe rather
+            // than hoped safe. The signature covers the full https:// URL, so it also
+            // proves the proxy is forwarding Host and X-Forwarded-Proto correctly.
+            console.log(`[LTI] Signature validated (consumer key "${consumerKey}") — this launch was genuinely from Canvas.`);
         }
 
         const userId = req.body.user_id || 'demo_user';
