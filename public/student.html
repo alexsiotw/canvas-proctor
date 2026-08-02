@@ -563,6 +563,7 @@
       <a href="https://proctor.siotw.net/companion/CanvasProctorSetup.msi?v=1.0.2" class="banner-link" download style="display: inline-block; background: #0374B5; color: white; padding: 12px 24px; border-radius: 6px; text-decoration: none; font-weight: 600; font-size: 14px; margin-bottom: 16px; cursor: pointer;">Download Desktop Application (MSI)</a>
       <br>
       <a href="canvasproctor://launch" class="banner-link" style="display: inline-block; background: #ea580c; color: white; padding: 12px 24px; border-radius: 6px; text-decoration: none; font-weight: 600; font-size: 14px; cursor: pointer; border: none; outline: none; margin-top: 4px;">🚀 Launch CanvasProctor (Already Installed)</a>
+    </div>
   </div>
 
   <!-- Human Detection Blocker Overlay -->
@@ -585,6 +586,15 @@
               Please return to your seat and look directly at the webcam to resume the exam.
           </p>
       </div>
+  </div>
+  <!-- ^ This closing tag was missing.
+       Without it every overlay declared below was a DOM child of #ai-blocker-overlay,
+       which is display:none — so none of them could ever be shown, no matter what
+       their own style said. That silently disabled the AI presence blocker, the
+       screen-share blocker, and both blockers added later. #focus-violation-overlay
+       sits above this point, which is why the navigate-away warning was the only one
+       that ever appeared. -->
+
   <!-- Camera / microphone loss blocker.
        Only screen-share loss was detected before. Unplugging a webcam or muting a mic
        at the OS level left the exam running with no indication to the student and
