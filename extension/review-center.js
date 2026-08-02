@@ -235,11 +235,55 @@ function injectSidebarFallbackLink(rightSide) {
 }
 
 // ============================================================
+// THEME TOKENS
+//
+// Mirrors body.pg-instructor in public/css/styles.css so the extension's panels
+// and the LTI dashboard read as one product.
+//
+// This lives in its own stylesheet rather than inside any one panel's CSS
+// because the extension injects three independent stylesheets on three
+// different Canvas surfaces (review center, report modal, quiz-settings tab)
+// and they do not share an entry point — the quiz-settings tab in particular
+// renders without the review center ever opening. A var() that resolves nowhere
+// falls back to the property's initial value, so a load-order dependency here
+// would show up as black text on transparent backgrounds rather than as an
+// error. Every injector calls this first.
+// ============================================================
+function ensurePgThemeTokens() {
+  if (document.getElementById('pg-theme-tokens')) return;
+  const tokens = document.createElement('style');
+  tokens.id = 'pg-theme-tokens';
+  tokens.innerHTML = `
+      :root {
+        --prc-accent: #5b3fa8;
+        --prc-accent-hover: #4a3190;
+        --prc-accent-bg: #ece7f8;
+        --prc-text: #241d38;
+        --prc-text-2: #574d70;
+        --prc-text-3: #8b83a3;
+        --prc-text-4: #a49cbd;
+        --prc-border: #e2dff0;
+        --prc-border-strong: #c9c2e4;
+        --prc-surface-2: #f4f1fb;
+        --prc-surface-3: #efebf9;
+        --prc-danger: #d32130;
+        --prc-danger-strong: #a81a26;
+        --prc-success: #17845a;
+        --prc-warning: #d98a04;
+        --prc-overlay: rgba(24, 18, 40, 0.97);
+      }
+  `;
+  document.head.appendChild(tokens);
+}
+
+// ============================================================
 // REVIEW CENTER MODAL — Proctorio-style table layout
 // ============================================================
 function openExamReviewCenterModal(sessions, loadError) {
   const existing = document.getElementById('proctor-review-center-modal');
   if (existing) existing.remove();
+
+  ensurePgThemeTokens();
 
   if (!document.getElementById('proctor-review-center-styles')) {
     const style = document.createElement('style');
@@ -251,10 +295,10 @@ function openExamReviewCenterModal(sessions, loadError) {
       /* ---- Overlay ---- */
       #proctor-review-center-modal {
         position: fixed; inset: 0; z-index: 999990;
-        background: rgba(10,14,26,0.98);
+        background: var(--prc-overlay);
         display: flex; align-items: center; justify-content: center;
         font-family: -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
-        color: #1a1a2e;
+        color: var(--prc-text);
       }
 
       /* ---- Shell ---- */
@@ -274,7 +318,7 @@ function openExamReviewCenterModal(sessions, loadError) {
       .prc-nav {
         display: flex; align-items: center;
         background: #fff;
-        border-bottom: 1px solid #e2e8f0;
+        border-bottom: 1px solid var(--prc-border);
         padding: 0 20px;
         height: 44px;
         gap: 4px;
@@ -283,17 +327,17 @@ function openExamReviewCenterModal(sessions, loadError) {
       .prc-nav-tab {
         display: flex; align-items: center; gap: 6px;
         padding: 0 14px; height: 44px;
-        font-size: 13px; font-weight: 500; color: #4a5568;
+        font-size: 13px; font-weight: 500; color: var(--prc-text-2);
         cursor: pointer; border: none; background: transparent;
         border-bottom: 3px solid transparent;
         transition: color .15s, border-color .15s;
       }
-      .prc-nav-tab.active { color: #2563eb; border-bottom-color: #2563eb; font-weight: 600; }
+      .prc-nav-tab.active { color: var(--prc-accent); border-bottom-color: var(--prc-accent); font-weight: 600; }
       .prc-nav-tab svg { opacity: .7; }
       .prc-nav-right { margin-left: auto; display: flex; align-items: center; gap: 8px; }
       .prc-close-btn {
         background: none; border: none; cursor: pointer;
-        color: #718096; font-size: 20px; line-height: 1;
+        color: var(--prc-text-3); font-size: 20px; line-height: 1;
         padding: 4px 6px; border-radius: 4px;
         transition: background .15s;
       }
@@ -302,13 +346,13 @@ function openExamReviewCenterModal(sessions, loadError) {
       /* ---- Section header ---- */
       .prc-section-header {
         padding: 14px 20px;
-        border-bottom: 1px solid #e2e8f0;
+        border-bottom: 1px solid var(--prc-border);
         flex-shrink: 0;
       }
       .prc-section-header h2 {
-        margin: 0 0 2px 0; font-size: 17px; font-weight: 700; color: #1a1a2e;
+        margin: 0 0 2px 0; font-size: 17px; font-weight: 700; color: var(--prc-text);
       }
-      .prc-section-header p { margin: 0; font-size: 12px; color: #718096; }
+      .prc-section-header p { margin: 0; font-size: 12px; color: var(--prc-text-3); }
 
       /* ---- Table area ---- */
       .prc-table-area {
@@ -320,10 +364,10 @@ function openExamReviewCenterModal(sessions, loadError) {
         padding: 16px 20px 6px;
       }
       .prc-sub-section h3 {
-        margin: 0 0 2px 0; font-size: 14px; font-weight: 700; color: #1a1a2e;
+        margin: 0 0 2px 0; font-size: 14px; font-weight: 700; color: var(--prc-text);
       }
-      .prc-sub-section p { margin: 0; font-size: 12px; color: #718096; }
-      .prc-sub-row-right { float: right; display:flex; align-items: center; gap: 8px; font-size: 12px; color: #718096; }
+      .prc-sub-section p { margin: 0; font-size: 12px; color: var(--prc-text-3); }
+      .prc-sub-row-right { float: right; display:flex; align-items: center; gap: 8px; font-size: 12px; color: var(--prc-text-3); }
 
       /* ---- Data table ---- */
       .prc-data-table {
@@ -331,51 +375,51 @@ function openExamReviewCenterModal(sessions, loadError) {
         font-size: 13px;
       }
       .prc-data-table thead tr {
-        background: #f7fafc;
-        border-top: 1px solid #e2e8f0;
-        border-bottom: 1px solid #e2e8f0;
+        background: var(--prc-surface-2);
+        border-top: 1px solid var(--prc-border);
+        border-bottom: 1px solid var(--prc-border);
       }
       .prc-data-table thead th {
         padding: 10px 16px;
-        color: #718096; font-weight: 600; font-size: 12px;
+        color: var(--prc-text-3); font-weight: 600; font-size: 12px;
         text-align: left; white-space: nowrap;
       }
       .prc-data-table thead th.icon-col { text-align: center; width: 40px; }
       .prc-data-table tbody tr {
-        border-bottom: 1px solid #edf2f7;
+        border-bottom: 1px solid var(--prc-surface-3);
         transition: background .1s;
         cursor: default;
       }
       .prc-data-table tbody tr:nth-child(even) { background: #fafbfc; }
-      .prc-data-table tbody tr:hover { background: #f7fafc; }
+      .prc-data-table tbody tr:hover { background: var(--prc-surface-2); }
       .prc-data-table td {
         padding: 12px 16px;
-        vertical-align: middle; color: #2d3748;
+        vertical-align: middle; color: var(--prc-text);
       }
       .prc-data-table td.icon-col { text-align: center; }
-      .prc-data-table td a { color: #2563eb; font-weight: 500; text-decoration: none; }
+      .prc-data-table td a { color: var(--prc-accent); font-weight: 500; text-decoration: none; }
       .prc-data-table td a:hover { text-decoration: underline; }
 
       /* Coloured stat numbers */
       .prc-stat { font-size: 13px; font-weight: 600; }
-      .prc-stat.blue   { color: #3182ce; }
-      .prc-stat.green  { color: #38a169; }
-      .prc-stat.gray   { color: #718096; }
-      .prc-stat.red    { color: #e53e3e; }
+      .prc-stat.blue   { color: var(--prc-accent); }
+      .prc-stat.green  { color: var(--prc-success); }
+      .prc-stat.gray   { color: var(--prc-text-3); }
+      .prc-stat.red    { color: var(--prc-danger); }
 
       /* Suspicious bar */
       .prc-susp-wrap { display:flex; align-items: center; gap: 6px; }
       .prc-susp-bar-outer {
         width: 60px; height: 10px;
-        background: #e2e8f0; border-radius: 999px; overflow: hidden;
+        background: var(--prc-border); border-radius: 999px; overflow: hidden;
       }
       .prc-susp-bar-inner {
         height: 100%; border-radius: 999px;
         transition: width .3s;
       }
-      .prc-susp-bar-inner.low    { background: #38a169; }
-      .prc-susp-bar-inner.medium { background: #d69e2e; }
-      .prc-susp-bar-inner.high   { background: #e53e3e; }
+      .prc-susp-bar-inner.low    { background: var(--prc-success); }
+      .prc-susp-bar-inner.medium { background: var(--prc-warning); }
+      .prc-susp-bar-inner.high   { background: var(--prc-danger); }
 
       /* Icon row badges */
       .prc-icon-row {
@@ -384,38 +428,38 @@ function openExamReviewCenterModal(sessions, loadError) {
       .prc-icon-badge {
         display: inline-flex; align-items: center; justify-content: center;
         width: 28px; height: 28px; border-radius: 4px;
-        border: 1px solid #e2e8f0; color: #718096;
+        border: 1px solid var(--prc-border); color: var(--prc-text-3);
         cursor: default; position: relative;
       }
-      .prc-icon-badge:hover { border-color: #2563eb; color: #2563eb; background: #eff4ff; }
+      .prc-icon-badge:hover { border-color: var(--prc-accent); color: var(--prc-accent); background: var(--prc-accent-bg); }
 
       /* Action eye button */
       .prc-eye-btn {
         display: inline-flex; align-items: center; justify-content: center;
         background: none; border: none; cursor: pointer;
-        color: #718096; padding: 4px; border-radius: 4px;
+        color: var(--prc-text-3); padding: 4px; border-radius: 4px;
         transition: color .15s;
       }
-      .prc-eye-btn:hover { color: #2563eb; }
+      .prc-eye-btn:hover { color: var(--prc-accent); }
 
       /* Review detail button */
       .prc-review-btn {
-        background: none; border: 1px solid #cbd5e0;
-        color: #4a5568; font-size: 12px; font-weight: 600;
+        background: none; border: 1px solid var(--prc-border-strong);
+        color: var(--prc-text-2); font-size: 12px; font-weight: 600;
         padding: 5px 12px; border-radius: 4px; cursor: pointer;
         transition: all .15s;
       }
-      .prc-review-btn:hover { background: #2563eb; color: #fff; border-color: #2563eb; }
+      .prc-review-btn:hover { background: var(--prc-accent); color: #fff; border-color: var(--prc-accent); }
 
       /* Empty states */
       .prc-empty-state {
         display: flex; flex-direction: column; align-items: center;
         justify-content: center; padding: 48px; gap: 10px;
-        color: #a0aec0;
+        color: var(--prc-text-4);
       }
       .prc-empty-state svg { opacity: .4; }
       .prc-empty-state p { margin: 0; font-size: 14px; }
-      .prc-empty-state small { color: #d69e2e; font-size: 12px; }
+      .prc-empty-state small { color: var(--prc-warning); font-size: 12px; }
 
       /* Inline Detail layout adjustments — detail view takes over the whole shell */
       .prc-shell {
@@ -432,11 +476,11 @@ function openExamReviewCenterModal(sessions, loadError) {
       .prc-back-btn {
         display: flex; align-items: center; gap: 6px;
         background: none; border: none; cursor: pointer;
-        color: #4a5568; font-size: 13px; font-weight: 600;
+        color: var(--prc-text-2); font-size: 13px; font-weight: 600;
         padding: 6px 10px; border-radius: 6px;
         transition: background .15s, color .15s;
       }
-      .prc-back-btn:hover { background: #f0f4fa; color: #2563eb; }
+      .prc-back-btn:hover { background: var(--prc-accent-bg); color: var(--prc-accent); }
     `;
     document.head.appendChild(style);
   }
@@ -504,7 +548,7 @@ function _prcIconRowHtml(session) {
   if (hasVideo) icons += `<span class="prc-icon-badge" title="Screen/Webcam Recording"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polygon points="23 7 16 12 23 17 23 7"></polygon><rect x="1" y="5" width="15" height="14" rx="2" ry="2"></rect></svg></span>`;
   if (hasMobile) icons += `<span class="prc-icon-badge" title="Mobile Room Camera"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="2" width="14" height="20" rx="2" ry="2"></rect><line x1="12" y1="18" x2="12.01" y2="18"></line></svg></span>`;
   if (hasRoomScan) icons += `<span class="prc-icon-badge" title="Room Scan"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7"></path></svg></span>`;
-  return icons || '<span style="color:#cbd5e0;font-size:12px;">—</span>';
+  return icons || '<span style="color:var(--prc-border-strong);font-size:12px;">—</span>';
 }
 
 function updateReviewCenterModalBody(modalEl, sessions, loadError) {
@@ -541,7 +585,7 @@ function updateReviewCenterModalBody(modalEl, sessions, loadError) {
     const calcScore = (alertCount * 5) + (abnormCount * 2);
     const suspPct = Math.min(100, s.riskScore || calcScore);
     const suspClass = suspPct >= 70 ? 'high' : suspPct >= 30 ? 'medium' : 'low';
-    const suspColor = suspPct >= 70 ? '#e53e3e' : suspPct >= 30 ? '#d69e2e' : '#38a169';
+    const suspColor = suspPct >= 70 ? 'var(--prc-danger)' : suspPct >= 30 ? 'var(--prc-warning)' : 'var(--prc-success)';
     const iconRow = _prcIconRowHtml(s);
     const alertClass = alertCount > 0 ? 'red' : 'gray';
 
@@ -554,18 +598,18 @@ function updateReviewCenterModalBody(modalEl, sessions, loadError) {
         </button>
       </td>
       <td>
-        <div style="font-weight:700;color:#1a202c;line-height:1.2;margin-bottom:2px;">${s.student_name.split(' ')[0]}</div>
-        <div style="font-weight:700;color:#1a202c;line-height:1.2;">${s.student_name.split(' ').slice(1).map(n=>n[0]+'.').join(' ')}</div>
+        <div style="font-weight:700;color:var(--prc-text);line-height:1.2;margin-bottom:2px;">${s.student_name.split(' ')[0]}</div>
+        <div style="font-weight:700;color:var(--prc-text);line-height:1.2;">${s.student_name.split(' ').slice(1).map(n=>n[0]+'.').join(' ')}</div>
       </td>
       <td>
-        <div style="color:#4a5568;font-size:13px;line-height:1.4;">${new Date(s.started_at).toLocaleDateString('en-US', {month:'short',day:'numeric'})},</div>
-        <div style="color:#4a5568;font-size:13px;line-height:1.4;">${new Date(s.started_at).toLocaleTimeString('en-US', {hour:'numeric',minute:'2-digit'}).toLowerCase()}</div>
+        <div style="color:var(--prc-text-2);font-size:13px;line-height:1.4;">${new Date(s.started_at).toLocaleDateString('en-US', {month:'short',day:'numeric'})},</div>
+        <div style="color:var(--prc-text-2);font-size:13px;line-height:1.4;">${new Date(s.started_at).toLocaleTimeString('en-US', {hour:'numeric',minute:'2-digit'}).toLowerCase()}</div>
       </td>
       <td>
         <div class="prc-icon-row">${iconRow}</div>
       </td>
       <td>
-        <div style="display:inline-flex; flex-direction:column; align-items:center; justify-content:center; padding:4px 10px; border-radius:12px; background:${alertCount>=10 ? '#fff5f5' : alertCount>0 ? '#fffaf0' : '#f0fff4'}; color:${alertCount>=10 ? '#c53030' : alertCount>0 ? '#b7791f' : '#2f855a'}; font-size:11px; font-weight:700; line-height:1.2;">
+        <div style="display:inline-flex; flex-direction:column; align-items:center; justify-content:center; padding:4px 10px; border-radius:12px; background:${alertCount>=10 ? '#fff5f5' : alertCount>0 ? '#fffaf0' : '#f0fff4'}; color:${alertCount>=10 ? 'var(--prc-danger-strong)' : alertCount>0 ? '#b7791f' : '#2f855a'}; font-size:11px; font-weight:700; line-height:1.2;">
           <div>${alertCount}</div>
           <div>alerts</div>
         </div>
@@ -577,7 +621,7 @@ function updateReviewCenterModalBody(modalEl, sessions, loadError) {
         </div>
       </td>
       <td style="text-align:right;">
-        <button class="prc-review-btn prc-open-detail" data-student-id="${s.student_canvas_id}" data-session-id="${s.id}" style="background:none; color:#2563eb; font-weight:700; border:none; padding:4px 8px; cursor:pointer;">Review</button>
+        <button class="prc-review-btn prc-open-detail" data-student-id="${s.student_canvas_id}" data-session-id="${s.id}" style="background:none; color:var(--prc-accent); font-weight:700; border:none; padding:4px 8px; cursor:pointer;">Review</button>
       </td>
     `;
     tbody.appendChild(tr);
@@ -653,7 +697,7 @@ function openInlineStudentDetail(rcModal, sessions, initialSessionId) {
         <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="19" y1="12" x2="5" y2="12"></line><polyline points="12 19 5 12 12 5"></polyline></svg>
         Back to list
       </button>
-      <strong style="font-size:14px; color:#1a1a2e; display:flex; align-items:center; gap:6px;">
+      <strong style="font-size:14px; color:var(--prc-text); display:flex; align-items:center; gap:6px;">
         <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path><circle cx="12" cy="12" r="3"></circle></svg>
         Proctored Exam Report
       </strong>
@@ -705,16 +749,17 @@ function openInlineStudentDetail(rcModal, sessions, initialSessionId) {
 
 
 function injectPrmStyles() {
+  ensurePgThemeTokens();
   if (document.getElementById('proctor-modal-styles')) return;
   const style = document.createElement('style');
   style.id = 'proctor-modal-styles';
   style.innerHTML = `
     #proctor-report-modal {
       position: fixed; inset: 0; z-index: 999999;
-      background: rgba(10,14,26,0.98);
+      background: var(--prc-overlay);
       display: flex; align-items: center; justify-content: center;
       font-family: -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
-      color: #2d3748;
+      color: var(--prc-text);
     }
     .prm-shell {
       background: #fff;
@@ -731,38 +776,38 @@ function injectPrmStyles() {
       display: flex; align-items: center;
       padding: 0 20px;
       height: 50px; min-height: 50px;
-      border-bottom: 1px solid #e2e8f0;
+      border-bottom: 1px solid var(--prc-border);
       background: #fff;
       gap: 12px;
     }
     .prm-header h3 {
-      margin: 0; font-size: 15px; font-weight: 700; color: #1a1a2e; flex: 1;
+      margin: 0; font-size: 15px; font-weight: 700; color: var(--prc-text); flex: 1;
     }
     .prm-attempt-select {
       padding: 5px 10px;
-      border: 1px solid #cbd5e0; border-radius: 4px;
-      font-size: 13px; color: #4a5568; background: #f7fafc;
+      border: 1px solid var(--prc-border-strong); border-radius: 4px;
+      font-size: 13px; color: var(--prc-text-2); background: var(--prc-surface-2);
       cursor: pointer;
     }
     .prm-close-btn {
       background: none; border: none; cursor: pointer;
-      color: #718096; font-size: 22px; line-height: 1;
+      color: var(--prc-text-3); font-size: 22px; line-height: 1;
       padding: 4px 6px; border-radius: 4px;
       transition: background .15s;
     }
-    .prm-close-btn:hover { background: #f0f0f0; color: #e53e3e; }
+    .prm-close-btn:hover { background: #f0f0f0; color: var(--prc-danger); }
     /* ---- Row header (stats) ---- */
     .prm-stats-row {
       display: flex; align-items: center;
       padding: 8px 20px;
-      border-bottom: 1px solid #e2e8f0;
-      background: #f7fafc;
+      border-bottom: 1px solid var(--prc-border);
+      background: var(--prc-surface-2);
       gap: 28px; flex-shrink: 0;
     }
     .prm-stat-item { display: flex; align-items: center; gap: 6px; font-size: 13px; }
-    .prm-stat-icon { color: #718096; }
-    .prm-stat-val { font-weight: 700; color: #2d3748; }
-    .prm-stat-label { color: #718096; font-size: 12px; }
+    .prm-stat-icon { color: var(--prc-text-3); }
+    .prm-stat-val { font-weight: 700; color: var(--prc-text); }
+    .prm-stat-label { color: var(--prc-text-3); font-size: 12px; }
     .prm-susp-pill {
       display: inline-flex; align-items: center; gap: 5px;
       padding: 3px 10px; border-radius: 999px;
@@ -778,8 +823,8 @@ function injectPrmStyles() {
     }
     .prm-left {
       flex: 1; display: flex; flex-direction: column;
-      background: #1a1a2e; overflow: hidden;
-      border-right: 1px solid #e2e8f0;
+      background: var(--prc-text); overflow: hidden;
+      border-right: 1px solid var(--prc-border);
     }
     .prm-video-area {
       flex: 1; display: flex; gap: 0; overflow: hidden;
@@ -796,10 +841,10 @@ function injectPrmStyles() {
     }
     .prm-webcam-thumb {
       flex: 1; height: 100%;
-      background: #111; border: 2px solid #2d3748;
+      background: #111; border: 2px solid var(--prc-text);
       border-radius: 4px; overflow: hidden;
       display: flex; align-items: center; justify-content: center;
-      color: #4a5568; font-size: 11px; text-align: center;
+      color: var(--prc-text-2); font-size: 11px; text-align: center;
     }
     .prm-webcam-thumb video { width: 100%; height: 100%; object-fit: contain; }
     .prm-vid-main-container {
@@ -808,17 +853,17 @@ function injectPrmStyles() {
     }
     .prm-no-video {
       display: flex; flex-direction: column; align-items: center; justify-content: center;
-      gap: 8px; color: #4a5568; font-size: 13px;
+      gap: 8px; color: var(--prc-text-2); font-size: 13px;
     }
     .prm-no-video-icon {
       width: 90px; height: 90px; border-radius: 50%;
-      background: #2d3748; display: flex; align-items: center; justify-content: center;
+      background: var(--prc-text); display: flex; align-items: center; justify-content: center;
     }
 
     /* ---- Timeline ---- */
     .prm-timeline {
       height: 80px; background: #111827; flex-shrink: 0;
-      border-top: 1px solid #2d3748;
+      border-top: 1px solid var(--prc-text);
       display: flex; flex-direction: column; padding: 6px 12px;
       gap: 4px; overflow: hidden;
     }
@@ -845,20 +890,20 @@ function injectPrmStyles() {
       background: #fff; overflow: hidden;
     }
     .prm-tabs {
-      display: flex; border-bottom: 1px solid #e2e8f0;
+      display: flex; border-bottom: 1px solid var(--prc-border);
       overflow-x: auto; flex-shrink: 0;
     }
     .prm-tab-btn {
       flex-shrink: 0;
       padding: 8px 14px; font-size: 11px; font-weight: 600;
-      color: #718096; border: none; background: none;
+      color: var(--prc-text-3); border: none; background: none;
       border-bottom: 3px solid transparent; cursor: pointer;
       transition: color .15s, border-color .15s;
       text-transform: uppercase; letter-spacing: .03em;
       white-space: nowrap;
     }
-    .prm-tab-btn.active { color: #2563eb; border-bottom-color: #2563eb; }
-    .prm-tab-btn:hover:not(.active) { color: #2d3748; }
+    .prm-tab-btn.active { color: var(--prc-accent); border-bottom-color: var(--prc-accent); }
+    .prm-tab-btn:hover:not(.active) { color: var(--prc-text); }
     .prm-tab-panel { display: none; flex: 1; overflow-y: auto; padding: 14px; }
     .prm-tab-panel.active { display: block; }
 
@@ -866,28 +911,28 @@ function injectPrmStyles() {
     .prm-log-item {
       padding: 8px 10px 8px 12px;
       margin-bottom: 6px; border-radius: 4px;
-      border-left: 3px solid #e2e8f0;
-      background: #f7fafc; cursor: pointer;
+      border-left: 3px solid var(--prc-border);
+      background: var(--prc-surface-2); cursor: pointer;
       transition: background .12s;
     }
-    .prm-log-item:hover { background: #edf2f7; }
-    .prm-log-item.alert { border-left-color: #e53e3e; background: #fff5f5; }
+    .prm-log-item:hover { background: var(--prc-surface-3); }
+    .prm-log-item.alert { border-left-color: var(--prc-danger); background: #fff5f5; }
     .prm-log-item.alert:hover { background: #fed7d7; }
-    .prm-log-item.warn  { border-left-color: #d69e2e; background: #fffff0; }
+    .prm-log-item.warn  { border-left-color: var(--prc-warning); background: #fffff0; }
     .prm-log-item.warn:hover  { background: #fefcbf; }
-    .prm-log-item.info  { border-left-color: #3182ce; background: #ebf8ff; }
-    .prm-log-time { font-size: 10px; color: #a0aec0; margin-bottom: 2px; }
-    .prm-log-type { font-size: 11px; font-weight: 700; color: #4a5568; text-transform: uppercase; letter-spacing: .03em; }
-    .prm-log-msg  { font-size: 12px; color: #4a5568; line-height: 1.4; margin-top: 2px; word-break: break-word; }
+    .prm-log-item.info  { border-left-color: var(--prc-accent); background: #ebf8ff; }
+    .prm-log-time { font-size: 10px; color: var(--prc-text-4); margin-bottom: 2px; }
+    .prm-log-type { font-size: 11px; font-weight: 700; color: var(--prc-text-2); text-transform: uppercase; letter-spacing: .03em; }
+    .prm-log-msg  { font-size: 12px; color: var(--prc-text-2); line-height: 1.4; margin-top: 2px; word-break: break-word; }
 
     /* Score tab */
     .prm-score-card {
-      background: #f7fafc; border-radius: 8px; padding: 16px;
-      margin-bottom: 12px; border: 1px solid #e2e8f0;
+      background: var(--prc-surface-2); border-radius: 8px; padding: 16px;
+      margin-bottom: 12px; border: 1px solid var(--prc-border);
     }
-    .prm-score-card h4 { margin: 0 0 6px; font-size: 13px; font-weight: 700; color: #2d3748; }
-    .prm-score-card p  { margin: 0; font-size: 22px; font-weight: 800; color: #2563eb; }
-    .prm-score-card small { font-size: 11px; color: #718096; }
+    .prm-score-card h4 { margin: 0 0 6px; font-size: 13px; font-weight: 700; color: var(--prc-text); }
+    .prm-score-card p  { margin: 0; font-size: 22px; font-weight: 800; color: var(--prc-accent); }
+    .prm-score-card small { font-size: 11px; color: var(--prc-text-3); }
 
     /* Abnormality chip */
     .prm-abnorm-chip {
@@ -901,7 +946,7 @@ function injectPrmStyles() {
     .prm-panel-empty {
       display: flex; flex-direction: column; align-items: center;
       justify-content: center; padding: 32px; gap: 8px;
-      color: #a0aec0; text-align: center;
+      color: var(--prc-text-4); text-align: center;
     }
     .prm-panel-empty p { margin: 0; font-size: 13px; }
   `;
@@ -975,7 +1020,10 @@ async function loadSessionInModal(modal, session) {
       <div class="prm-video-primary">
         <div class="prm-no-video">
           <div class="prm-no-video-icon">
-            <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="#4a5568" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+            <!-- stroke goes through style, not the presentation attribute: CSS
+                 custom properties are not valid in SVG attributes and would
+                 silently render as no stroke at all. -->
+            <svg width="40" height="40" viewBox="0 0 24 24" fill="none" style="stroke: var(--prc-text-2);" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
           </div>
           <span style="color:#6b7280;font-size:13px;">No Video Recorded</span>
         </div>
@@ -1019,7 +1067,7 @@ async function loadSessionInModal(modal, session) {
     </div>
     <div class="prm-stat-item">
       <svg class="prm-stat-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
-      <span class="prm-stat-val" style="color:${alertCnt>0?'#e53e3e':'#2d3748'}">${alertCnt}</span>
+      <span class="prm-stat-val" style="color:${alertCnt>0?'var(--prc-danger)':'var(--prc-text)'}">${alertCnt}</span>
       <span class="prm-stat-label">Alerts</span>
     </div>
     <div class="prm-stat-item">
@@ -1031,7 +1079,7 @@ async function loadSessionInModal(modal, session) {
       <span class="prm-susp-pill ${suspCls}">${suspPct}% Suspicious</span>
     </div>
     <div class="prm-stat-item" style="margin-left:auto">
-      <span style="font-size:12px;color:#718096;">Attempt <strong>${session.attempt_number}</strong></span>
+      <span style="font-size:12px;color:var(--prc-text-3);">Attempt <strong>${session.attempt_number}</strong></span>
     </div>
   `;
 
@@ -1086,7 +1134,7 @@ async function loadSessionInModal(modal, session) {
       timelineEl.style.position = 'relative';
       playhead = document.createElement('div');
       playhead.className = 'prm-tl-playhead';
-      playhead.style.cssText = 'position:absolute;top:0;bottom:18px;width:2px;background:#2563eb;box-shadow:0 0 4px rgba(37,99,235,0.8);pointer-events:none;z-index:5;left:0;transition:left 0.15s linear;';
+      playhead.style.cssText = 'position:absolute;top:0;bottom:18px;width:2px;background:var(--prc-accent);box-shadow:0 0 4px rgba(91,63,168,0.85);pointer-events:none;z-index:5;left:0;transition:left 0.15s linear;';
       timelineEl.appendChild(playhead);
     }
     return playhead;
@@ -1116,8 +1164,8 @@ async function loadSessionInModal(modal, session) {
       }
       items.forEach(el => {
         const on = el === active;
-        el.style.background = on ? '#eff6ff' : '';
-        el.style.borderLeft = on ? '3px solid #2563eb' : '';
+        el.style.background = on ? 'var(--prc-accent-bg)' : '';
+        el.style.borderLeft = on ? '3px solid var(--prc-accent)' : '';
       });
     });
   }
@@ -1210,16 +1258,16 @@ async function loadSessionInModal(modal, session) {
     const isAb = abnTypes.includes(log.event_type);
     
     let severity = 'Low';
-    let sevColor = '#38a169'; // green
+    let sevColor = 'var(--prc-success)'; // green
     let sevBg = '#f0fff4';
     if (['tab_blur','window_blur','fullscreen_exit','Tab Blocked'].includes(log.event_type)) {
-      severity = 'High'; sevColor = '#c53030'; sevBg = '#fff5f5';
+      severity = 'High'; sevColor = 'var(--prc-danger-strong)'; sevBg = '#fff5f5';
     } else if (['clipboard_attempt','copy_attempt','paste_attempt','right_click','print_attempt'].includes(log.event_type)) {
       severity = 'Med'; sevColor = '#dd6b20'; sevBg = '#fffaf0';
     }
     
     if (!isAl) {
-      severity = 'Info'; sevColor = '#3182ce'; sevBg = '#ebf8ff';
+      severity = 'Info'; sevColor = 'var(--prc-accent)'; sevBg = '#ebf8ff';
     }
     
     const label= alertLabels[log.event_type] || abnLabels[log.event_type] || log.event_type.replace(/_/g,' ').replace(/\b\w/g, c=>c.toUpperCase());
@@ -1230,15 +1278,15 @@ async function loadSessionInModal(modal, session) {
     let desc = log.event_message ? log.event_message : (isAl ? 'Proctoring rule triggered' : 'Event recorded');
 
     el.innerHTML = `
-      <div style="padding:16px 20px; border-bottom:1px solid #e2e8f0; display:flex; flex-direction:column; gap:4px;">
+      <div style="padding:16px 20px; border-bottom:1px solid var(--prc-border); display:flex; flex-direction:column; gap:4px;">
         <div style="display:flex; align-items:center; gap:8px;">
           <div style="width:8px; height:8px; border-radius:50%; background:${sevColor};"></div>
-          <div style="font-weight:700; color:#1a202c; font-size:14px;">${label}</div>
+          <div style="font-weight:700; color:var(--prc-text); font-size:14px;">${label}</div>
         </div>
-        <div style="color:#718096; font-size:12px; margin-left:16px; margin-bottom:6px;">${details}</div>
+        <div style="color:var(--prc-text-3); font-size:12px; margin-left:16px; margin-bottom:6px;">${details}</div>
         <div style="display:flex; align-items:center; gap:8px; margin-left:16px;">
           <div style="padding:4px 12px; border-radius:12px; background:${sevBg}; color:${sevColor}; font-size:12px; font-weight:700; white-space:nowrap; display:inline-flex; align-items:center; justify-content:center;">${severity}</div>
-          <div style="color:#4a5568; font-size:13px; line-height:1.4;">${desc}</div>
+          <div style="color:var(--prc-text-2); font-size:13px; line-height:1.4;">${desc}</div>
         </div>
       </div>
     `;
@@ -1246,7 +1294,7 @@ async function loadSessionInModal(modal, session) {
     el.dataset.rawOff = off;
     el.style.cursor = 'pointer';
     el.title = 'Click to seek video to this timestamp';
-    el.addEventListener('mouseover', () => el.style.background = '#f7fafc');
+    el.addEventListener('mouseover', () => el.style.background = 'var(--prc-surface-2)');
     el.addEventListener('mouseout', () => el.style.background = '');
     el.addEventListener('click', () => {
       if (mainVid) {
@@ -1358,8 +1406,8 @@ async function loadSessionInModal(modal, session) {
             </div>
             <a href="${idUrl}" target="_blank" rel="noopener" style="flex-shrink:0;background:#10b981;color:#fff;padding:5px 10px;border-radius:6px;font-size:11px;font-weight:700;text-decoration:none;">View ID</a>
           </div>
-          <img src="${idUrl}" alt="Student ID" style="max-width:100%;border-radius:6px;border:1px solid #e2e8f0;display:block;background:#fff;" onerror="this.style.display='none'; this.nextElementSibling && (this.nextElementSibling.style.display='block');">
-          <p style="display:none;margin:8px 0 0;font-size:12px;color:#c53030;">Image unavailable (file may have been cleared from server storage). Try View ID or re-open after reconnecting.</p>
+          <img src="${idUrl}" alt="Student ID" style="max-width:100%;border-radius:6px;border:1px solid var(--prc-border);display:block;background:#fff;" onerror="this.style.display='none'; this.nextElementSibling && (this.nextElementSibling.style.display='block');">
+          <p style="display:none;margin:8px 0 0;font-size:12px;color:var(--prc-danger-strong);">Image unavailable (file may have been cleared from server storage). Try View ID or re-open after reconnecting.</p>
         </div>`;
     }
     if (sigUrl) {
@@ -1372,8 +1420,8 @@ async function loadSessionInModal(modal, session) {
             </div>
             <a href="${sigUrl}" target="_blank" rel="noopener" style="flex-shrink:0;background:#f59e0b;color:#fff;padding:5px 10px;border-radius:6px;font-size:11px;font-weight:700;text-decoration:none;">View Signature</a>
           </div>
-          <img src="${sigUrl}" alt="Student signature" style="max-width:100%;border-radius:6px;border:1px solid #e2e8f0;display:block;background:#fff;" onerror="this.style.display='none'; this.nextElementSibling && (this.nextElementSibling.style.display='block');">
-          <p style="display:none;margin:8px 0 0;font-size:12px;color:#c53030;">Image unavailable (file may have been cleared from server storage).</p>
+          <img src="${sigUrl}" alt="Student signature" style="max-width:100%;border-radius:6px;border:1px solid var(--prc-border);display:block;background:#fff;" onerror="this.style.display='none'; this.nextElementSibling && (this.nextElementSibling.style.display='block');">
+          <p style="display:none;margin:8px 0 0;font-size:12px;color:var(--prc-danger-strong);">Image unavailable (file may have been cleared from server storage).</p>
         </div>`;
     }
     if (roomScanUrl) {
@@ -1551,6 +1599,7 @@ function initQuizEditorIntegration() {
 
 function injectProctorGuardTab(tabNav, quizId) {
   // --- Inject styles ---
+  ensurePgThemeTokens();
   if (!document.getElementById('pg-ext-styles')) {
     const st = document.createElement('style');
     st.id = 'pg-ext-styles';
@@ -1559,23 +1608,23 @@ function injectProctorGuardTab(tabNav, quizId) {
       .pg-sec-title{font-size:16px;font-weight:700;color:#1a1a1a;margin:0 0 6px 0;display:flex;align-items:center;gap:6px;cursor:pointer;user-select:none;}
       .pg-arrow{font-size:10px;display:inline-block;transition:transform 0.2s;}
       .pg-divider{border:none;border-top:1px solid #e0e0e0;margin:20px 0;}
-      .pg-exam-warn{position:sticky;top:0;z-index:10;background:#e8eefd;border:1px solid #2563eb;color:#2563eb;padding:10px;border-radius:4px;font-size:13px;font-weight:600;margin-bottom:18px;}
+      .pg-exam-warn{position:sticky;top:0;z-index:10;background:var(--prc-accent-bg);border:1px solid var(--prc-accent);color:var(--prc-accent);padding:10px;border-radius:4px;font-size:13px;font-weight:600;margin-bottom:18px;}
       .pg-sub-title{font-size:14px;font-weight:700;color:#1a1a1a;margin:20px 0 8px 0;display:flex;align-items:center;gap:6px;cursor:pointer;user-select:none;}
-      .pg-note{font-size:12px;color:#2563eb;margin:6px 0 16px 0;}
+      .pg-note{font-size:12px;color:var(--prc-accent);margin:6px 0 16px 0;}
       .pg-grid{display:flex;flex-wrap:wrap;gap:10px;margin-bottom:6px;}
       .pg-lbl{cursor:pointer;display:inline-block;position:relative;}
       .pg-chk{position:absolute;opacity:0;width:0;height:0;}
-      .pg-card{display:flex;flex-direction:column;align-items:center;justify-content:center;width:118px;min-height:108px;padding:14px 8px 10px;border:1px solid #e2e8f0;border-radius:4px;background:#fff;box-sizing:border-box;transition:all 0.15s;text-align:center;user-select:none;}
+      .pg-card{display:flex;flex-direction:column;align-items:center;justify-content:center;width:118px;min-height:108px;padding:14px 8px 10px;border:1px solid var(--prc-border);border-radius:4px;background:#fff;box-sizing:border-box;transition:all 0.15s;text-align:center;user-select:none;}
       .pg-card:hover{border-color:#bbb;background:#fafafa;}
-      .pg-chk:checked+.pg-card{background:#e8eefd;border:2px solid #2563eb;}
-      .pg-chk:checked+.pg-card svg{stroke:#2563eb!important;}
-      .pg-chk:checked+.pg-card .pg-ct{color:#2563eb;}
+      .pg-chk:checked+.pg-card{background:var(--prc-accent-bg);border:2px solid var(--prc-accent);}
+      .pg-chk:checked+.pg-card svg{stroke:var(--prc-accent)!important;}
+      .pg-chk:checked+.pg-card .pg-ct{color:var(--prc-accent);}
       .pg-icon{width:38px;height:38px;margin-bottom:9px;display:flex;align-items:center;justify-content:center;}
       .pg-icon svg{width:34px;height:34px;stroke:#333;fill:none;stroke-width:1.75;stroke-linecap:round;stroke-linejoin:round;}
       .pg-ct{font-size:11.5px;font-weight:600;color:#333;line-height:1.3;}
       .pg-savebar{margin-top:28px;padding-top:16px;border-top:1px solid #e0e0e0;display:flex;align-items:center;gap:14px;justify-content:flex-end;}
-      #pg-save-btn{background:#2563eb;color:#fff;border:none;padding:9px 22px;font-size:13px;font-weight:700;border-radius:4px;cursor:pointer;font-family:inherit;}
-      #pg-save-btn:hover{background:#1d4ed8;}
+      #pg-save-btn{background:var(--prc-accent);color:#fff;border:none;padding:9px 22px;font-size:13px;font-weight:700;border-radius:4px;cursor:pointer;font-family:inherit;}
+      #pg-save-btn:hover{background:var(--prc-accent-hover);}
       #pg-save-btn:disabled{background:#9db8d2;cursor:default;}
       #pg-save-ok{font-size:13px;color:#2e7d32;font-weight:600;display:none;}
       #pg-save-err{font-size:13px;color:#c0392b;font-weight:600;display:none;}
@@ -1643,7 +1692,7 @@ function injectProctorGuardTab(tabNav, quizId) {
     <div id="pg-prof">
       <p class="pg-prof-note" style="margin-bottom:8px;">You have not saved any profiles yet :(</p>
       <p class="pg-prof-sub">Saving ProctorGuard settings profiles allows you to apply your favorite exam settings with a single click.</p>
-      <button style="margin-top:14px;background:#fff;color:#2563eb;border:1px solid #2563eb;padding:6px 14px;border-radius:4px;cursor:pointer;font-weight:600;">Create profile</button>
+      <button style="margin-top:14px;background:#fff;color:var(--prc-accent);border:1px solid var(--prc-accent);padding:6px 14px;border-radius:4px;cursor:pointer;font-weight:600;">Create profile</button>
     </div>
     <hr class="pg-divider">
     <div class="pg-sec-title" data-pg-body="pg-main"><span class="pg-arrow">&#9660;</span>&nbsp;ProctorGuard Exam Settings</div>

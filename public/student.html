@@ -21,7 +21,7 @@
       }).catch(err => {});
     });
   </script>
-  <link rel="stylesheet" href="/css/styles.css?v=2.1.0">
+  <link rel="stylesheet" href="/css/styles.css?v=2.5.0">
   <link rel="icon" href="/icons/proctorguard-logo.png">
   <script src="/socket.io/socket.io.js"></script>
   <style>
@@ -105,7 +105,7 @@
     .sidebar-step.active {
         color: #111827;
         font-weight: 600;
-        border-left: 3px solid #2563eb;
+        border-left: 3px solid var(--accent);
         background: #f3f7ff;
     }
     .sidebar-step.completed {
@@ -126,13 +126,13 @@
         color: #9ca3af;
     }
     .sidebar-step.active .step-circle {
-        background: #2563eb;
-        border-color: #2563eb;
+        background: var(--accent);
+        border-color: var(--accent);
         color: #ffffff;
     }
     .sidebar-step.completed .step-circle {
-        background: #10b981;
-        border-color: #10b981;
+        background: var(--success);
+        border-color: var(--success);
         color: #ffffff;
     }
     .step-badge {
@@ -144,10 +144,10 @@
     }
     .step-badge-progress {
         background: #dbeafe;
-        color: #1d4ed8;
+        color: var(--accent-hover);
     }
     .step-badge-done {
-        color: #059669;
+        color: var(--success);
         font-size: 12px;
     }
     .setup-content {
@@ -183,7 +183,7 @@
     .volume-fill {
         height: 100%;
         width: 0%;
-        background: linear-gradient(90deg, #10b981, #3b82f6);
+        background: linear-gradient(90deg, var(--success), var(--accent));
         transition: width 0.1s ease;
     }
     .video-preview-box {
@@ -299,7 +299,7 @@
     }
     .spinner {
         border: 3px solid #e2e8f0;
-        border-top: 3px solid #2563eb;
+        border-top: 3px solid var(--accent);
         border-radius: 50%;
         width: 16px;
         height: 16px;
@@ -309,8 +309,25 @@
   </style>
 </head>
 
-<body>
-  
+<body class="pg-student">
+
+  <!-- Application title bar. Present on every student surface, including the
+       access-code and setup screens, so the environment reads as an application
+       the student has entered rather than a page they have navigated to. -->
+  <div class="pg-appbar">
+    <div class="pg-appbar-title">
+      <img src="/icons/proctorguard-logo.png" alt="" />
+      <span>ProctorGuard Secure Browser</span>
+      <span class="pg-appbar-sub" id="appbar-exam-name">Proctored Assessment</span>
+    </div>
+    <div class="pg-appbar-right">
+      <!-- Pre-exam only. Recording has not started at this point, and saying so
+           plainly is worth more than a decorative indicator: it is the honest
+           answer to the question every student has on this screen. -->
+      <span class="pg-status-off" style="font-size: 12px;">Setup — not recording</span>
+    </div>
+  </div>
+
   <div id="code-container" style="display: flex; flex-direction: column; align-items: center; justify-content: center; min-height: 100vh; padding: 20px;">
       <div class="check-card">
           <h1>Exam Access Code</h1>
@@ -350,7 +367,7 @@
               <span id="setup-time-est" style="font-size: 13px; font-weight: normal; color: #6b7280;">~3 min remaining</span>
           </div>
           <div style="width: 100%; height: 6px; background: #e5e7eb; border-radius: 3px; overflow: hidden;">
-              <div id="setup-progress-fill" style="width: 10%; height: 100%; background: #10b981; transition: width 0.3s ease;"></div>
+              <div id="setup-progress-fill" style="width: 10%; height: 100%; background: var(--success); transition: width 0.3s ease;"></div>
           </div>
       </div>
       <!-- iOS third-party cookie check warning -->
@@ -392,14 +409,19 @@
 
   <!-- Full Screen Exam Layout -->
   <div id="active-exam-container">
-      <!-- Secure Header Bar -->
-      <div style="background: #0f172a; padding: 10px 20px; display: flex; justify-content: space-between; align-items: center; color: white; flex-shrink: 0; box-shadow: 0 2px 10px rgba(0,0,0,0.3); z-index: 1001;">
-          <div style="display: flex; align-items: center; gap: 15px;">
-              <div style="background: rgba(220, 38, 38, 0.9); padding: 5px 15px; border-radius: 20px; font-weight: bold; font-size: 14px; animation: pulse 2s infinite;">🔴 Recording Active</div>
-              <span style="font-size: 14px; color: #cbd5e1; display: none; @media(min-width: 768px) { display: inline; }">Your session is secured.</span>
-              <span id="quiz-password-display" style="display: none; background: #2563eb; color: white; padding: 5px 15px; border-radius: 4px; font-weight: bold; font-size: 14px; font-family: monospace;"></span>
+      <!-- Secure Header Bar. Same chrome as the pre-exam title bar, so crossing
+           into the exam feels like a mode change inside one application rather
+           than a jump to a different screen. -->
+      <div class="pg-appbar" style="z-index: 1001;">
+          <div class="pg-appbar-title">
+              <img src="/icons/proctorguard-logo.png" alt="" />
+              <span>ProctorGuard Secure Browser</span>
+              <span class="pg-appbar-sub">Session locked &mdash; monitoring active</span>
           </div>
-
+          <div class="pg-appbar-right">
+              <span id="quiz-password-display" style="display: none; background: rgba(255,255,255,0.1); border: 1px solid rgba(255,255,255,0.18); color: #e6ebf1; padding: 3px 9px; border-radius: 2px; font-weight: 700; font-size: 12px; font-family: var(--font-mono); letter-spacing: 0.5px;"></span>
+              <span class="pg-rec"><span class="pg-rec-dot"></span> Recording</span>
+          </div>
       </div>
       
       <!-- iOS Iframe Cookie Warning Bar -->
@@ -413,6 +435,78 @@
   </div>
   
   <video id="local-video" autoplay muted playsinline></video>
+
+  <!-- Status bar. Segmented, monospaced, pinned to the bottom the way a native
+       application's status bar is. It also answers the privacy question that the
+       disclosure text above only promises: which sensors are actually live, right
+       now, visible at all times without the student having to ask. -->
+  <div class="pg-statusbar" id="pg-statusbar">
+      <span class="pg-status-cell"><strong>Status:</strong> <span id="pg-status-phase" class="pg-status-warn">Setup</span></span>
+      <span class="pg-status-cell">Camera <span id="pg-status-cam" class="pg-status-off">off</span></span>
+      <span class="pg-status-cell">Microphone <span id="pg-status-mic" class="pg-status-off">off</span></span>
+      <span class="pg-status-cell">Screen <span id="pg-status-screen" class="pg-status-off">off</span></span>
+      <span class="pg-status-cell">Upload <span id="pg-status-upload" class="pg-status-off">idle</span></span>
+      <span class="pg-status-cell" id="pg-status-clock">--:--:--</span>
+  </div>
+
+  <script>
+    // Drives the status bar off the recorder state that student.js already
+    // maintains. Read-only and defensive on purpose: this is chrome, and a
+    // display bug here must never be able to interrupt an exam in progress.
+    (function () {
+      var set = function (id, text, cls) {
+        var el = document.getElementById(id);
+        if (!el) return;
+        el.textContent = text;
+        el.className = cls;
+      };
+
+      function tick() {
+        try {
+          var recording = typeof mediaRecorder !== 'undefined' && mediaRecorder && mediaRecorder.state === 'recording';
+          var examOver = typeof isExamCompleted !== 'undefined' && isExamCompleted;
+
+          if (examOver) set('pg-status-phase', 'Submitted', 'pg-status-ok');
+          else if (recording) set('pg-status-phase', 'Monitoring', 'pg-status-ok');
+          else set('pg-status-phase', 'Setup', 'pg-status-warn');
+
+          var hasTrack = function (stream, kind) {
+            try {
+              if (!stream) return false;
+              var tracks = kind === 'audio' ? stream.getAudioTracks() : stream.getVideoTracks();
+              return tracks.some(function (t) { return t.readyState === 'live'; });
+            } catch (e) { return false; }
+          };
+
+          var camLive = hasTrack(typeof localCamStream !== 'undefined' ? localCamStream : null, 'video');
+          var micLive = hasTrack(typeof localMicStream !== 'undefined' ? localMicStream : null, 'audio');
+          var scrLive = hasTrack(typeof localScreenStream !== 'undefined' ? localScreenStream : null, 'video');
+
+          set('pg-status-cam', camLive ? 'live' : 'off', camLive ? 'pg-status-ok' : 'pg-status-off');
+          set('pg-status-mic', micLive ? 'live' : 'off', micLive ? 'pg-status-ok' : 'pg-status-off');
+          set('pg-status-screen', scrLive ? 'shared' : 'off', scrLive ? 'pg-status-ok' : 'pg-status-off');
+
+          // Surfacing the backlog is the point: a student on bad wifi can see the
+          // recording is still catching up instead of closing the tab on a queue.
+          var queued = (typeof uploadQueue !== 'undefined' && uploadQueue) ? uploadQueue.length : 0;
+          if (!recording && !examOver) set('pg-status-upload', 'idle', 'pg-status-off');
+          else if (queued > 3) set('pg-status-upload', queued + ' pending', 'pg-status-warn');
+          else if (queued > 0) set('pg-status-upload', queued + ' pending', 'pg-status-ok');
+          else set('pg-status-upload', 'synced', 'pg-status-ok');
+
+          var clock = document.getElementById('pg-status-clock');
+          if (clock) {
+            clock.textContent = new Date().toLocaleTimeString('en-US', { hour12: false });
+          }
+        } catch (e) {
+          /* chrome only — never let this surface an error to the student */
+        }
+      }
+
+      tick();
+      setInterval(tick, 1000);
+    })();
+  </script>
 
   <!-- Toast Container -->
   <div class="toast-container" id="toast-container" style="position: fixed; bottom: 20px; right: 20px; z-index: 9999;"></div>

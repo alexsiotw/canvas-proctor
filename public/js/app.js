@@ -999,12 +999,21 @@ function filterReports(examId) {
     filtered.forEach(s => {
         const riskInfo = computeSessionRisk(s, exam);
         const trustScore = riskInfo.trustScore;
-        let trustBarColor = 'var(--success)';
-        if (trustScore < 40) trustBarColor = 'var(--danger)';
-        else if (trustScore < 75) trustBarColor = 'var(--warning)';
-        
-        const trustBarHtml = `<span style="height: 14px; width: 4px; background: ${trustBarColor}; display: inline-block; border-radius: 2px; margin-left: 6px; vertical-align: middle;"></span>`;
-        
+
+        // Graded meter rather than a bare percentage. A number alone forces the
+        // instructor to read every row; a bar lets them find the outliers by
+        // scrolling. Fill is proportional to trust, colour follows the risk tier,
+        // so a full green bar means "nothing to look at here".
+        const meterTier = riskInfo.category === 'high' ? 'high'
+            : (riskInfo.category === 'moderate' ? 'mod' : 'low');
+        const trustBarHtml = `
+            <div class="pg-meter pg-meter-${meterTier}">
+                <span class="pg-meter-value">${trustScore}%</span>
+                <span class="pg-meter-track"><span class="pg-meter-fill" style="width: ${trustScore}%;"></span></span>
+            </div>`;
+        const rowSeverityClass = riskInfo.category === 'high' ? 'pg-row-high'
+            : (riskInfo.category === 'moderate' ? 'pg-row-mod' : '');
+
         const submissionDate = new Date(s.started_at).toLocaleDateString('en-US', {
             month: '2-digit',
             day: '2-digit',
@@ -1036,7 +1045,7 @@ function filterReports(examId) {
         const statusLabel = s.status === 'completed' ? 'Completed' : (s.status || '—');
         
         tbodyHtml += `
-            <tr style="border-bottom: 1px solid var(--border); transition: background 0.15s;" onmouseenter="this.style.background='#f8fafc'" onmouseleave="this.style.background='transparent'">
+            <tr class="${rowSeverityClass}" style="border-bottom: 1px solid var(--border);">
                 <td style="padding: 12px 16px; cursor: pointer; text-align: center;" onclick="viewStudentReport(${s.id}, ${examId})" title="Open report">
                     <span style="color: var(--accent); font-weight:700;">View</span>
                 </td>
@@ -1046,8 +1055,8 @@ function filterReports(examId) {
                 <td style="padding: 12px 16px; text-align: center; color: var(--text-secondary); font-size:12px;">${statusLabel}</td>
                 <td style="padding: 12px 16px; text-align: center; font-weight: 600; color: ${annCount > 0 ? 'var(--accent)' : 'var(--text-muted)'};">${annCount}</td>
                 <td style="padding: 12px 16px; text-align: center; font-weight: 600; color: ${riskInfo.totalWarnings > 0 ? 'var(--danger)' : 'var(--text-muted)'};">${riskInfo.totalWarnings}</td>
-                <td style="padding: 12px 16px; text-align: center; font-weight: 600;" title="Risk score: ${riskInfo.score}">
-                    ${trustScore}% ${trustBarHtml}
+                <td style="padding: 12px 16px;" title="Risk score: ${riskInfo.score} — ${riskInfo.tier} risk">
+                    ${trustBarHtml}
                 </td>
                 <td style="padding: 12px 16px;">${alertIconsHtml}</td>
             </tr>

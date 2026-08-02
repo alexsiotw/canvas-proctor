@@ -6,12 +6,12 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta name="description" content="ProctorGuard Teacher Dashboard">
   <title>ProctorGuard</title>
-  <link rel="stylesheet" href="/css/styles.css?v=2.1.0">
+  <link rel="stylesheet" href="/css/styles.css?v=2.5.0">
   <link rel="icon" href="/icons/proctorguard-logo.png">
   <script src="/socket.io/socket.io.js"></script>
 </head>
 
-<body>
+<body class="pg-instructor">
   <!-- Passcode Overlay -->
   <div id="passcode-overlay" style="display: none; position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; background: var(--bg-primary); z-index: 99999; justify-content: center; align-items: center; flex-direction: column;">
       <div class="card" style="padding: 40px; text-align: center; max-width: 420px; width: 90%; background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius-lg); box-shadow: var(--shadow-lg);">
@@ -29,7 +29,7 @@
     <div class="top-bar">
       <div class="logo">
         <img src="/icons/proctorguard-logo.png" alt="" class="logo-icon" style="width:36px; height:36px; object-fit:contain; border-radius:8px; background:transparent; box-shadow:none;" />
-        <span>ProctorGuard</span>
+        <span>ProctorGuard<span class="pg-appbar-eyebrow">Review Console</span></span>
       </div>
       <div class="user-info">
         <span id="user-name">Instructor</span>
@@ -57,7 +57,7 @@
       <img id="fullscreen-image" style="max-width: 90%; max-height: 90%; border-radius: 8px; box-shadow: 0 4px 20px rgba(0,0,0,0.5);" />
   </div>
 
-  <script src="/js/app.js?v=2.2.0"></script>
+  <script src="/js/app.js?v=2.3.0"></script>
 </body>
 
 </html>

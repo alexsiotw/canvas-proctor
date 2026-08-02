@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "ProctorGuard Extension",
-  "version": "2.0.3",
+  "version": "2.0.4",
   "description": "Enforces advanced browser lockdown and monitoring during proctored Canvas exams.",
   "permissions": [
     "tabs",

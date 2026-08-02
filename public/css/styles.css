@@ -1748,4 +1748,563 @@ body::before {
 .seb-footer-hint a:hover {
   color: var(--accent-hover);
   text-decoration: underline;
-}
+}
+
+/* ============================================================================
+ * SURFACE THEMES
+ *
+ * The two audiences want opposite things from this interface, so they get two
+ * registers off one stylesheet:
+ *
+ *   body.pg-student    — reads as a locked-down desktop application, the way
+ *                        Respondus LockDown Browser does. Squared corners, dense
+ *                        rows, a real title bar and a real status bar, one amber
+ *                        accent reserved for "you are being recorded". A student
+ *                        should feel they have left the web and entered a
+ *                        controlled environment.
+ *
+ *   body.pg-instructor — reads as a review console, the way Proctorio does.
+ *                        Violet, card-based, generous, with graded severity
+ *                        meters. An instructor is triaging evidence and wants
+ *                        scanability, not gravity.
+ *
+ * Everything below is token overrides plus a small number of new components.
+ * The base rules above are untouched, so removing the two body classes returns
+ * the app to its previous appearance.
+ * ========================================================================= */
+
+/* ---------- STUDENT: locked-down application ---------- */
+body.pg-student {
+  --bg-primary: #e9edf1;        /* desktop workspace gray, not web white */
+  --bg-secondary: #ffffff;
+  --bg-card: #ffffff;
+  --border: #b6bfc9;
+  --border-hover: #94a0ad;
+  --text-primary: #1b222b;
+  --text-secondary: #46525f;
+  --text-muted: #6d7885;
+  --accent: #1f5fa9;            /* institutional blue, deliberately desaturated */
+  --accent-hover: #184b87;
+  --accent-glow: rgba(31, 95, 169, 0.14);
+  /* Muted, not the bright #10b981 mint. A lockdown tool confirming a check
+     passed should look like a system report, not a consumer success toast. */
+  --success: #1a7f43;
+  --success-bg: rgba(26, 127, 67, 0.10);
+  --danger: #c0392f;
+  --danger-bg: rgba(192, 57, 47, 0.09);
+  --warning: #d98a04;
+  --warning-bg: rgba(217, 138, 4, 0.11);
+  --radius: 3px;
+  --radius-sm: 2px;
+  --radius-lg: 4px;
+  --shadow: 0 1px 2px rgba(20, 26, 33, 0.14);
+  --shadow-lg: 0 6px 16px rgba(20, 26, 33, 0.22);
+  --accent-gradient: linear-gradient(180deg, #2a6cb8 0%, #1f5fa9 100%);
+
+  /* Application chrome */
+  --pg-chrome: #1b222b;
+  --pg-chrome-hi: #2b3542;
+  --pg-chrome-text: #e6ebf1;
+  --pg-chrome-muted: #93a1b1;
+  --pg-secure: #d98a04;         /* the single "recording" accent */
+  --pg-secure-bg: rgba(217, 138, 4, 0.13);
+
+  background: var(--bg-primary);
+}
+
+/* A real title bar. This one element does most of the work of convincing
+ * someone they are inside an application rather than on a page. */
+.pg-appbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  height: 42px;
+  padding: 0 14px;
+  background: var(--pg-chrome);
+  border-bottom: 1px solid #0f141a;
+  box-shadow: inset 0 1px 0 var(--pg-chrome-hi);
+  color: var(--pg-chrome-text);
+  font-size: 13px;
+  user-select: none;
+  flex-shrink: 0;
+}
+
+.pg-appbar-title {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  font-weight: 600;
+  letter-spacing: 0.2px;
+}
+
+.pg-appbar-title img {
+  width: 18px;
+  height: 18px;
+  object-fit: contain;
+}
+
+.pg-appbar-sub {
+  color: var(--pg-chrome-muted);
+  font-weight: 400;
+  font-size: 12px;
+  padding-left: 10px;
+  margin-left: 2px;
+  border-left: 1px solid #3a4553;
+}
+
+.pg-appbar-right {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+/* Squared, not a pill — pills read as consumer web. */
+.pg-rec {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 4px 10px;
+  background: var(--pg-secure-bg);
+  border: 1px solid rgba(217, 138, 4, 0.45);
+  border-radius: 2px;
+  color: #f5c159;
+  font-size: 11.5px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.7px;
+  font-family: var(--font-sans);
+}
+
+.pg-rec-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #e0453a;
+  box-shadow: 0 0 0 2px rgba(224, 69, 58, 0.25);
+  animation: pg-rec-pulse 1.8s ease-in-out infinite;
+}
+
+@keyframes pg-rec-pulse {
+  0%, 100% { opacity: 1; }
+  50%      { opacity: 0.35; }
+}
+
+/* Win32-style segmented status bar, pinned to the bottom of the viewport. */
+.pg-statusbar {
+  position: fixed;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  /* Above #active-exam-container (1000). The status bar has to stay visible
+     during the exam — that is the whole point of it. */
+  z-index: 1002;
+  display: flex;
+  align-items: stretch;
+  height: 26px;
+  background: var(--pg-chrome);
+  border-top: 1px solid #0f141a;
+  box-shadow: inset 0 1px 0 var(--pg-chrome-hi);
+  color: var(--pg-chrome-muted);
+  font-size: 11.5px;
+  user-select: none;
+}
+
+.pg-status-cell {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 12px;
+  border-right: 1px solid #333e4b;
+  white-space: nowrap;
+}
+
+.pg-status-cell:last-child {
+  border-right: none;
+  margin-left: auto;
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
+.pg-status-cell strong {
+  color: var(--pg-chrome-text);
+  font-weight: 600;
+}
+
+.pg-status-ok    { color: #63c77b; }
+.pg-status-warn  { color: #f5c159; }
+.pg-status-off   { color: #7d8896; }
+
+/* Give the fixed status bar somewhere to sit without covering content. */
+body.pg-student #code-container,
+body.pg-student #setup-container {
+  margin-bottom: 42px;
+}
+
+/* The title bar and status bar both consume vertical space that the original
+   100vh containers assumed they had. */
+body.pg-student #code-container {
+  min-height: calc(100vh - 68px);
+}
+
+body.pg-student #active-exam-container {
+  height: 100vh;
+  padding-bottom: 26px;
+  box-sizing: border-box;
+  background: var(--bg-primary);
+}
+
+/* Wizard reads as an installer checklist rather than a marketing stepper. */
+body.pg-student #setup-container {
+  border-radius: var(--radius-lg);
+  border-color: var(--border);
+  box-shadow: var(--shadow-lg);
+  max-width: 940px;
+}
+
+body.pg-student .setup-header {
+  background: #f3f5f8;
+  border-bottom: 1px solid var(--border);
+  font-size: 13px;
+  letter-spacing: 0.2px;
+  padding: 12px 16px;
+}
+
+body.pg-student .setup-sidebar {
+  width: 292px;
+  background: #f7f9fb;
+  border-right: 1px solid var(--border);
+}
+
+body.pg-student .sidebar-header {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.8px;
+  color: var(--text-muted);
+  background: #eef1f5;
+  border-bottom: 1px solid var(--border);
+  padding: 9px 16px;
+}
+
+body.pg-student .sidebar-step {
+  padding: 9px 16px;
+  font-size: 13px;
+  border-bottom: 1px solid #e4e9ee;
+  border-left: 3px solid transparent;
+}
+
+body.pg-student .sidebar-step.active {
+  background: #e7effa;
+  border-left-color: var(--accent);
+}
+
+body.pg-student .sidebar-step.completed {
+  color: var(--text-secondary);
+}
+
+/* Squared markers — a checklist, not a progress ring. */
+body.pg-student .step-circle {
+  border-radius: 2px;
+  width: 20px;
+  height: 20px;
+  font-size: 10.5px;
+  font-family: var(--font-mono);
+  background: #ffffff;
+}
+
+body.pg-student .sidebar-step.completed .step-circle {
+  background: #1a7f43;
+  border-color: #1a7f43;
+}
+
+body.pg-student .step-badge {
+  border-radius: 2px;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  padding: 3px 7px;
+  font-family: var(--font-sans);
+}
+
+body.pg-student .step-badge-progress {
+  background: #dce8f7;
+  color: #1a4c85;
+}
+
+body.pg-student .setup-content {
+  padding: 28px 32px;
+}
+
+body.pg-student .step-title {
+  font-size: 19px;
+  font-weight: 700;
+  letter-spacing: -0.2px;
+  color: var(--text-primary);
+}
+
+body.pg-student .step-description {
+  font-size: 14px;
+  color: var(--text-secondary);
+}
+
+body.pg-student .video-preview-box {
+  border-radius: var(--radius-lg);
+  border: 1px solid #46525f;
+  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.4);
+  background: #10151b;
+}
+
+body.pg-student .volume-meter {
+  border-radius: 2px;
+  height: 10px;
+  background: #e4e9ee;
+}
+
+body.pg-student .volume-fill {
+  background: linear-gradient(90deg, #1a7f43, #d98a04);
+}
+
+body.pg-student .btn {
+  border-radius: var(--radius-sm);
+  font-size: 13.5px;
+  letter-spacing: 0.1px;
+}
+
+body.pg-student .btn-primary {
+  background: var(--accent-gradient);
+  border: 1px solid #17497f;
+}
+
+/* A short technical note block — the sort of thing a lockdown tool shows you
+ * before it takes over the machine. */
+.pg-notice {
+  display: flex;
+  gap: 10px;
+  padding: 11px 13px;
+  background: #fbf4e4;
+  border: 1px solid #e6cd93;
+  border-left: 3px solid var(--pg-secure);
+  border-radius: var(--radius-sm);
+  font-size: 12.5px;
+  line-height: 1.55;
+  color: #6b4e11;
+}
+
+.pg-notice-icon {
+  flex-shrink: 0;
+  font-size: 14px;
+  line-height: 1.3;
+}
+
+.pg-kv {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text-secondary);
+  background: #eef1f5;
+  border: 1px solid #dde3ea;
+  border-radius: 2px;
+  padding: 1px 5px;
+}
+
+/* ---------- INSTRUCTOR: review console ---------- */
+body.pg-instructor {
+  --bg-primary: #f7f6fb;        /* faintly violet page, Proctorio's register */
+  --bg-secondary: #ffffff;
+  --bg-card: #ffffff;
+  --border: #e2dff0;
+  --border-hover: #c9c2e4;
+  --text-primary: #241d38;
+  --text-secondary: #574d70;
+  --text-muted: #8b83a3;
+  --accent: #5b3fa8;            /* Proctorio violet */
+  --accent-hover: #4a3190;
+  --accent-glow: rgba(91, 63, 168, 0.18);
+  --success: #17845a;
+  --success-bg: rgba(23, 132, 90, 0.09);
+  --danger: #d32130;
+  --danger-bg: rgba(211, 33, 48, 0.09);
+  --warning: #d98a04;
+  --warning-bg: rgba(217, 138, 4, 0.11);
+  --info: #3f3568;
+  --radius: 8px;
+  --radius-sm: 5px;
+  --radius-lg: 12px;
+  --shadow: 0 1px 2px rgba(36, 29, 56, 0.06), 0 1px 3px rgba(36, 29, 56, 0.04);
+  --shadow-lg: 0 10px 24px -6px rgba(36, 29, 56, 0.16), 0 4px 8px -4px rgba(36, 29, 56, 0.08);
+  --accent-gradient: linear-gradient(135deg, #6b4bc4 0%, #5b3fa8 100%);
+
+  --pg-chrome: #2e2350;
+  --pg-chrome-text: #f2effa;
+  --pg-chrome-muted: #b3a8d4;
+}
+
+/* Deep violet header, white wordmark. */
+body.pg-instructor .top-bar {
+  background: var(--pg-chrome);
+  border-bottom: none;
+  padding: 14px 28px;
+  box-shadow: 0 1px 0 rgba(0, 0, 0, 0.12), 0 2px 10px rgba(46, 35, 80, 0.18);
+}
+
+body.pg-instructor .top-bar .logo {
+  color: var(--pg-chrome-text);
+  font-size: 17px;
+}
+
+body.pg-instructor .top-bar .logo-icon {
+  background: rgba(255, 255, 255, 0.1);
+  box-shadow: none;
+}
+
+body.pg-instructor .top-bar .user-info {
+  color: var(--pg-chrome-muted);
+  font-size: 13px;
+}
+
+.pg-appbar-eyebrow {
+  display: block;
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 1.3px;
+  color: var(--pg-chrome-muted);
+  margin-top: 1px;
+}
+
+body.pg-instructor .card {
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow);
+}
+
+/* Stat cards get a left severity rule and left-aligned numerals — reads as a
+ * metrics strip rather than four floating tiles. */
+body.pg-instructor .stat-card {
+  text-align: left;
+  padding: 16px 18px;
+  border-radius: var(--radius-lg);
+  border-left: 4px solid var(--accent);
+}
+
+body.pg-instructor .stat-card.danger  { border-left-color: var(--danger); }
+body.pg-instructor .stat-card.warning { border-left-color: var(--warning); }
+body.pg-instructor .stat-card.success { border-left-color: var(--success); }
+
+body.pg-instructor .stat-value {
+  font-size: 30px;
+  letter-spacing: -1.2px;
+  font-variant-numeric: tabular-nums;
+}
+
+body.pg-instructor .stat-label {
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 1px;
+  color: var(--text-muted);
+}
+
+body.pg-instructor thead th {
+  background: #f4f1fb;
+  color: var(--text-secondary);
+  font-size: 10.5px;
+  letter-spacing: 0.9px;
+  border-bottom: 1px solid var(--border);
+}
+
+body.pg-instructor tbody tr:hover {
+  background: #faf8ff;
+}
+
+body.pg-instructor .badge {
+  border-radius: 20px;
+  font-weight: 700;
+  letter-spacing: 0.3px;
+}
+
+/* Graded suspicion meter. Proctorio's most recognisable instructor element:
+ * the number alone is hard to triage, the bar makes a class sortable at a
+ * glance. Width is set inline from the computed score. */
+.pg-meter {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+.pg-meter-track {
+  position: relative;
+  width: 52px;
+  height: 6px;
+  background: #ebe7f6;
+  border-radius: 3px;
+  overflow: hidden;
+  flex-shrink: 0;
+}
+
+.pg-meter-fill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  border-radius: 3px;
+  transition: width 0.3s ease;
+}
+
+.pg-meter-value {
+  font-size: 12.5px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  min-width: 34px;
+  text-align: right;
+}
+
+.pg-meter-low  .pg-meter-fill { background: #17845a; }
+.pg-meter-mod  .pg-meter-fill { background: #d98a04; }
+.pg-meter-high .pg-meter-fill { background: #d32130; }
+
+.pg-meter-low  .pg-meter-value { color: #17845a; }
+.pg-meter-mod  .pg-meter-value { color: #b57203; }
+.pg-meter-high .pg-meter-value { color: #d32130; }
+
+/* Severity rail on flagged rows — lets an instructor find the problems by
+ * scrolling rather than by reading every score. */
+body.pg-instructor tbody tr.pg-row-high { box-shadow: inset 3px 0 0 var(--danger); }
+body.pg-instructor tbody tr.pg-row-mod  { box-shadow: inset 3px 0 0 var(--warning); }
+
+/* Filter chips */
+.pg-chip-row {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  flex-wrap: wrap;
+}
+
+.pg-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 12px;
+  border: 1px solid var(--border);
+  border-radius: 20px;
+  background: #ffffff;
+  color: var(--text-secondary);
+  font-size: 12.5px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: var(--transition);
+  user-select: none;
+}
+
+.pg-chip:hover {
+  border-color: var(--border-hover);
+  color: var(--text-primary);
+}
+
+.pg-chip.active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #ffffff;
+}
+
+.pg-chip-count {
+  font-variant-numeric: tabular-nums;
+  opacity: 0.75;
+  font-weight: 700;
+}
