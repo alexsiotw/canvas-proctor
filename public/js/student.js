@@ -22,7 +22,15 @@ let examConfig = null;
 let sessionInfo = null;
 let activeVisualFlags = [];
 let socket = null;
-try { socket = io(); } catch(e) { console.warn('[Proctor] Socket.IO unavailable:', e.message); }
+// The socket handshake carries the LTI session token: the server now requires an
+// identity on connect, and inside the Canvas iframe the session cookie is often
+// blocked, so the cookie alone cannot be relied on here. Read from the URL
+// directly because `sessionToken` is declared further down this file.
+try {
+    socket = io({
+        auth: { token: new URLSearchParams(window.location.search).get('token') || undefined }
+    });
+} catch(e) { console.warn('[Proctor] Socket.IO unavailable:', e.message); }
 if (socket) socket.on('instructor_warning', (data) => {
     const overlay = document.getElementById('focus-violation-overlay');
     if (overlay) {
@@ -2155,6 +2163,16 @@ async function startProctoring() {
         if (mediaRecorder) {
             mediaRecorder.start(5000);
             console.log("[Recorder] Session recording started with 5s slices.");
+            // Tell the server the footage timeline starts now. Everything that
+            // compares video length to attempt length anchors here, so the setup
+            // time above isn't mistaken for lost recording.
+            fetch('/api/session/recording-started', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ exam_session_id: sessionInfo.id, token: sessionToken })
+            }).catch(err => console.warn('[Recorder] Could not report recording start:', err.message));
+
+            startChunkProductionWatchdog();
         }
 
         socket.emit('join_student', {
@@ -3067,6 +3085,158 @@ function showToast(msg) {
 
 
 
+// ================================================================
+// Chunk production watchdog
+//
+// mediaRecorder.start(5000) is supposed to emit a dataavailable event every five
+// seconds. On mobile Safari it frequently does not: the recorder runs, the stream
+// is live, and nothing is emitted until stop() is called. If the tab is then
+// backgrounded and killed by the OS — the normal way a phone exam ends — stop()
+// never runs and the entire recording is lost, while socket-delivered proctor
+// logs keep arriving the whole time. That is the exact signature of "I have the
+// speaking alerts and the transcript but no video at all".
+//
+// Two jobs here. First, force a flush with requestData() if nothing has arrived,
+// which is the standard workaround for that bug. Second, if still nothing, say so
+// on the session timeline immediately rather than leaving it to be discovered
+// after the exam, when the footage is already unrecoverable.
+// ================================================================
+let chunkWatchdogInterval = null;
+
+function startChunkProductionWatchdog() {
+    if (chunkWatchdogInterval) return;
+
+    const startedAt = Date.now();
+    let forcedFlushes = 0;
+    let reportedStall = false;
+
+    chunkWatchdogInterval = setInterval(() => {
+        if (!mediaRecorder || mediaRecorder.state !== 'recording') return;
+
+        const elapsedMs = Date.now() - startedAt;
+
+        // Chunks are flowing — timeslice works on this browser, nothing to do.
+        if (chunkIndex > 0) {
+            if (forcedFlushes > 0) {
+                console.log(`[Recorder] Chunks are flowing after ${forcedFlushes} forced flush(es).`);
+            }
+            clearInterval(chunkWatchdogInterval);
+            chunkWatchdogInterval = null;
+            return;
+        }
+
+        // Past two timeslice periods with nothing: force the recorder to hand over
+        // what it has.
+        if (elapsedMs > 12000) {
+            try {
+                mediaRecorder.requestData();
+                forcedFlushes++;
+                console.warn(`[Recorder] No chunks after ${Math.round(elapsedMs / 1000)}s — forcing a flush (attempt ${forcedFlushes}).`);
+            } catch (e) {
+                console.error('[Recorder] requestData() failed:', e && e.message);
+            }
+        }
+
+        // Still nothing after three forced flushes. Recording is not working on
+        // this device and the instructor needs that on the record now.
+        if (forcedFlushes >= 3 && !reportedStall) {
+            reportedStall = true;
+            console.error('[Recorder] Recorder is producing no data on this device.');
+            try {
+                logProctorEvent('error',
+                    `Recording is producing no data on this device after ${Math.round(elapsedMs / 1000)}s ` +
+                    `(recorder state: ${mediaRecorder.state}, mime: ${mediaRecorder.mimeType || 'unknown'}). ` +
+                    `Monitoring and audio alerts are still active, but there may be little or no video for this attempt.`);
+            } catch (e) {}
+        }
+    }, 3000);
+
+    // Belt and braces for the mobile case: a periodic flush keeps the recording
+    // recoverable even if the OS kills the tab without a clean stop(), because
+    // each flush is a chunk already uploaded rather than data held in the recorder.
+    if (getClientProfile().isMobileClient) {
+        console.log('[Recorder] Mobile client — scheduling periodic forced flushes so an OS kill cannot take the whole recording.');
+        setInterval(() => {
+            if (mediaRecorder && mediaRecorder.state === 'recording') {
+                try { mediaRecorder.requestData(); } catch (e) {}
+            }
+        }, 15000);
+    }
+}
+
+// True while the recording is still being flushed to the server after submit.
+// Guards the tab against being closed during that window.
+let isFinalizingUpload = false;
+
+// Shown on every exit path — SEB, companion app, and plain browser alike.
+//
+// The plain-browser path previously said "You may safely close this tab" the
+// instant the quiz was submitted, while chunks were still uploading. That was the
+// one screen actively inviting the data loss everything else in this file works
+// to prevent. Nobody can act on a progress bar they were never shown, so the
+// student now sees the real state and is only told they are free to go once the
+// last chunk has landed.
+function renderFinalizingScreen(container, headline) {
+    if (!container) return;
+    container.innerHTML = `
+        <div style="margin: auto; text-align: center; padding: 40px; background: white; border-radius: var(--radius-lg); max-width: 620px; box-shadow: var(--shadow-lg); font-family: var(--font-sans);">
+            <div style="width: 72px; height: 72px; border-radius: 50%; background: #e7effa; display: flex; align-items: center; justify-content: center; margin: 0 auto 20px auto; font-size: 34px; color: var(--accent);">&#8593;</div>
+            <h2 style="color: var(--text-primary); font-weight: 700; margin: 0 0 10px 0; font-size: 21px;">${headline}</h2>
+            <p id="proctor-upload-status" style="color: var(--text-secondary); font-size: 15px; line-height: 1.55; margin: 0 0 6px 0;">
+                Uploading your proctoring recording. Please keep this window open.
+            </p>
+            <p id="proctor-upload-detail" style="color: var(--text-muted); font-size: 13px; margin: 0 0 20px 0; font-family: var(--font-mono);">Preparing&hellip;</p>
+            <div class="volume-meter" style="width: 100%; max-width: 340px; margin: 0 auto; height: 8px;">
+                <div id="proctor-upload-bar" style="width: 5%; height: 100%; background: var(--accent); transition: width 0.3s ease;"></div>
+            </div>
+            <p id="proctor-upload-warning" style="color: var(--warning); font-size: 12.5px; line-height: 1.5; margin: 18px 0 0 0;">
+                Closing this window now will leave your recording incomplete.
+            </p>
+        </div>
+    `;
+}
+
+function updateUploadProgressUI(uploadedCount, totalCount) {
+    const detail = document.getElementById('proctor-upload-detail');
+    const bar = document.getElementById('proctor-upload-bar');
+    if (detail) {
+        const remaining = Math.max(0, totalCount - uploadedCount);
+        detail.innerText = remaining > 0
+            ? `${remaining} segment${remaining === 1 ? '' : 's'} remaining`
+            : 'Finishing up…';
+    }
+    if (bar && totalCount > 0) {
+        const pct = Math.min(99, Math.max(5, Math.round((uploadedCount / totalCount) * 100)));
+        bar.style.width = `${pct}%`;
+    }
+}
+
+function markUploadComplete(readyMessage) {
+    const status = document.getElementById('proctor-upload-status');
+    const detail = document.getElementById('proctor-upload-detail');
+    const bar = document.getElementById('proctor-upload-bar');
+    const warning = document.getElementById('proctor-upload-warning');
+    if (status) status.innerText = readyMessage;
+    if (detail) detail.innerText = 'Recording uploaded in full.';
+    if (bar) {
+        bar.style.width = '100%';
+        bar.style.background = 'var(--success)';
+    }
+    if (warning) warning.style.display = 'none';
+}
+
+function markUploadIncomplete(pendingCount) {
+    const status = document.getElementById('proctor-upload-status');
+    const detail = document.getElementById('proctor-upload-detail');
+    const warning = document.getElementById('proctor-upload-warning');
+    if (status) status.innerText = 'Your quiz was submitted, but the recording could not finish uploading.';
+    if (detail) detail.innerText = `${pendingCount} segment(s) could not be sent.`;
+    if (warning) {
+        warning.style.color = 'var(--danger)';
+        warning.innerText = 'Your answers are safe. Tell your instructor the recording upload did not complete.';
+    }
+}
+
 async function stopRecordingAndAwaitUploads() {
     if (isCurrentlyTalking && talkingStartTimestamp) {
         const duration = Math.round((new Date() - talkingStartTimestamp) / 1000);
@@ -3123,16 +3293,27 @@ async function stopRecordingAndAwaitUploads() {
     processUploadQueue();
 
     const uploadWaitStart = Date.now();
-    const UPLOAD_DRAIN_BUDGET_MS = 60000;
+    // Generous on purpose: the whole point is the slow-connection case, and the
+    // student is looking at a progress bar rather than a frozen screen. A minute
+    // was not enough for a long attempt on hotel wifi.
+    const UPLOAD_DRAIN_BUDGET_MS = 180000;
     const pendingWork = () => activeUploads > 0 || uploadQueue.length > 0 || isProcessingQueue;
 
     console.log(`[Recorder] Waiting for uploads. active=${activeUploads} queued=${uploadQueue.length}`);
+
+    // Baseline for the progress bar: everything still outstanding at submit time.
+    const totalToSend = Math.max(1, uploadQueue.length + activeUploads);
+    isFinalizingUpload = true;
+    updateUploadProgressUI(0, totalToSend);
 
     let lastReport = 0;
     while (pendingWork() && (Date.now() - uploadWaitStart < UPLOAD_DRAIN_BUDGET_MS)) {
         await new Promise(r => setTimeout(r, 100));
         // Keep the processor alive if it exited while items remain.
         if (!isProcessingQueue && uploadQueue.length > 0) processUploadQueue();
+
+        const outstanding = uploadQueue.length + activeUploads;
+        updateUploadProgressUI(Math.max(0, totalToSend - outstanding), totalToSend);
 
         const elapsed = Date.now() - uploadWaitStart;
         if (elapsed - lastReport >= 5000) {
@@ -3141,17 +3322,21 @@ async function stopRecordingAndAwaitUploads() {
         }
     }
 
+    isFinalizingUpload = false;
+
     if (pendingWork()) {
         // Record the shortfall rather than ending quietly: an instructor looking at
         // a short recording needs to know it was a network failure and not a
         // student who closed the tab.
         console.warn(`[Recorder] Upload drain timed out. active=${activeUploads} queued=${uploadQueue.length}`);
+        markUploadIncomplete(uploadQueue.length + activeUploads);
         try {
             logProctorEvent('upload_incomplete', `Recording upload did not finish: ${uploadQueue.length} chunk(s) still pending after ${UPLOAD_DRAIN_BUDGET_MS / 1000}s. Video may be shorter than the attempt.`);
         } catch (e) {}
     } else {
         console.log('[Recorder] All chunks uploaded.');
     }
+    return !pendingWork();
 }
 
 async function endExam() {
@@ -3178,27 +3363,20 @@ async function endExam() {
         document.exitFullscreen().catch(err => console.log('Exit fullscreen failed:', err));
     }
     
-    // Display the successfully submitted message immediately
+    // Show the upload state, not a completion message. The exam is submitted, but
+    // the recording is not on the server yet — saying otherwise is what let
+    // students walk away mid-upload.
     const isSeb = isSEB();
-    document.getElementById('active-exam-container').innerHTML = `
-        <div style="margin: auto; text-align: center; padding: 40px; background: white; border-radius: 8px; max-width: 600px; box-shadow: 0 4px 20px rgba(0,0,0,0.15); font-family: var(--font-sans);">
-            <div style="width: 80px; height: 80px; border-radius: 50%; background: #ecfdf5; display: flex; align-items: center; justify-content: center; margin: 0 auto 20px auto; font-size: 40px; color: #059669;">✓</div>
-            <h2 style="color: #059669; font-weight: 700; margin: 0 0 10px 0;">${isSeb ? 'Quiz Submitted Successfully' : 'Exam Successfully Submitted'}</h2>
-            <p id="proctor-upload-status" style="color: var(--text-secondary); font-size: 16px; line-height: 1.5; margin: 0 0 10px 0;">
-                ${isSeb ? 'Finalizing and uploading proctoring recording... Please wait.' : 'Your proctored exam session is complete. You may safely close this tab.'}
-            </p>
-            ${isSeb ? `
-            <div id="proctor-upload-progress" class="volume-meter" style="width: 100%; max-width: 300px; margin: 20px auto 0 auto; height: 8px; background: #e2e8f0; border-radius: 4px; overflow: hidden;">
-                <div style="width: 100%; height: 100%; background: #10b981; animation: pulse 1.5s infinite ease-in-out;"></div>
-            </div>
-            ` : ''}
-        </div>
-    `;
+    renderFinalizingScreen(
+        document.getElementById('active-exam-container'),
+        isSeb ? 'Quiz submitted' : 'Exam submitted'
+    );
 
     // Perform final actions in the background
+    let uploadFinished = false;
     try {
-        await stopRecordingAndAwaitUploads();
-        
+        uploadFinished = await stopRecordingAndAwaitUploads();
+
         // Stop hardware tracking streams safely
         const allStreams = [videoStream, screenStream, finalStream, localMicStream, localCamStream, localScreenStream];
         allStreams.forEach(stream => {
@@ -3244,13 +3422,14 @@ async function endExam() {
         console.error("Background teardown error:", err);
     }
 
+    // Only now is it true that the student is free to leave.
+    if (uploadFinished) {
+        markUploadComplete(isSeb
+            ? 'Recording uploaded. Exiting Safe Exam Browser…'
+            : 'Your proctored exam session is complete. You may safely close this tab.');
+    }
+
     if (isSeb) {
-        // Show check mark confirmation page inside SEB for 1.5s before quitting
-        const statusEl = document.getElementById('proctor-upload-status');
-        const progressEl = document.getElementById('proctor-upload-progress');
-        if (statusEl) statusEl.innerText = "Upload Complete! Exiting Safe Exam Browser...";
-        if (progressEl) progressEl.style.display = 'none';
-        
         await new Promise(r => setTimeout(r, 1500));
         window.location.href = '/api/seb/quit';
     }
@@ -3282,28 +3461,12 @@ async function autoEndExamSession() {
     }
     
     const isSeb = isSEB();
-    document.getElementById('active-exam-container').innerHTML = `
-        <div style="margin: auto; text-align: center; padding: 40px; background: white; border-radius: 8px; max-width: 600px; box-shadow: 0 4px 20px rgba(0,0,0,0.15); font-family: var(--font-sans);">
-            <div style="width: 80px; height: 80px; border-radius: 50%; background: #ecfdf5; display: flex; align-items: center; justify-content: center; margin: 0 auto 20px auto; font-size: 40px; color: #059669;">✓</div>
-            <h2 style="color: #059669; font-weight: 700; margin: 0 0 10px 0;">Quiz Submitted Successfully</h2>
-            <p id="proctor-upload-status" style="color: var(--text-secondary); font-size: 16px; line-height: 1.5; margin: 0 0 20px 0;">
-                Finalizing and uploading proctoring recording... Please wait.
-            </p>
-            <div id="proctor-upload-progress" class="volume-meter" style="width: 100%; max-width: 300px; margin: 0 auto; height: 8px; background: #e2e8f0; border-radius: 4px; overflow: hidden;">
-                <div style="width: 100%; height: 100%; background: #10b981; animation: pulse 1.5s infinite ease-in-out;"></div>
-            </div>
-            <style>
-                @keyframes pulse {
-                    0% { transform: translateX(-100%); }
-                    100% { transform: translateX(100%); }
-                }
-            </style>
-        </div>
-    `;
+    renderFinalizingScreen(document.getElementById('active-exam-container'), 'Quiz submitted');
 
+    let uploadFinished = false;
     try {
-        await stopRecordingAndAwaitUploads();
-        
+        uploadFinished = await stopRecordingAndAwaitUploads();
+
         const allStreams = [videoStream, screenStream, finalStream, localMicStream, localCamStream, localScreenStream];
         allStreams.forEach(stream => {
             if (stream) {
@@ -3349,29 +3512,53 @@ async function autoEndExamSession() {
     }
 
     const isCompanion = navigator.userAgent.includes('CanvasProctorCompanion');
+
+    // The student is only sent back to Canvas once the recording is on the
+    // server. If the drain timed out, hold them here with the failure state
+    // visible instead of redirecting over it — a redirect at that moment
+    // destroys any chunks still queued and hides the fact that it happened.
+    if (!uploadFinished) {
+        console.warn('[End Session] Upload did not finish. Holding the student on the status screen rather than redirecting.');
+        const warning = document.getElementById('proctor-upload-warning');
+        if (warning) {
+            warning.insertAdjacentHTML('afterend',
+                `<button class="btn btn-primary" style="margin-top:16px;" onclick="proceedAfterIncompleteUpload()">Continue to Canvas anyway</button>`);
+        }
+        return;
+    }
+
     if (isCompanion) {
-        const statusEl = document.getElementById('proctor-upload-status');
-        const progressEl = document.getElementById('proctor-upload-progress');
-        if (statusEl) statusEl.innerText = "Upload Complete! Exiting Secure Proctor...";
-        if (progressEl) progressEl.style.display = 'none';
-        
+        markUploadComplete('Recording uploaded. Exiting Secure Proctor…');
         await new Promise(r => setTimeout(r, 2500));
         stopCompanionApp();
     } else if (isSeb) {
-        const statusEl = document.getElementById('proctor-upload-status');
-        const progressEl = document.getElementById('proctor-upload-progress');
-        if (statusEl) statusEl.innerText = "Upload Complete! Exiting Safe Exam Browser...";
-        if (progressEl) progressEl.style.display = 'none';
-        
+        markUploadComplete('Recording uploaded. Exiting Safe Exam Browser…');
         await new Promise(r => setTimeout(r, 1500));
         window.location.href = '/api/seb/quit';
     } else {
+        markUploadComplete('Recording uploaded. Returning you to Canvas…');
+        await new Promise(r => setTimeout(r, 1200));
         console.log("[End Session] Non-SEB exam finished. Redirecting top window to Canvas quiz page:", examConfig.canvas_quiz_url);
         if (window.top !== window.self) {
             window.top.location.href = examConfig.canvas_quiz_url;
         } else {
             window.location.href = examConfig.canvas_quiz_url;
         }
+    }
+}
+
+// Escape hatch for the timed-out case. Deliberately an explicit choice by the
+// student rather than an automatic redirect, so leaving with an incomplete
+// recording is something they did knowingly and the log reflects it.
+function proceedAfterIncompleteUpload() {
+    try {
+        logProctorEvent('upload_incomplete', 'Student chose to leave the page before the recording finished uploading.');
+    } catch (e) {}
+    const url = (typeof examConfig !== 'undefined' && examConfig && examConfig.canvas_quiz_url) ? examConfig.canvas_quiz_url : '/';
+    if (window.top !== window.self) {
+        window.top.location.href = url;
+    } else {
+        window.location.href = url;
     }
 }
 
@@ -3407,6 +3594,14 @@ function stopCompanionApp() {
 
 // Exit Handler: Attempt to save session if student quits SEB or closes browser
 window.addEventListener('beforeunload', (event) => {
+    // If chunks are still in flight, ask before letting the page go. The browser
+    // kills outstanding uploads on unload, so this is the last chance to keep the
+    // tail of the recording — and the student has no other way to know.
+    if (isFinalizingUpload) {
+        event.preventDefault();
+        event.returnValue = 'Your proctoring recording is still uploading. Leaving now will leave it incomplete.';
+    }
+
     if (sessionInfo && sessionInfo.id) {
         const url = `/api/session/end?token=${encodeURIComponent(sessionToken)}`;
         const exitType = isExamCompleted ? 'completed' : 'unexpected';

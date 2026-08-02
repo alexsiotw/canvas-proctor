@@ -138,6 +138,16 @@ async function initDatabase() {
       ALTER TABLE exams ADD COLUMN IF NOT EXISTS weight_head_movement INTEGER DEFAULT 1;
       ALTER TABLE exams ADD COLUMN IF NOT EXISTS weight_multi_face INTEGER DEFAULT 1;
       ALTER TABLE exams ADD COLUMN IF NOT EXISTS weight_leaving_room INTEGER DEFAULT 1;
+      -- When the MediaRecorder actually started, as distinct from when the
+      -- session row was created.
+      --
+      -- started_at is stamped by /api/session/start, but recording cannot begin
+      -- until the composite canvas has real camera frames (up to 4s) plus a
+      -- warm-up delay, and only once Canvas signals the quiz opened. The gap is
+      -- routinely 10s or more. Anchoring anything to started_at therefore both
+      -- overstates the attempt length and shifts every log video-marker out of
+      -- sync with the footage it points at.
+      ALTER TABLE exam_sessions ADD COLUMN IF NOT EXISTS recording_started_at TIMESTAMP;
       ALTER TABLE exam_sessions ADD COLUMN IF NOT EXISTS mobile_drive_file_id VARCHAR(255);
       ALTER TABLE exam_sessions ADD COLUMN IF NOT EXISTS room_scan_drive_file_id VARCHAR(255);
       ALTER TABLE exam_sessions ADD COLUMN IF NOT EXISTS verify_id_image TEXT;

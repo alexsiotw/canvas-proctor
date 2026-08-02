@@ -254,7 +254,10 @@ app.use(bodyParser.urlencoded({ extended: true, limit: '50mb' }));
 // this needs no migration step.
 const PgSession = require('connect-pg-simple')(session);
 
-app.use(session({
+// Held in a variable so the socket.io layer can reuse exactly this middleware to
+// resolve req.session on a handshake. The socket layer used to be completely
+// unauthenticated; sharing the session is what lets it identify a caller at all.
+const sessionMiddleware = session({
     store: new PgSession({
         pool,
         tableName: 'user_sessions',
@@ -268,7 +271,9 @@ app.use(session({
         sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax',
         maxAge: 24 * 60 * 60 * 1000
     }
-}));
+});
+
+app.use(sessionMiddleware);
 
 // Server logs, for remote diagnostics.
 //
@@ -622,6 +627,48 @@ app.get('/api/dev/debug-tmp', requireDevEndpoints, (req, res) => {
         res.status(500).json({ error: e.message });
     }
 });
+
+// ================================================================
+// Session ownership
+//
+// requireAuth only proves "a valid LTI session exists", and every enrolled student
+// has one. A number of endpoints took `exam_session_id` straight from the request
+// body and acted on it, so any student could end a classmate's attempt, corrupt
+// their recording, plant violations in their log, or overwrite their ID photo and
+// signature — session ids being sequential integers.
+//
+// Instructors keep broad access (they legitimately act across their course). For
+// everyone else the session must belong to them.
+// ================================================================
+async function assertSessionOwnership(req, res, exam_session_id) {
+    if (!exam_session_id) {
+        res.status(400).json({ error: 'Missing exam_session_id' });
+        return false;
+    }
+    const lti = req.session && req.session.lti;
+    if (!lti) {
+        res.status(401).json({ error: 'Not authenticated.' });
+        return false;
+    }
+    if (lti.role === 'instructor') return true;
+
+    try {
+        const r = await pool.query(
+            'SELECT id FROM exam_sessions WHERE id = $1 AND student_canvas_id = $2',
+            [exam_session_id, lti.userId]
+        );
+        if (r.rows.length === 0) {
+            console.warn(`[Authz] User ${lti.userId} denied access to exam_session ${exam_session_id}.`);
+            res.status(403).json({ error: 'This exam session does not belong to you.' });
+            return false;
+        }
+        return true;
+    } catch (err) {
+        console.error('[Authz] Ownership check failed:', err.message);
+        res.status(500).json({ error: 'Authorization check failed.' });
+        return false;
+    }
+}
 
 async function requireAuth(req, res, next) {
     if (req.session.lti) return next();
@@ -1971,6 +2018,7 @@ app.post('/api/session/start', requireAuth, async (req, res) => {
 app.post('/api/session/log', requireAuth, async (req, res) => {
     try {
         const { exam_session_id, event_type, event_message } = req.body;
+        if (!await assertSessionOwnership(req, res, exam_session_id)) return;
         await pool.query(`
             INSERT INTO proctor_logs (exam_session_id, event_type, event_message)
             VALUES ($1, $2, $3)
@@ -2210,7 +2258,7 @@ async function assembleAndUploadSessionVideo(exam_session_id, total_chunks) {
 
         // Get student/exam info for nice filename and mime type
         const sessionInfo = await pool.query(`
-            SELECT es.student_name, es.attempt_number, es.started_at, es.end_time, es.mime_type, e.title, e.require_mobile_camera
+            SELECT es.student_name, es.attempt_number, es.started_at, es.recording_started_at, es.end_time, es.mime_type, e.title, e.require_mobile_camera
             FROM exam_sessions es
             JOIN exams e ON es.exam_id = e.id
             WHERE es.id = $1
@@ -2225,6 +2273,7 @@ async function assembleAndUploadSessionVideo(exam_session_id, total_chunks) {
         let mimeTypeFromDb = 'video/webm';
         let sessionStartMs = 0;
         let sessionEndMs = 0;
+        let setupLeadInSec = 0;
 
         if (sessionInfo.rows.length > 0) {
             const s = sessionInfo.rows[0];
@@ -2238,9 +2287,17 @@ async function assembleAndUploadSessionVideo(exam_session_id, total_chunks) {
                 dateStyle: 'short',
                 timeStyle: 'medium'
             }) + ' EST' : '';
-            if (s.started_at) {
+            // The video timeline starts when the recorder started, not when the
+            // session row was created. Fall back to started_at for attempts
+            // recorded before recording_started_at existed.
+            if (s.recording_started_at) {
+                sessionStartMs = new Date(s.recording_started_at).getTime();
+            } else if (s.started_at) {
                 sessionStartMs = new Date(s.started_at).getTime();
             }
+            setupLeadInSec = (s.recording_started_at && s.started_at)
+                ? Math.max(0, (new Date(s.recording_started_at).getTime() - new Date(s.started_at).getTime()) / 1000)
+                : 0;
             sessionEndMs = s.end_time ? new Date(s.end_time).getTime() : Date.now();
             mimeTypeFromDb = s.mime_type || 'video/webm';
         }
@@ -2403,22 +2460,38 @@ async function assembleAndUploadSessionVideo(exam_session_id, total_chunks) {
             try { if (fs.existsSync(segRaw)) fs.unlinkSync(segRaw); } catch (e) {}
         }
 
-        // Compare what we produced against how long the student was actually in the
-        // attempt. This is the check that would have caught the twelve-minute attempt
-        // that shipped a thirty-five second video: ffmpeg exits 0 when it stops early,
-        // so the length of the output is the only honest signal we have.
+        // Compare what we produced against the window the recorder was actually
+        // running. ffmpeg exits 0 when it stops early at corruption, so output
+        // length is the only honest signal that footage went missing.
+        //
+        // Measuring from started_at instead made this fire on healthy attempts:
+        // setup (camera warm-up, quiz load) happens before any footage exists, so
+        // a 38-second session with a 13-second lead-in legitimately yields a
+        // 25-second video. That is not loss, and reporting it as loss trains the
+        // instructor to ignore the warning that matters.
         if (assembledDurationSec > 0 && sessionStartMs && sessionEndMs > sessionStartMs) {
-            const attemptSec = (sessionEndMs - sessionStartMs) / 1000;
-            const coverage = assembledDurationSec / attemptSec;
-            console.log(`[Assemble] Session ${exam_session_id}: video ${assembledDurationSec.toFixed(1)}s vs attempt ${attemptSec.toFixed(1)}s (${Math.round(coverage * 100)}% coverage).`);
-            if (attemptSec > 60 && coverage < 0.8) {
-                const shortfall = Math.round(attemptSec - assembledDurationSec);
+            const recordedWindowSec = (sessionEndMs - sessionStartMs) / 1000;
+            const coverage = assembledDurationSec / recordedWindowSec;
+            console.log(`[Assemble] Session ${exam_session_id}: video ${assembledDurationSec.toFixed(1)}s vs ` +
+                `recording window ${recordedWindowSec.toFixed(1)}s (${Math.round(coverage * 100)}% coverage; ` +
+                `${setupLeadInSec.toFixed(1)}s setup lead-in excluded).`);
+            if (recordedWindowSec > 30 && coverage < 0.85) {
+                const shortfall = Math.round(recordedWindowSec - assembledDurationSec);
                 console.warn(`[Assemble] Session ${exam_session_id} video is short by ${shortfall}s.`);
                 await logSessionEvent(exam_session_id, 'error',
-                    `Recording is shorter than the attempt: ${Math.round(assembledDurationSec)}s of video for a ` +
-                    `${Math.round(attemptSec)}s attempt (${Math.round(coverage * 100)}% covered, ${shortfall}s missing). ` +
-                    `Review the gap and upload warnings on this timeline before drawing conclusions from this video.`);
+                    `Recording is shorter than the monitored window: ${Math.round(assembledDurationSec)}s of video for ` +
+                    `${Math.round(recordedWindowSec)}s of recording (${Math.round(coverage * 100)}% covered, ` +
+                    `${shortfall}s missing). This excludes the ${Math.round(setupLeadInSec)}s of setup before recording ` +
+                    `began, so it reflects genuinely lost footage. Check the gap and upload warnings on this timeline.`);
             }
+        }
+
+        // Recorded once per attempt so the instructor can reconcile the video
+        // length against the attempt length without assuming loss.
+        if (setupLeadInSec >= 3) {
+            await logSessionEvent(exam_session_id, 'info',
+                `Recording began ${Math.round(setupLeadInSec)}s after the attempt started (camera warm-up and quiz load). ` +
+                `The video is expected to be about that much shorter than the attempt duration.`);
         }
 
         // Create dedicated attempt folder on Google Drive
@@ -2710,6 +2783,7 @@ async function assembleAndUploadSessionVideo(exam_session_id, total_chunks) {
 app.post('/api/session/end', requireAuth, async (req, res) => {
     try {
         const { exam_session_id, status, total_chunks, exit_type } = req.body;
+        if (!await assertSessionOwnership(req, res, exam_session_id)) return;
         if (exit_type === 'unexpected') {
             console.log(`[End Session] Unexpected exit for session ${exam_session_id}`);
             await pool.query("UPDATE exam_sessions SET status = 'unexpected', end_time = COALESCE(end_time, NOW()) WHERE id = $1", [exam_session_id]);
@@ -2742,7 +2816,13 @@ app.post('/api/session/end', requireAuth, async (req, res) => {
         const finalStatus = status || 'completed';
         cancelPendingFinalization(exam_session_id, 'clean session end');
         console.log(`[End Session] Ending session ${exam_session_id} with status: ${finalStatus}, total_chunks expected: ${total_chunks}`);
-        await pool.query('UPDATE exam_sessions SET status=$1 WHERE id=$2', [finalStatus, exam_session_id]);
+        // Stamp end_time on the clean path too. It was only ever set on the
+        // unexpected-exit path, so a normally submitted attempt had a NULL end
+        // time and anything measuring attempt length had to guess.
+        await pool.query(
+            'UPDATE exam_sessions SET status=$1, end_time = COALESCE(end_time, NOW()) WHERE id=$2',
+            [finalStatus, exam_session_id]
+        );
         
         const examIdQuery = await pool.query('SELECT exam_id FROM exam_sessions WHERE id=$1', [exam_session_id]);
         if(examIdQuery.rows.length > 0) {
@@ -2853,6 +2933,7 @@ app.post('/api/session/mobile-upload-complete', async (req, res) => {
 app.post('/api/session/upload-chunk', requireAuth, async (req, res) => {
     const { chunk_index, exam_session_id, base64_video } = req.body;
     try {
+        if (!await assertSessionOwnership(req, res, exam_session_id)) return;
         if (!base64_video) throw new Error("Video payload was empty");
 
         const index = parseInt(chunk_index, 10);
@@ -2890,11 +2971,35 @@ app.post('/api/session/upload-chunk', requireAuth, async (req, res) => {
     }
 });
 
+// API: Mark the moment recording actually started.
+//
+// Called by the client immediately after mediaRecorder.start(), which is the
+// first instant any footage exists. Everything that compares the video against
+// the attempt — the shortfall check, the log timeline's video markers — anchors
+// here rather than to started_at, otherwise the setup time gets counted as
+// missing footage and every marker points a few seconds early.
+app.post('/api/session/recording-started', requireAuth, async (req, res) => {
+    try {
+        const { exam_session_id } = req.body;
+        if (!await assertSessionOwnership(req, res, exam_session_id)) return;
+        // COALESCE so a resumed attempt keeps the original recording start.
+        await pool.query(
+            'UPDATE exam_sessions SET recording_started_at = COALESCE(recording_started_at, NOW()) WHERE id = $1',
+            [exam_session_id]
+        );
+        res.json({ success: true });
+    } catch (err) {
+        console.error('[Recording Started] Error:', err.message);
+        res.status(500).json({ error: err.message });
+    }
+});
+
 // API: Record the chosen MIME type for the session
 app.patch('/api/session/:id/format', requireAuth, async (req, res) => {
     try {
         const { id } = req.params;
         const { mime_type } = req.body;
+        if (!await assertSessionOwnership(req, res, id)) return;
         await pool.query('UPDATE exam_sessions SET mime_type = $1 WHERE id = $2', [mime_type || 'video/webm', id]);
         res.json({ success: true });
     } catch (err) {
@@ -3368,13 +3473,128 @@ app.get('/api/seb/quit', (req, res) => {
 
 const activeDisconnectTimers = new Map();
 
+// ================================================================
+// Socket authentication
+//
+// This layer had none. `cors: { origin: '*' }` plus an open `connection` handler
+// meant anyone who could reach the host — from any website, or curl — could emit
+// `join_teacher(<exam_id>)` and start receiving student names, live proctor logs
+// and `snapshot_update` webcam frames, with exam ids being small sequential
+// integers. It was writable too: `proctor_log` inserted straight into the database
+// from the payload, so integrity violations could be fabricated against any
+// session by an unauthenticated stranger, and `instructor_warning` could put
+// arbitrary text on any student's screen mid-exam.
+//
+// Identity now comes from one of two places, never from the payload:
+//   * the express session cookie (instructor dashboard, and students whose
+//     third-party cookies survive the Canvas iframe), or
+//   * an LTI session token passed in the handshake, which is what the student
+//     page and the mobile camera page use since their cookies often do not
+//     survive that iframe.
+//
+// Every handler below authorizes against `socket.pgAuth` and derives ids from it.
+// ================================================================
+function runSessionMiddleware(socket) {
+    return new Promise((resolve) => {
+        sessionMiddleware(socket.request, {}, () => resolve());
+    });
+}
+
+io.use(async (socket, next) => {
+    try {
+        // 1. Cookie-based session (instructor dashboard).
+        try {
+            await runSessionMiddleware(socket);
+        } catch (e) { /* no usable cookie; fall through to token */ }
+
+        const sess = socket.request.session;
+        if (sess && sess.lti && sess.lti.userId) {
+            socket.pgAuth = {
+                userId: sess.lti.userId,
+                role: sess.lti.role,
+                courseId: sess.lti.canvasCourseId,
+                altCourseId: sess.lti.alternativeCourseId || '',
+                sessionToken: sess.lti.sessionToken || null,
+                via: 'cookie'
+            };
+            return next();
+        }
+
+        // 2. Handshake token (student page, mobile camera page).
+        const token = socket.handshake.auth && socket.handshake.auth.token;
+        if (token) {
+            const result = await pool.query(
+                'SELECT * FROM lti_sessions WHERE session_token = $1 AND expires_at > NOW()',
+                [token]
+            );
+            if (result.rows.length > 0) {
+                const s = result.rows[0];
+                socket.pgAuth = {
+                    userId: s.canvas_user_id,
+                    role: s.user_role,
+                    courseId: s.canvas_course_id,
+                    altCourseId: s.alternative_canvas_course_id || '',
+                    sessionToken: s.session_token,
+                    examSessionId: s.exam_session_id || null,
+                    via: 'token'
+                };
+                return next();
+            }
+        }
+
+        console.warn('[Socket] Rejected unauthenticated connection.');
+        return next(new Error('unauthorized'));
+    } catch (err) {
+        console.error('[Socket] Auth error:', err.message);
+        return next(new Error('unauthorized'));
+    }
+});
+
+const isInstructorSocket = (socket) => socket.pgAuth && socket.pgAuth.role === 'instructor';
+
+// Confirm the caller owns this exam_session before letting them write to it.
+async function socketOwnsSession(socket, exam_session_id) {
+    if (!socket.pgAuth || !exam_session_id) return false;
+    try {
+        const r = await pool.query(
+            'SELECT id FROM exam_sessions WHERE id = $1 AND student_canvas_id = $2',
+            [exam_session_id, socket.pgAuth.userId]
+        );
+        return r.rows.length > 0;
+    } catch (e) {
+        return false;
+    }
+}
+
+// Confirm an instructor may view this exam (same Canvas course).
+async function instructorOwnsExam(socket, exam_id) {
+    if (!isInstructorSocket(socket)) return false;
+    try {
+        const r = await pool.query('SELECT canvas_course_id FROM exams WHERE id = $1', [exam_id]);
+        if (r.rows.length === 0) return false;
+        const courseId = String(r.rows[0].canvas_course_id);
+        return courseId === String(socket.pgAuth.courseId) ||
+               (socket.pgAuth.altCourseId && courseId === String(socket.pgAuth.altCourseId));
+    } catch (e) {
+        return false;
+    }
+}
+
 // Socket IO Real-Time
 io.on('connection', (socket) => {
-    socket.on('join_teacher', (exam_id) => {
+    socket.on('join_teacher', async (exam_id) => {
+        // Was: anyone could join any exam's teacher room and receive student
+        // names, logs and webcam snapshots.
+        if (!await instructorOwnsExam(socket, exam_id)) {
+            console.warn(`[Socket] Refused join_teacher for exam ${exam_id} (role=${socket.pgAuth && socket.pgAuth.role}).`);
+            return;
+        }
         socket.join('teacher_' + exam_id);
     });
 
     socket.on('join_lti', (data) => { // { token }
+        // Only your own LTI room.
+        if (!data || !data.token || !socket.pgAuth || data.token !== socket.pgAuth.sessionToken) return;
         socket.join('lti_' + data.token);
     });
 
@@ -3397,10 +3617,12 @@ io.on('connection', (socket) => {
     });
 
     socket.on('laptop_begin_exam', (data) => { // { token }
+        if (!data || !data.token || !socket.pgAuth || data.token !== socket.pgAuth.sessionToken) return;
         io.to('lti_' + data.token).emit('mobile_start_record');
     });
 
     socket.on('laptop_end_exam', (data) => { // { token }
+        if (!data || !data.token || !socket.pgAuth || data.token !== socket.pgAuth.sessionToken) return;
         io.to('lti_' + data.token).emit('mobile_stop_record');
     });
 
@@ -3428,12 +3650,19 @@ io.on('connection', (socket) => {
         }
     });
 
-    socket.on('join_student', (data) => { // { exam_id, exam_session_id, student_name }
+    socket.on('join_student', async (data) => { // { exam_id, exam_session_id, student_name }
+        if (!data || !await socketOwnsSession(socket, data.exam_session_id)) {
+            console.warn(`[Socket] Refused join_student for session ${data && data.exam_session_id}.`);
+            return;
+        }
+        // Bind the verified session to the socket so later events need not trust
+        // anything the client sends.
+        socket.pgAuth.examSessionId = data.exam_session_id;
         socket.join('student_' + data.exam_session_id);
         socket.join('exam_' + data.exam_id);
         socket.studentData = data;
         io.to('teacher_' + data.exam_id).emit('student_status', { session_id: data.exam_session_id, name: data.student_name, status: 'online' });
-        
+
         // Clear auto-save timer if student reconnected
         if (activeDisconnectTimers.has(data.exam_session_id)) {
             clearTimeout(activeDisconnectTimers.get(data.exam_session_id));
@@ -3441,30 +3670,65 @@ io.on('connection', (socket) => {
             console.log(`Student reconnected to session ${data.exam_session_id}, cancelled auto-save`);
         }
     });
+
     socket.on('student_snapshot', (data) => {
-        // data: { exam_id, exam_session_id, screenshot_data_url }
+        // Only forward a snapshot for the session this socket has been bound to,
+        // otherwise anyone could inject frames into a teacher's live view.
+        if (!data || !socket.pgAuth || !socket.pgAuth.examSessionId) return;
+        if (String(data.exam_session_id) !== String(socket.pgAuth.examSessionId)) return;
         io.to('teacher_' + data.exam_id).emit('snapshot_update', data);
     });
 
     socket.on('proctor_log', async (data) => {
-        // data: { exam_session_id, event_type, event_message }
+        // data: { event_type, event_message }
+        //
+        // The session id is taken from the authenticated socket, never from the
+        // payload. Previously this inserted whatever id it was handed, with no
+        // authentication at all, which allowed fabricating integrity violations
+        // against any student.
+        if (!data || !socket.pgAuth) return;
+        // The socket connects at page load, before /api/session/start has linked an
+        // exam_session to the LTI token, so resolve it lazily the first time a log
+        // arrives. Without this, everything logged during the pre-flight wizard
+        // would be silently dropped.
+        let sessionId = socket.pgAuth.examSessionId;
+        if (!sessionId && socket.pgAuth.sessionToken) {
+            try {
+                const r = await pool.query(
+                    'SELECT exam_session_id FROM lti_sessions WHERE session_token = $1',
+                    [socket.pgAuth.sessionToken]
+                );
+                if (r.rows.length > 0 && r.rows[0].exam_session_id) {
+                    sessionId = r.rows[0].exam_session_id;
+                    socket.pgAuth.examSessionId = sessionId;
+                }
+            } catch (e) { /* fall through to the drop below */ }
+        }
+        if (!sessionId) return;
         try {
             await pool.query(
                 'INSERT INTO proctor_logs (exam_session_id, event_type, event_message) VALUES ($1, $2, $3)',
-                [data.exam_session_id, data.event_type, data.event_message]
+                [sessionId, data.event_type, data.event_message]
             );
         } catch (err) {
             console.error('Failed to save proctor log:', err);
         }
     });
 
-    socket.on('instructor_warning', (data) => {
+    socket.on('instructor_warning', async (data) => {
         // data: { exam_session_id, message }
+        if (!data || !isInstructorSocket(socket)) return;
+        try {
+            const r = await pool.query('SELECT exam_id FROM exam_sessions WHERE id = $1', [data.exam_session_id]);
+            if (r.rows.length === 0) return;
+            if (!await instructorOwnsExam(socket, r.rows[0].exam_id)) return;
+        } catch (e) { return; }
         io.to('student_' + data.exam_session_id).emit('instructor_warning', { message: data.message });
     });
 
-    socket.on('instructor_broadcast', (data) => {
+    socket.on('instructor_broadcast', async (data) => {
         // data: { exam_id, message }
+        if (!data || !await instructorOwnsExam(socket, data.exam_id)) return;
         io.to('exam_' + data.exam_id).emit('instructor_warning', { message: data.message });
     });
 
@@ -3506,8 +3770,24 @@ io.on('connection', (socket) => {
                         );
                         const finalStatus = endedQuery.rows.length > 0 ? 'completed' : 'abandoned';
                         console.log(`Session ${exam_session_id} disconnected. Setting status to: ${finalStatus}. Auto-finalizing...`);
-                        await pool.query("UPDATE exam_sessions SET status = $1 WHERE id = $2", [finalStatus, exam_session_id]);
-                        assembleAndUploadSessionVideo(exam_session_id);
+                        await pool.query(
+                            "UPDATE exam_sessions SET status = $1, end_time = COALESCE(end_time, NOW()) WHERE id = $2",
+                            [finalStatus, exam_session_id]
+                        );
+                        // This is the path a phone exam usually takes: the OS kills the
+                        // tab, the socket drops, and no clean end call ever arrives. The
+                        // client is gone, so there is no chunk-count hint to wait on —
+                        // pass the highest index already on disk so assembly still waits
+                        // for in-flight uploads instead of grabbing a partial set.
+                        const onDisk = (() => {
+                            try {
+                                const dir = path.join(os.tmpdir(), `chunks-${exam_session_id}`);
+                                if (!fs.existsSync(dir)) return undefined;
+                                const idx = readOrderedChunks(dir);
+                                return idx.length > 0 ? idx[idx.length - 1].index : undefined;
+                            } catch (e) { return undefined; }
+                        })();
+                        assembleAndUploadSessionVideo(exam_session_id, onDisk);
                     }
                 } catch (e) {
                     console.error(`Error auto-finalizing session ${exam_session_id}:`, e);
@@ -3581,6 +3861,7 @@ app.post('/api/session/room-scan', requireAuth, async (req, res) => {
     const { exam_session_id, base64_video } = req.body;
     try {
         if (!base64_video) throw new Error("Video payload was empty");
+        if (!await assertSessionOwnership(req, res, exam_session_id)) return;
         console.log(`[Upload Room Scan] Received room scan for session ${exam_session_id}`);
 
         const scanDir = path.join(os.tmpdir(), `roomscans`);
@@ -3638,6 +3919,7 @@ app.post('/api/session/upload-id', requireAuth, async (req, res) => {
     const { exam_session_id, base64_image } = req.body;
     try {
         if (!base64_image) throw new Error("Image payload was empty");
+        if (!await assertSessionOwnership(req, res, exam_session_id)) return;
         console.log(`[Upload ID] Received ID verification image for session ${exam_session_id}`);
 
         const idDir = path.join(os.tmpdir(), `id_images`);
@@ -3696,6 +3978,7 @@ app.post('/api/session/upload-signature', requireAuth, async (req, res) => {
     const { exam_session_id, base64_image, full_name } = req.body;
     try {
         if (!base64_image) throw new Error("Image payload was empty");
+        if (!await assertSessionOwnership(req, res, exam_session_id)) return;
         console.log(`[Upload Signature] Received signature image for session ${exam_session_id}`);
 
         const sigDir = path.join(os.tmpdir(), `signatures`);

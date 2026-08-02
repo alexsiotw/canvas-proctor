@@ -40,7 +40,8 @@ if (!token || !examId) {
     updateStatus('danger', 'Pairing Failed');
 } else {
     try {
-        socket = io();
+        // Handshake identity — the server rejects unauthenticated sockets.
+        socket = io({ auth: { token } });
         
         socket.on('connect', () => {
             console.log("[Socket] Connected to server, pairing mobile...");
