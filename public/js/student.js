@@ -1134,19 +1134,26 @@ function goToStep(step) {
             // ROOM SCAN
             contentEl.innerHTML = `
                 <div>
-                    <h2 class="step-title">Room Scan</h2>
+                    <h2 class="step-title">Room &amp; Desk Scan</h2>
                     <p class="step-description">
-                        Please pick up your device or webcam and slowly pan it around your room and desk area for 10 seconds. Click "Start Room Scan" when ready.
+                        Before starting, record a short scan of your workspace so your instructor can confirm your desk
+                        and surroundings are clear. Tilt your laptop or move your webcam to follow the on-screen prompts.
+                        The scan lasts ${ROOM_SCAN_TOTAL_SECONDS} seconds and you can re-record it as many times as you need.
                     </p>
                     <div class="video-preview-box">
                         <video id="room-scan-preview" autoplay muted playsinline></video>
                     </div>
-                    <div id="room-scan-timer" style="font-weight: bold; color: #2563eb; margin: 10px 0;"></div>
+                    <!-- The prompt is the feature: it is what turns a shaky ten seconds of
+                         ceiling into footage a reviewer can actually assess. -->
+                    <div id="room-scan-prompt" style="font-size: 15px; font-weight: 600; color: var(--text-primary); margin: 12px 0 4px;">
+                        Position your camera so your desk is visible, then press Start Scan.
+                    </div>
+                    <div id="room-scan-timer" style="font-weight: bold; color: #2563eb; margin: 4px 0 10px;"></div>
                     <div id="step-error" style="color: var(--danger); font-size: 14px; margin-top: 10px; display: none;"></div>
                 </div>
                 <div style="display: flex; justify-content: flex-end; gap: 15px; margin-top: 20px;">
-                    <button id="btn-record-room" class="btn btn-primary" onclick="startRoomScanRecord()">Start Room Scan</button>
-                    <button id="btn-next-step" class="btn btn-primary" style="background:#2563eb; color:white; border:none;" onclick="goToStep(getNextStep(6))" disabled>Next Step</button>
+                    <button id="btn-record-room" class="btn btn-primary" onclick="startRoomScanRecord()">Start Scan</button>
+                    <button id="btn-next-step" class="btn btn-primary" style="background:#2563eb; color:white; border:none;" onclick="releaseRoomScanStream(); goToStep(getNextStep(6))" disabled>Next Step</button>
                 </div>
             `;
             setupRoomScanPreview();
@@ -1882,30 +1889,12 @@ async function startMainExamSession() {
             console.log(`[Resume] Setting chunkIndex to ${chunkIndex}`);
         }
 
-        // Upload room scan now that session is created
+        // Upload room scan now that session is created. Awaited on purpose: it used to
+        // be left running in a FileReader callback that nobody waited for, so a failure
+        // was invisible and the exam started regardless.
         if (roomScanBlob) {
             console.log("[Session] Uploading Room Scan...");
-            const reader = new FileReader();
-            reader.readAsDataURL(roomScanBlob);
-            reader.onloadend = async function() {
-                const base64data = reader.result;
-                try {
-                    await fetch('/api/session/room-scan', {
-                        method: 'POST',
-                        headers: {
-                            'Content-Type': 'application/json',
-                            'Authorization': 'Bearer ' + sessionToken
-                        },
-                        body: JSON.stringify({
-                            exam_session_id: sessionInfo.id,
-                            base64_video: base64data
-                        })
-                    });
-                    console.log("[Session] Room scan uploaded successfully.");
-                } catch(e) {
-                    console.error("[Session] Failed to upload room scan", e);
-                }
-            };
+            await uploadRoomScan(sessionInfo.id);
         }
 
         // Upload ID Verification Image
@@ -4488,63 +4477,293 @@ async function runNetworkCheck() {
 
 let roomScanRecorder = null;
 let roomScanStream = null;
+let roomScanBlob = null;
+let roomScanMimeType = '';
+let roomScanTimer = null;
+// Whether this step opened the camera itself and is therefore responsible for
+// closing it. When the wizard already has the camera live we borrow that stream and
+// must not stop it, or we would kill the exam's own recording source.
+let roomScanOwnsStream = false;
+
+// The scan is guided rather than a bare countdown.
+//
+// "Pan around your room for 10 seconds" reliably produced ten seconds of ceiling or
+// desk edge, which proves nothing about the environment. An environment check is only
+// worth recording if a reviewer can actually see the desk surface and the space around
+// the student, so the scan asks for those views one at a time.
+const ROOM_SCAN_STAGES = [
+    { seconds: 6, prompt: 'Show your desk surface — keyboard, mouse, and anything on or around it.' },
+    { seconds: 5, prompt: 'Slowly pan to your left.' },
+    { seconds: 5, prompt: 'Slowly pan to your right.' },
+    { seconds: 6, prompt: 'Show the area behind you, then return to your desk.' }
+];
+const ROOM_SCAN_TOTAL_SECONDS = ROOM_SCAN_STAGES.reduce((total, stage) => total + stage.seconds, 0);
+
+function pickRoomScanMimeType() {
+    const candidates = ['video/webm;codecs=vp8', 'video/webm', 'video/mp4;codecs=avc1', 'video/mp4'];
+    for (const candidate of candidates) {
+        try {
+            if (window.MediaRecorder && MediaRecorder.isTypeSupported(candidate)) return candidate;
+        } catch (e) { /* isTypeSupported can throw on older engines */ }
+    }
+    return '';
+}
 
 async function setupRoomScanPreview() {
+    const videoEl = document.getElementById('room-scan-preview');
     try {
-        roomScanStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment', width: 640, height: 480 }, audio: false });
-        const videoEl = document.getElementById('room-scan-preview');
-        if (videoEl) videoEl.srcObject = roomScanStream;
+        // Reuse the camera the wizard already opened.
+        //
+        // This used to always call getUserMedia again with facingMode 'environment'.
+        // On Windows a second request against a camera another stream still holds
+        // fails outright with NotReadableError, and on a laptop there is no
+        // environment camera to get — so the extra request carried real failure risk
+        // and returned the same front camera anyway.
+        const live = localCamStream && localCamStream.getVideoTracks().some(t => t.readyState === 'live');
+        if (live) {
+            roomScanStream = localCamStream;
+            roomScanOwnsStream = false;
+        } else {
+            roomScanStream = await navigator.mediaDevices.getUserMedia({
+                video: { facingMode: { ideal: 'environment' }, width: { ideal: 640 }, height: { ideal: 480 } },
+                audio: false
+            });
+            roomScanOwnsStream = true;
+        }
+        if (videoEl) {
+            videoEl.srcObject = roomScanStream;
+            videoEl.play().catch(() => {});
+        }
     } catch (e) {
-        showStepError("Could not access camera for room scan. " + e.message);
+        showStepError('Could not access the camera for the room scan. ' + e.message);
     }
 }
 
-let roomScanBlob = null;
+// Called when the wizard leaves this step. The original code had a bare
+// "// Turn off camera" comment and no implementation, so a separately-opened scan
+// stream stayed live for the entire exam, holding the camera against the recorder.
+function releaseRoomScanStream() {
+    if (roomScanTimer) {
+        clearInterval(roomScanTimer);
+        roomScanTimer = null;
+    }
+    if (roomScanOwnsStream && roomScanStream) {
+        try { roomScanStream.getTracks().forEach(t => t.stop()); } catch (e) {}
+    }
+    roomScanStream = null;
+    roomScanOwnsStream = false;
+}
 
 async function startRoomScanRecord() {
     const btnRecord = document.getElementById('btn-record-room');
     const btnNext = document.getElementById('btn-next-step');
     const timerEl = document.getElementById('room-scan-timer');
+    const promptEl = document.getElementById('room-scan-prompt');
     const videoEl = document.getElementById('room-scan-preview');
-    
+
     if (!roomScanStream) {
-        showStepError("No camera feed available.");
+        showStepError('No camera feed available for the room scan.');
         return;
     }
-    
-    btnRecord.disabled = true;
-    timerEl.innerText = "Recording... 10";
-    
-    try {
-        roomScanRecorder = new MediaRecorder(roomScanStream, { mimeType: 'video/webm;codecs=vp8' });
-    } catch (e) {
-        roomScanRecorder = new MediaRecorder(roomScanStream, { mimeType: 'video/mp4' });
+    if (roomScanRecorder && roomScanRecorder.state === 'recording') return;
+
+    // Coming back from a review playback: put the live feed back on screen.
+    if (videoEl) {
+        try {
+            videoEl.pause();
+            if (videoEl.src) {
+                URL.revokeObjectURL(videoEl.src);
+                videoEl.removeAttribute('src');
+                videoEl.load();
+            }
+            videoEl.controls = false;
+            videoEl.loop = false;
+            videoEl.srcObject = roomScanStream;
+            videoEl.play().catch(() => {});
+        } catch (e) { /* preview only */ }
     }
-    
-    let chunks = [];
-    roomScanRecorder.ondataavailable = (e) => {
-        if (e.data.size > 0) chunks.push(e.data);
-    };
-    
-    roomScanRecorder.onstop = async () => {
-        roomScanBlob = new Blob(chunks, { type: roomScanRecorder.mimeType });
-        timerEl.innerHTML = `<span style="color: #10b981;">✓ Room scan recorded successfully.</span>`;
-        if (btnNext) btnNext.disabled = false;
-    };
-    
-    roomScanRecorder.start();
-    
-    let timeLeft = 10;
-    const interval = setInterval(() => {
-        timeLeft--;
-        if (timeLeft > 0) {
-            timerEl.innerText = `Recording... ${timeLeft}`;
-        } else {
-            clearInterval(interval);
-            roomScanRecorder.stop();
-            // Turn off camera
+
+    if (btnRecord) btnRecord.disabled = true;
+    if (btnNext) btnNext.disabled = true;
+    roomScanBlob = null;
+
+    // Same reasoning as the main recorder: an uncapped scan encodes to several
+    // megabytes, which is exactly the size a reverse proxy on its default body limit
+    // refuses outright — silently, before the server logs anything.
+    const options = { videoBitsPerSecond: 800000 };
+    const mime = pickRoomScanMimeType();
+    if (mime) options.mimeType = mime;
+
+    try {
+        roomScanRecorder = new MediaRecorder(roomScanStream, options);
+    } catch (e) {
+        try {
+            roomScanRecorder = new MediaRecorder(roomScanStream);
+        } catch (e2) {
+            showStepError('This browser cannot record the room scan: ' + e2.message);
+            if (btnRecord) btnRecord.disabled = false;
+            return;
         }
+    }
+
+    const chunks = [];
+    roomScanRecorder.ondataavailable = (e) => {
+        if (e.data && e.data.size > 0) chunks.push(e.data);
+    };
+    roomScanRecorder.onstop = () => {
+        roomScanMimeType = roomScanRecorder.mimeType || mime || 'video/webm';
+        roomScanBlob = new Blob(chunks, { type: roomScanMimeType });
+        renderRoomScanReview();
+    };
+    roomScanRecorder.onerror = (e) => {
+        showStepError('Room scan recording failed: ' + ((e.error && e.error.name) || 'unknown error'));
+        if (btnRecord) btnRecord.disabled = false;
+    };
+
+    roomScanRecorder.start();
+    runRoomScanStages(timerEl, promptEl);
+}
+
+function runRoomScanStages(timerEl, promptEl) {
+    let stageIndex = 0;
+    let remainingInStage = ROOM_SCAN_STAGES[0].seconds;
+    let totalRemaining = ROOM_SCAN_TOTAL_SECONDS;
+
+    const paint = () => {
+        if (promptEl) promptEl.innerText = ROOM_SCAN_STAGES[stageIndex].prompt;
+        if (timerEl) {
+            timerEl.innerText = `Recording — ${totalRemaining}s remaining ` +
+                `(step ${stageIndex + 1} of ${ROOM_SCAN_STAGES.length})`;
+        }
+    };
+    paint();
+
+    if (roomScanTimer) clearInterval(roomScanTimer);
+    roomScanTimer = setInterval(() => {
+        totalRemaining--;
+        remainingInStage--;
+
+        if (totalRemaining <= 0) {
+            clearInterval(roomScanTimer);
+            roomScanTimer = null;
+            try {
+                if (roomScanRecorder && roomScanRecorder.state !== 'inactive') roomScanRecorder.stop();
+            } catch (e) { /* onstop still fires for the collected chunks */ }
+            return;
+        }
+
+        if (remainingInStage <= 0 && stageIndex < ROOM_SCAN_STAGES.length - 1) {
+            stageIndex++;
+            remainingInStage = ROOM_SCAN_STAGES[stageIndex].seconds;
+        }
+        paint();
     }, 1000);
+}
+
+// Play the scan back before letting the student continue.
+//
+// A scan nobody looks at is a scan of the ceiling, and the student is the only person
+// who can still fix it at this point — by the time an instructor reviews it the exam
+// is over.
+function renderRoomScanReview() {
+    const timerEl = document.getElementById('room-scan-timer');
+    const promptEl = document.getElementById('room-scan-prompt');
+    const btnRecord = document.getElementById('btn-record-room');
+    const btnNext = document.getElementById('btn-next-step');
+    const videoEl = document.getElementById('room-scan-preview');
+
+    if (videoEl && roomScanBlob) {
+        try {
+            videoEl.srcObject = null;
+            videoEl.src = URL.createObjectURL(roomScanBlob);
+            videoEl.muted = true;
+            videoEl.controls = true;
+            videoEl.loop = true;
+            videoEl.play().catch(() => {});
+        } catch (e) { /* playback is a convenience, not a gate */ }
+    }
+
+    if (promptEl) {
+        promptEl.innerText = 'Check the playback above. If your desk and the area around it are not clearly visible, record it again.';
+    }
+    if (timerEl) {
+        const kb = roomScanBlob ? Math.round(roomScanBlob.size / 1024) : 0;
+        timerEl.innerHTML = `<span style="color: #10b981;">&#10003; Room scan recorded — ${ROOM_SCAN_TOTAL_SECONDS}s, ${kb}KB.</span>`;
+    }
+    if (btnRecord) {
+        btnRecord.disabled = false;
+        btnRecord.innerText = 'Record Again';
+    }
+    if (btnNext) btnNext.disabled = false;
+}
+
+// The scan used to be uploaded fire-and-forget: the FileReader callback was never
+// awaited and the fetch result never inspected, so a rejected upload left no trace
+// anywhere at all. With the container uncapped these payloads were easily large
+// enough to be refused by a proxy on its default body limit, which means scans could
+// have been failing for every student while the wizard reported success. Failures now
+// retry, and if they still fail they land on the session timeline — so a missing scan
+// is distinguishable from a student who never performed one.
+async function uploadRoomScan(examSessionId) {
+    if (!roomScanBlob) return false;
+
+    let base64data;
+    try {
+        base64data = await new Promise((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onloadend = () => resolve(reader.result);
+            reader.onerror = () => reject(reader.error || new Error('FileReader failed'));
+            reader.readAsDataURL(roomScanBlob);
+        });
+    } catch (e) {
+        logRoomScanFailure(examSessionId, `the browser could not read the recording (${e.message})`);
+        return false;
+    }
+
+    const kb = Math.round((base64data || '').length / 1024);
+    for (let attempt = 1; attempt <= 3; attempt++) {
+        try {
+            const res = await fetch('/api/session/room-scan', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    exam_session_id: examSessionId,
+                    base64_video: base64data,
+                    mime_type: roomScanMimeType || 'video/webm',
+                    token: sessionToken
+                })
+            });
+            if (res.ok) {
+                console.log(`[Session] Room scan uploaded (${kb}KB encoded).`);
+                roomScanBlob = null;
+                return true;
+            }
+            if (res.status === 413) {
+                logRoomScanFailure(examSessionId,
+                    `the server refused it as too large (${kb}KB encoded), so the upload size limit needs raising`);
+                return false; // identical bytes would meet an identical refusal
+            }
+            console.warn(`[Session] Room scan upload attempt ${attempt} returned HTTP ${res.status}.`);
+        } catch (e) {
+            console.warn(`[Session] Room scan upload attempt ${attempt} failed:`, e.message);
+        }
+        if (attempt < 3) await new Promise(r => setTimeout(r, 1500 * attempt));
+    }
+
+    logRoomScanFailure(examSessionId, `${kb}KB could not be delivered after 3 attempts`);
+    return false;
+}
+
+function logRoomScanFailure(examSessionId, detail) {
+    console.error('[Session] Room scan upload failed:', detail);
+    if (socket) {
+        socket.emit('proctor_log', {
+            exam_session_id: examSessionId,
+            event_type: 'system_error',
+            event_message: `The room/desk scan could not be uploaded: ${detail}. ` +
+                `The student did complete the scan — the recording is missing for technical reasons, not because it was skipped.`
+        });
+    }
 }
 
 async function setupIdPreview() {

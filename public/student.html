@@ -21,7 +21,7 @@
       }).catch(err => {});
     });
   </script>
-  <link rel="stylesheet" href="/css/styles.css?v=2.5.0">
+  <link rel="stylesheet" href="/css/styles.css?v=2.6.0">
   <link rel="icon" href="/icons/proctorguard-logo.png">
   <script src="/socket.io/socket.io.js"></script>
   <style>
@@ -444,77 +444,6 @@
   
   <video id="local-video" autoplay muted playsinline></video>
 
-  <!-- Status bar. Segmented, monospaced, pinned to the bottom the way a native
-       application's status bar is. It also answers the privacy question that the
-       disclosure text above only promises: which sensors are actually live, right
-       now, visible at all times without the student having to ask. -->
-  <div class="pg-statusbar" id="pg-statusbar">
-      <span class="pg-status-cell"><strong>Status:</strong> <span id="pg-status-phase" class="pg-status-warn">Setup</span></span>
-      <span class="pg-status-cell">Camera <span id="pg-status-cam" class="pg-status-off">off</span></span>
-      <span class="pg-status-cell">Microphone <span id="pg-status-mic" class="pg-status-off">off</span></span>
-      <span class="pg-status-cell">Screen <span id="pg-status-screen" class="pg-status-off">off</span></span>
-      <span class="pg-status-cell">Upload <span id="pg-status-upload" class="pg-status-off">idle</span></span>
-      <span class="pg-status-cell" id="pg-status-clock">--:--:--</span>
-  </div>
-
-  <script>
-    // Drives the status bar off the recorder state that student.js already
-    // maintains. Read-only and defensive on purpose: this is chrome, and a
-    // display bug here must never be able to interrupt an exam in progress.
-    (function () {
-      var set = function (id, text, cls) {
-        var el = document.getElementById(id);
-        if (!el) return;
-        el.textContent = text;
-        el.className = cls;
-      };
-
-      function tick() {
-        try {
-          var recording = typeof mediaRecorder !== 'undefined' && mediaRecorder && mediaRecorder.state === 'recording';
-          var examOver = typeof isExamCompleted !== 'undefined' && isExamCompleted;
-
-          if (examOver) set('pg-status-phase', 'Submitted', 'pg-status-ok');
-          else if (recording) set('pg-status-phase', 'Monitoring', 'pg-status-ok');
-          else set('pg-status-phase', 'Setup', 'pg-status-warn');
-
-          var hasTrack = function (stream, kind) {
-            try {
-              if (!stream) return false;
-              var tracks = kind === 'audio' ? stream.getAudioTracks() : stream.getVideoTracks();
-              return tracks.some(function (t) { return t.readyState === 'live'; });
-            } catch (e) { return false; }
-          };
-
-          var camLive = hasTrack(typeof localCamStream !== 'undefined' ? localCamStream : null, 'video');
-          var micLive = hasTrack(typeof localMicStream !== 'undefined' ? localMicStream : null, 'audio');
-          var scrLive = hasTrack(typeof localScreenStream !== 'undefined' ? localScreenStream : null, 'video');
-
-          set('pg-status-cam', camLive ? 'live' : 'off', camLive ? 'pg-status-ok' : 'pg-status-off');
-          set('pg-status-mic', micLive ? 'live' : 'off', micLive ? 'pg-status-ok' : 'pg-status-off');
-          set('pg-status-screen', scrLive ? 'shared' : 'off', scrLive ? 'pg-status-ok' : 'pg-status-off');
-
-          // Surfacing the backlog is the point: a student on bad wifi can see the
-          // recording is still catching up instead of closing the tab on a queue.
-          var queued = (typeof uploadQueue !== 'undefined' && uploadQueue) ? uploadQueue.length : 0;
-          if (!recording && !examOver) set('pg-status-upload', 'idle', 'pg-status-off');
-          else if (queued > 3) set('pg-status-upload', queued + ' pending', 'pg-status-warn');
-          else if (queued > 0) set('pg-status-upload', queued + ' pending', 'pg-status-ok');
-          else set('pg-status-upload', 'synced', 'pg-status-ok');
-
-          var clock = document.getElementById('pg-status-clock');
-          if (clock) {
-            clock.textContent = new Date().toLocaleTimeString('en-US', { hour12: false });
-          }
-        } catch (e) {
-          /* chrome only — never let this surface an error to the student */
-        }
-      }
-
-      tick();
-      setInterval(tick, 1000);
-    })();
-  </script>
 
   <!-- Toast Container -->
   <div class="toast-container" id="toast-container" style="position: fixed; bottom: 20px; right: 20px; z-index: 9999;"></div>
@@ -660,7 +589,7 @@
       </div>
   </div>
 
-  <script src="/js/student.js?v=3.5.0"></script>
+  <script src="/js/student.js?v=3.6.0"></script>
 </body>
 
 </html>

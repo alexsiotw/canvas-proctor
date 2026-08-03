@@ -2594,16 +2594,16 @@ async function assembleAndUploadSessionVideo(exam_session_id, total_chunks) {
 
         // Check if there is an environment room scan video on disk and upload it
         let roomScanDriveFileId = null;
-        const scanPath = path.join(os.tmpdir(), `roomscans`, `scan-${exam_session_id}.webm`);
-        if (fs.existsSync(scanPath)) {
-            const roomScanFileName = `${studentName}_${examTitle}_Session_${exam_session_id}_Attempt_${attempt}_RoomScan.webm`;
-            console.log(`[Assemble] Found room scan on disk. Uploading ${roomScanFileName} to Google Drive...`);
+        const roomScan = findRoomScanOnDisk(exam_session_id);
+        if (roomScan) {
+            const roomScanFileName = `${studentName}_${examTitle}_Session_${exam_session_id}_Attempt_${attempt}_RoomScan.${roomScan.ext}`;
+            console.log(`[Assemble] Found room scan on disk (${roomScan.mimeType}). Uploading ${roomScanFileName} to Google Drive...`);
             try {
-                roomScanDriveFileId = await uploadVideoToDrive(scanPath, roomScanFileName, 'video/webm', attemptFolderId);
+                roomScanDriveFileId = await uploadVideoToDrive(roomScan.path, roomScanFileName, roomScan.mimeType, attemptFolderId);
                 console.log(`[Assemble] Uploaded room scan to Google Drive. File ID: ${roomScanDriveFileId}`);
-                
+
                 // Clean up the local room scan video file from /tmp
-                fs.unlinkSync(scanPath);
+                fs.unlinkSync(roomScan.path);
             } catch (scanUpErr) {
                 console.error("[Assemble] Failed to upload room scan to Google Drive:", scanUpErr.message);
             }
@@ -4087,24 +4087,58 @@ initDatabase().then(() => {
 }).catch(console.error);
 
 // API: Upload Room Scan Video
+// Room scans are stored in whichever container the recording device produced. iOS
+// cannot record WebM at all, so hardcoding .webm meant an iPad's MP4 scan was written
+// and later published to Drive under a container it was not — enough on its own to
+// make it unplayable for the reviewer.
+const ROOM_SCAN_EXTENSIONS = ['webm', 'mp4'];
+
+function roomScanExtensionFor(mimeType) {
+    return (mimeType && mimeType.indexOf('mp4') !== -1) ? 'mp4' : 'webm';
+}
+
+function findRoomScanOnDisk(examSessionId) {
+    const scanDir = path.join(os.tmpdir(), 'roomscans');
+    for (const ext of ROOM_SCAN_EXTENSIONS) {
+        const candidate = path.join(scanDir, `scan-${examSessionId}.${ext}`);
+        if (fs.existsSync(candidate)) {
+            return { path: candidate, ext, mimeType: ext === 'mp4' ? 'video/mp4' : 'video/webm' };
+        }
+    }
+    return null;
+}
+
 app.post('/api/session/room-scan', requireAuth, async (req, res) => {
-    const { exam_session_id, base64_video } = req.body;
+    const { exam_session_id, base64_video, mime_type } = req.body;
     try {
         if (!base64_video) throw new Error("Video payload was empty");
         if (!await assertSessionOwnership(req, res, exam_session_id)) return;
-        console.log(`[Upload Room Scan] Received room scan for session ${exam_session_id}`);
+        console.log(`[Upload Room Scan] Received room scan for session ${exam_session_id} (${mime_type || 'container not declared'})`);
 
         const scanDir = path.join(os.tmpdir(), `roomscans`);
         if (!fs.existsSync(scanDir)) {
             fs.mkdirSync(scanDir, { recursive: true });
         }
 
-        const scanPath = path.join(scanDir, `scan-${exam_session_id}.webm`);
+        const ext = roomScanExtensionFor(mime_type);
+        // A retake can land in a different container than the first attempt. Clear the
+        // others so exactly one scan file exists per session and lookup stays unambiguous.
+        ROOM_SCAN_EXTENSIONS.forEach(other => {
+            if (other === ext) return;
+            const stale = path.join(scanDir, `scan-${exam_session_id}.${other}`);
+            if (fs.existsSync(stale)) {
+                try { fs.unlinkSync(stale); } catch (e) { /* best effort */ }
+            }
+        });
+
+        const scanPath = path.join(scanDir, `scan-${exam_session_id}.${ext}`);
         const pureB64 = base64_video.replace(/^data:[^,]+,/, '').replace(/\s/g, '');
         fs.writeFileSync(scanPath, pureB64, 'base64');
-        
-        // In a real app we'd upload to Drive, but for now we store locally and provide a route
-        const roomScanUrl = `/api/session/room-scan-playback/${exam_session_id}`;
+        console.log(`[Upload Room Scan] Wrote ${fs.statSync(scanPath).size} bytes to ${scanPath}`);
+
+        // The container rides along on the URL so playback still knows what it is once
+        // the local file has been deleted in favour of the Drive copy.
+        const roomScanUrl = `/api/session/room-scan-playback/${exam_session_id}?container=${ext}`;
         
         // Update database with room scan URL (you would need to add a column for this if it doesn't exist, but we can just use the endpoint pattern)
         // Or store it in proctor_logs so the speedgrader can fetch it.
@@ -4121,18 +4155,22 @@ app.post('/api/session/room-scan', requireAuth, async (req, res) => {
 app.get('/api/session/room-scan-playback/:session_id', requireInstructorOrExtensionToken, async (req, res) => {
     try {
         const { session_id } = req.params;
-        const scanPath = path.join(os.tmpdir(), `roomscans`, `scan-${session_id}.webm`);
-        
-        if (fs.existsSync(scanPath)) {
-            res.setHeader('Content-Type', 'video/webm');
-            fs.createReadStream(scanPath).pipe(res);
+        const roomScan = findRoomScanOnDisk(session_id);
+
+        if (roomScan) {
+            // Serve the container that is actually on disk. Declaring video/webm for an
+            // MP4 file makes the browser refuse to play a scan that is perfectly intact.
+            res.setHeader('Content-Type', roomScan.mimeType);
+            fs.createReadStream(roomScan.path).pipe(res);
         } else {
             // Check if there is a room_scan_drive_file_id in database!
             const dbQuery = await pool.query('SELECT room_scan_drive_file_id FROM exam_sessions WHERE id = $1', [session_id]);
             if (dbQuery.rows.length > 0 && dbQuery.rows[0].room_scan_drive_file_id) {
                 const driveFileId = dbQuery.rows[0].room_scan_drive_file_id;
                 console.log(`[Playback] Streaming room scan from Google Drive. File ID: ${driveFileId}`);
-                res.setHeader('Content-Type', 'video/webm');
+                // The container travels on the playback URL recorded at upload time, so
+                // it survives the local file being deleted after the Drive upload.
+                res.setHeader('Content-Type', req.query.container === 'mp4' ? 'video/mp4' : 'video/webm');
                 const stream = await downloadVideoFromDrive(driveFileId);
                 stream.pipe(res);
             } else {

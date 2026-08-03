@@ -99,6 +99,12 @@ const PG_ICONS = {
     rc:     `<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><line x1="12" y1="3" x2="12" y2="12"/><line x1="12" y1="12" x2="21" y2="12"/></svg>`,
     reen:   `<svg viewBox="0 0 24 24"><path d="M15 9l3 3-3 3"/><path d="M18 12H6"/><line x1="21" y1="3" x2="21" y2="21"/></svg>`,
     mobile: `<svg viewBox="0 0 24 24"><rect x="5" y="2" width="14" height="20" rx="2"/><line x1="12" y1="18" x2="12.01" y2="18"/></svg>`,
+    // Room / desk scan: a room corner with a sweep arc, i.e. panning the camera
+    // around a space. Distinct from phonecam below, because these are genuinely
+    // different checks and shared iconography implied they were the same thing.
+    roomscan: `<svg viewBox="0 0 24 24"><path d="M3 20V8l9-5 9 5v12"/><path d="M3 20h18"/><path d="M8.5 15.5a5 5 0 0 1 7 0"/><circle cx="12" cy="12" r="1.4"/></svg>`,
+    // Secondary phone camera: a handset with a lens, propped at an angle.
+    phonecam: `<svg viewBox="0 0 24 24"><rect x="6" y="2" width="12" height="20" rx="2"/><circle cx="12" cy="10" r="2.6"/><line x1="10.5" y1="18.5" x2="13.5" y2="18.5"/></svg>`,
     vvid:   `<svg viewBox="0 0 24 24"><path d="M23 7l-7 5 7 5V7z"/><rect x="1" y="5" width="15" height="14" rx="2"/><path d="M4 19l1.5 1.5L9 17"/></svg>`,
     vaud:   `<svg viewBox="0 0 24 24"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="22"/><path d="M15 21l1.5 1.5L20 19"/></svg>`,
     vdesk:  `<svg viewBox="0 0 24 24"><rect x="2" y="3" width="20" height="13" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="16" x2="12" y2="21"/><path d="M16 18l1.5 1.5L21 16"/></svg>`,
@@ -115,8 +121,8 @@ const PG_ICONS = {
 const PG_ICON_BY_LABEL = {
     'Record Webcam': 'cam', 'Record Video': 'cam', 'Record Audio': 'mic',
     'Record Screen': 'screen', 'Record Web Traffic': 'traffic',
-    'Room / Desk Scan': 'desk', 'Mobile Camera': 'desk',
-    'Secondary Mobile Camera': 'desk',
+    'Room / Desk Scan': 'roomscan', 'Mobile Camera': 'phonecam',
+    'Secondary Mobile Camera': 'phonecam',
     'Force Full Screen': 'fs', 'Only One Screen': 'one',
     'Disable New Tabs': 'ntab', 'Close Open Tabs': 'ctab',
     'Disable Printing': 'print', 'Disable Clipboard': 'clip',
