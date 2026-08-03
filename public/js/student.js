@@ -20,7 +20,6 @@ const PG_EXTENSION_ONLY_FEATURES = ['disable_new_tabs', 'record_web_traffic', 'c
 
 let examConfig = null;
 let sessionInfo = null;
-let activeVisualFlags = [];
 let socket = null;
 // The socket handshake carries the LTI session token: the server now requires an
 // identity on connect, and inside the Canvas iframe the session cookie is often
@@ -1889,12 +1888,18 @@ async function startMainExamSession() {
             console.log(`[Resume] Setting chunkIndex to ${chunkIndex}`);
         }
 
-        // Upload room scan now that session is created. Awaited on purpose: it used to
-        // be left running in a FileReader callback that nobody waited for, so a failure
-        // was invisible and the exam started regardless.
+        // Upload the room scan, but do not hold up the start of recording for it.
+        //
+        // Awaiting a multi-megabyte upload here adds its full duration to the setup
+        // lead-in — the window between the attempt starting and the recorder actually
+        // running, which is unrecorded by definition. Measured lead-ins of 7-8s were
+        // partly this. Not awaiting is safe now in a way it was not before: this
+        // function retries three times and writes an explicit failure to the session
+        // timeline, so a lost scan is reported rather than silently absent.
         if (roomScanBlob) {
-            console.log("[Session] Uploading Room Scan...");
-            await uploadRoomScan(sessionInfo.id);
+            console.log("[Session] Uploading Room Scan in the background...");
+            uploadRoomScan(sessionInfo.id).catch(err =>
+                console.error('[Session] Room scan upload rejected:', err && err.message));
         }
 
         // Upload ID Verification Image
@@ -2528,8 +2533,16 @@ async function startProctoring() {
         await new Promise(resolve => setTimeout(resolve, 1500));
 
         if (mediaRecorder) {
-            mediaRecorder.start(5000);
-            console.log("[Recorder] Session recording started with 5s slices.");
+            // 3s rather than 5s slices.
+            //
+            // A timeslice is the granularity at which footage becomes recoverable at
+            // all: whatever the recorder is holding when something goes wrong is lost,
+            // so the slice length is the worst-case loss window at both a network gap
+            // and the end of the attempt. Five seconds is a lot of that on a short
+            // attempt. Three costs ~1.7x the request count, which the upload path
+            // comfortably handles now that chunks are small and retries persist.
+            mediaRecorder.start(3000);
+            console.log("[Recorder] Session recording started with 3s slices.");
             // Tell the server the footage timeline starts now. Everything that
             // compares video length to attempt length anchors here, so the setup
             // time above isn't mistaken for lost recording.
@@ -2956,7 +2969,17 @@ function getTargetFPS() {
 
 async function createCompositeTrack(screenStream, cameraStream) {
     const canvas = document.createElement('canvas');
-    canvas.width = 1600; // 1280 (screen) + 320 (sidebar)
+    // The 320px sidebar exists only to hold the webcam inset when a screen recording
+    // is also present. The status furniture that used to live there — proctor-feed
+    // label, mic indicator, and the drifting stack of alert cards — has been removed:
+    // every one of those events is already on the session timeline, where it is
+    // searchable and timestamped, and burning them into the video made the recording
+    // look like surveillance theatre without adding any information a reviewer lacked.
+    //
+    // With no webcam to inset there is nothing for the sidebar to do, so the canvas is
+    // sized to the screen alone rather than reserving a dead strip.
+    const useSidebar = !!(screenStream && cameraStream);
+    canvas.width = useSidebar ? 1600 : 1280;
     canvas.height = 720;
     const ctx = canvas.getContext('2d', { alpha: false });
 
@@ -3055,109 +3078,18 @@ async function createCompositeTrack(screenStream, cameraStream) {
             ctx.fillText(placeholderText, (1280 - ctx.measureText(placeholderText).width) / 2, 360);
         }
         
-        const sidebarX = 1280;
-        const camW = 320;
-        const camH = 240;
-        const camY = (720 - camH) / 2 - 40; // Shift up slightly to make room for mic box
-        
-        // Sidebar camera (when screen is also present); otherwise a status panel
-        if (hasScreen && vCam) {
+        // Webcam inset. Nothing else is drawn in the sidebar any more.
+        if (useSidebar && vCam) {
+            const sidebarX = 1280;
+            const camW = 320;
+            const camH = 240;
+            const camY = (720 - camH) / 2;
             ctx.drawImage(vCam, sidebarX, camY, camW, camH);
-        } else if (hasScreen && !vCam) {
-            ctx.fillStyle = "#1e293b";
-            ctx.fillRect(sidebarX, camY, camW, camH);
-            ctx.fillStyle = "#9ca3af";
-            ctx.font = "bold 13px Arial";
-            const placeholderText = "NO WEBCAM REQUIRED";
-            ctx.fillText(placeholderText, sidebarX + (320 - ctx.measureText(placeholderText).width) / 2, camY + camH / 2);
-        } else {
-            ctx.fillStyle = "#0f172a";
-            ctx.fillRect(sidebarX, camY, camW, camH);
-            ctx.fillStyle = "#94a3b8";
-            ctx.font = "bold 13px Arial";
-            const t1 = "PRIMARY: WEBCAM";
-            ctx.fillText(t1, sidebarX + (320 - ctx.measureText(t1).width) / 2, camY + camH / 2 - 8);
-            ctx.font = "11px Arial";
-            const t2 = "(no desktop capture)";
-            ctx.fillText(t2, sidebarX + (320 - ctx.measureText(t2).width) / 2, camY + camH / 2 + 12);
+            ctx.strokeStyle = "rgba(255,255,255,0.5)";
+            ctx.lineWidth = 2;
+            ctx.strokeRect(sidebarX, camY, camW, camH);
         }
-        ctx.strokeStyle = "rgba(255,255,255,0.5)";
-        ctx.lineWidth = 2;
-        ctx.strokeRect(sidebarX, camY, camW, camH);
-        
-        ctx.fillStyle = "white";
-        ctx.font = "bold 14px Arial";
-        const camLabel = "PROCTOR FEED";
-        ctx.fillText(camLabel, sidebarX + (320 - ctx.measureText(camLabel).width) / 2, camY - 15);
  
-        // Mic Status — do NOT use track.muted (Chrome/Android often reports muted=true
-        // while audio is still captured). Use readyState + enabled + recent volume.
-        const liveMicTrack = localMicStream && localMicStream.getAudioTracks().some(t => t.readyState === 'live' && t.enabled);
-        const silenceMs = audioTrackerActive ? (Date.now() - lastNonZeroVolumeTime) : 0;
-        const recentlyHeard = audioTrackerActive && silenceMs < 2500;
-        let micLabel = 'MICROPHONE: OFF';
-        let dotColor = '#ef4444';
-        if (liveMicTrack && recentlyHeard) {
-            micLabel = 'MICROPHONE: ON';
-            dotColor = '#22c55e';
-        } else if (liveMicTrack) {
-            // Track is live but quiet — still recording; not a hard OFF
-            micLabel = 'MICROPHONE: ON (quiet)';
-            dotColor = '#eab308';
-        }
-        const micBoxY = camY + camH + 40;
-        const micBoxW = 240;
-        const micBoxH = 60;
-        const micBoxX = sidebarX + (320 - micBoxW) / 2;
- 
-        ctx.fillStyle = "rgba(15, 23, 42, 0.8)";
-        ctx.beginPath();
-        ctx.roundRect(micBoxX, micBoxY, micBoxW, micBoxH, 10);
-        ctx.fill();
-        ctx.strokeStyle = "rgba(255,255,255,0.2)";
-        ctx.stroke();
-        
-        ctx.fillStyle = dotColor;
-        ctx.beginPath();
-        ctx.arc(micBoxX + 25, micBoxY + 30, 8, 0, Math.PI * 2);
-        ctx.fill();
- 
-        ctx.fillStyle = "white";
-        ctx.font = "bold 12px Arial";
-        ctx.fillText(micLabel, micBoxX + 40, micBoxY + 35);
-        
-        // Draw Active Security / AI Flags in the top sidebar space (y = 20 to y = 180)
-        const now = Date.now();
-        activeVisualFlags = activeVisualFlags.filter(flag => now < flag.expiresAt);
-        
-        let alertY = 20; 
-        for (const flag of activeVisualFlags) {
-            if (alertY + 45 > camY - 15) break; // Don't draw over the camera label/viewport
-            
-            const isCritical = flag.type.toLowerCase().includes('violation') || flag.type.toLowerCase().includes('exit') || flag.type.toLowerCase().includes('boot');
-            ctx.fillStyle = isCritical ? "rgba(220, 38, 38, 0.9)" : "rgba(217, 119, 6, 0.9)";
-            ctx.beginPath();
-            ctx.roundRect(sidebarX + 10, alertY, 300, 45, 6);
-            ctx.fill();
-            
-            ctx.fillStyle = "white";
-            ctx.font = "bold 11px Arial";
-            ctx.fillText(flag.type.toUpperCase(), sidebarX + 20, alertY + 18);
-            
-            ctx.font = "10px Arial";
-            const maxTextWidth = 280;
-            let displayMsg = flag.message;
-            if (ctx.measureText(displayMsg).width > maxTextWidth) {
-                while (ctx.measureText(displayMsg + '...').width > maxTextWidth && displayMsg.length > 0) {
-                    displayMsg = displayMsg.slice(0, -1);
-                }
-                displayMsg += '...';
-            }
-            ctx.fillText(displayMsg, sidebarX + 20, alertY + 34);
-            
-            alertY += 55;
-        }
-        
         compositeAnimationId = setTimeout(draw, 1000 / getTargetFPS());
     }
     
@@ -3441,12 +3373,10 @@ async function bootStudent() {
 }
 
 function logProctorEvent(type, message) {
-    activeVisualFlags.push({
-        type: type,
-        message: message,
-        expiresAt: Date.now() + 4000
-    });
-
+    // Events used to also be pushed onto activeVisualFlags and burned into the
+    // recording as overlay cards. They are on the session timeline instead, which is
+    // timestamped and searchable — and the array was only ever pruned inside the
+    // composite draw loop, so with the overlay gone it would have grown all exam.
     if(!sessionInfo) return;
     fetch('/api/session/log', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -3648,6 +3578,22 @@ async function stopRecordingAndAwaitUploads() {
             stopped = true;
             console.log("[Recorder] MediaRecorder stop event received.");
         }, { once: true });
+
+        // Force the partial timeslice out before stopping.
+        //
+        // stop() is meant to flush whatever the recorder is still holding, but relying
+        // on that implicit flush costs up to a full timeslice at the end of every
+        // attempt — and the end of an attempt is exactly where the footage matters.
+        // requestData() emits the partial chunk as its own dataavailable first, which
+        // is materially more reliable across browsers than trusting stop() to do it.
+        try {
+            if (mediaRecorder.state === 'recording') {
+                mediaRecorder.requestData();
+                await new Promise(r => setTimeout(r, 300));
+            }
+        } catch (e) {
+            console.warn('[Recorder] requestData() before stop failed:', e && e.message);
+        }
 
         try {
             mediaRecorder.stop();

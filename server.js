@@ -2554,7 +2554,11 @@ async function assembleAndUploadSessionVideo(exam_session_id, total_chunks) {
             console.log(`[Assemble] Session ${exam_session_id}: video ${assembledDurationSec.toFixed(1)}s vs ` +
                 `recording window ${recordedWindowSec.toFixed(1)}s (${Math.round(coverage * 100)}% coverage; ` +
                 `${setupLeadInSec.toFixed(1)}s setup lead-in excluded).`);
-            if (recordedWindowSec > 30 && coverage < 0.85) {
+            // The floor was 30s, which meant a short attempt losing 40% of its footage
+            // produced no warning at all — the instructor had to notice the duration
+            // mismatch by eye. Below ~8s a single timeslice is a large fraction of the
+            // window and the ratio stops being meaningful, so that is the real floor.
+            if (recordedWindowSec > 8 && coverage < 0.85) {
                 const shortfall = Math.round(recordedWindowSec - assembledDurationSec);
                 console.warn(`[Assemble] Session ${exam_session_id} video is short by ${shortfall}s.`);
                 await logSessionEvent(exam_session_id, 'system_error',
