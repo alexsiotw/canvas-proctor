@@ -21,6 +21,9 @@ const PG_EXTENSION_ONLY_FEATURES = ['disable_new_tabs', 'record_web_traffic', 'c
 let examConfig = null;
 let sessionInfo = null;
 let socket = null;
+let sessionHeartbeatInterval = null;
+let resumeApprovalPollInterval = null;
+let blockedResumeSessionId = null;
 // The socket handshake carries the LTI session token: the server now requires an
 // identity on connect, and inside the Canvas iframe the session cookie is often
 // blocked, so the cookie alone cannot be relied on here. Read from the URL
@@ -41,6 +44,21 @@ if (socket) socket.on('instructor_warning', (data) => {
     }
 });
 if (!socket) { socket = { on: function(){}, emit: function(){} }; }
+
+if (socket) {
+    socket.on('connect', () => {
+        if (sessionToken) socket.emit('join_lti', { token: sessionToken });
+        if (sessionInfo && sessionInfo.id && examConfig) {
+            socket.emit('join_student', {
+                exam_id: examConfig.id,
+                exam_session_id: sessionInfo.id,
+                student_name: sessionInfo.student_name
+            });
+        }
+    });
+    socket.on('resume_approval_required', (data) => showResumeApprovalRequired(data || {}));
+    socket.on('resume_approved', () => resumeAfterInstructorApproval());
+}
 
 if (socket) {
     socket.on('mobile_paired', (data) => {
@@ -139,11 +157,19 @@ if (socket) {
     });
 }
 let mediaRecorder = null;
+let cameraRecorder = null;
 let chunkIndex = 0;
+let cameraChunkIndex = 0;
+let primaryRecordingKind = 'camera';
 let finalStream = null;
 let activeUploads = 0;
 let uploadQueue = [];
 let isProcessingQueue = false;
+let recordingStartPerformanceMs = null;
+let finalRecordingDurationMs = null;
+let finalUploadComplete = false;
+let finalUploadRetryInProgress = false;
+const permanentUploadFailures = new Set();
 let isStartingExam = false;
 let compositeVScreen = null;
 let compositeVCam = null;
@@ -196,9 +222,35 @@ function openDB() {
 // out of this function past its own catch block. Storage quota is reached exactly
 // when a slow connection has let chunks pile up, i.e. precisely when losing them
 // matters most.
-async function saveChunkToDB(sessionId, index, data) {
-    const key = `${sessionId}_${index}`;
-    const record = { key, session_id: sessionId, index, data, attempts: 0 };
+function normalizeRecordingKind(kind) {
+    return kind === 'camera' ? 'camera' : 'primary';
+}
+
+function chunkStorageKey(sessionId, index, kind = 'primary') {
+    const normalized = normalizeRecordingKind(kind);
+    return normalized === 'primary'
+        ? `${sessionId}_${index}`
+        : `${sessionId}_${normalized}_${index}`;
+}
+
+function chunkRecordKind(record) {
+    return normalizeRecordingKind(record && record.recording_kind);
+}
+
+async function saveChunkToDB(sessionId, index, data, kind = 'primary') {
+    const recordingKind = normalizeRecordingKind(kind);
+    const key = chunkStorageKey(sessionId, index, recordingKind);
+    const record = {
+        key,
+        session_id: sessionId,
+        index,
+        recording_kind: recordingKind,
+        data,
+        attempts: 0,
+        uploaded: false,
+        created_at: Date.now(),
+        updated_at: Date.now()
+    };
 
     if (useMemoryStorage) {
         memoryChunks[key] = record;
@@ -262,10 +314,11 @@ async function blobToBase64(blob, attempts = 3) {
     throw lastError || new Error('Could not read recorded blob');
 }
 
-async function getPendingChunksFromDB(sessionId) {
+async function getPendingChunksFromDB(sessionId, kind = null) {
+    const recordingKind = kind === null ? null : normalizeRecordingKind(kind);
     if (useMemoryStorage) {
         const filtered = Object.values(memoryChunks)
-                            .filter(c => c.session_id === sessionId)
+                            .filter(c => c.session_id === sessionId && c.uploaded !== true && (recordingKind === null || chunkRecordKind(c) === recordingKind))
                             .sort((a, b) => a.index - b.index);
         return filtered;
     }
@@ -277,7 +330,7 @@ async function getPendingChunksFromDB(sessionId) {
             const request = store.getAll();
             request.onsuccess = () => {
                 const all = request.result || [];
-                const filtered = all.filter(c => c.session_id === sessionId)
+                const filtered = all.filter(c => c.session_id === sessionId && c.uploaded !== true && (recordingKind === null || chunkRecordKind(c) === recordingKind))
                                     .sort((a, b) => a.index - b.index);
                 resolve(filtered);
             };
@@ -287,15 +340,76 @@ async function getPendingChunksFromDB(sessionId) {
         console.warn("[DB] Failed to get chunks from IndexedDB. Falling back to memory storage.", e);
         useMemoryStorage = true;
         const filtered = Object.values(memoryChunks)
-                            .filter(c => c.session_id === sessionId)
+                            .filter(c => c.session_id === sessionId && c.uploaded !== true && (recordingKind === null || chunkRecordKind(c) === recordingKind))
                             .sort((a, b) => a.index - b.index);
         return filtered;
     }
 }
 
-async function deleteChunkFromDB(sessionId, index) {
+async function getAllChunksFromDB() {
+    if (useMemoryStorage) return Object.values(memoryChunks);
+    try {
+        const db = await openDB();
+        return await new Promise((resolve, reject) => {
+            const tx = db.transaction(STORE_NAME, 'readonly');
+            const request = tx.objectStore(STORE_NAME).getAll();
+            request.onsuccess = () => resolve(request.result || []);
+            request.onerror = () => reject(request.error);
+        });
+    } catch (e) {
+        console.warn('[DB] Could not enumerate local recording chunks:', e);
+        return Object.values(memoryChunks);
+    }
+}
+
+async function getSessionChunksFromDB(sessionId, kind = null) {
+    const recordingKind = kind === null ? null : normalizeRecordingKind(kind);
+    const all = await getAllChunksFromDB();
+    return all
+        .filter(chunk => chunk.session_id === sessionId && (recordingKind === null || chunkRecordKind(chunk) === recordingKind))
+        .sort((a, b) => a.index - b.index);
+}
+
+async function markChunkUploadedInDB(sessionId, index, kind = 'primary') {
+    const key = chunkStorageKey(sessionId, index, kind);
     if (useMemoryStorage) {
-        const key = `${sessionId}_${index}`;
+        if (memoryChunks[key]) {
+            memoryChunks[key].uploaded = true;
+            memoryChunks[key].updated_at = Date.now();
+        }
+        return;
+    }
+    try {
+        const db = await openDB();
+        await new Promise((resolve, reject) => {
+            const tx = db.transaction(STORE_NAME, 'readwrite');
+            const store = tx.objectStore(STORE_NAME);
+            const request = store.get(key);
+            request.onsuccess = () => {
+                const record = request.result;
+                if (record) {
+                    record.uploaded = true;
+                    record.updated_at = Date.now();
+                    store.put(record);
+                }
+            };
+            tx.oncomplete = () => resolve();
+            tx.onerror = () => reject(tx.error);
+            tx.onabort = () => reject(tx.error || new Error('IndexedDB transaction aborted'));
+        });
+    } catch (e) {
+        console.warn(`[DB] Could not mark chunk #${index} uploaded:`, e);
+    }
+}
+
+async function deleteSessionChunksFromDB(sessionId) {
+    const records = await getSessionChunksFromDB(sessionId);
+    for (const record of records) await deleteChunkFromDB(sessionId, record.index, chunkRecordKind(record));
+}
+
+async function deleteChunkFromDB(sessionId, index, kind = 'primary') {
+    if (useMemoryStorage) {
+        const key = chunkStorageKey(sessionId, index, kind);
         delete memoryChunks[key];
         return;
     }
@@ -304,7 +418,7 @@ async function deleteChunkFromDB(sessionId, index) {
         return new Promise((resolve, reject) => {
             const tx = db.transaction(STORE_NAME, 'readwrite');
             const store = tx.objectStore(STORE_NAME);
-            const key = `${sessionId}_${index}`;
+            const key = chunkStorageKey(sessionId, index, kind);
             store.delete(key);
             tx.oncomplete = () => resolve();
             tx.onerror = () => reject(tx.error);
@@ -312,14 +426,14 @@ async function deleteChunkFromDB(sessionId, index) {
     } catch (e) {
         console.warn("[DB] Failed to delete chunk from IndexedDB. Falling back to memory storage.", e);
         useMemoryStorage = true;
-        const key = `${sessionId}_${index}`;
+        const key = chunkStorageKey(sessionId, index, kind);
         delete memoryChunks[key];
     }
 }
 
-async function updateChunkAttemptsInDB(sessionId, index, attempts) {
+async function updateChunkAttemptsInDB(sessionId, index, attempts, kind = 'primary') {
     if (useMemoryStorage) {
-        const key = `${sessionId}_${index}`;
+        const key = chunkStorageKey(sessionId, index, kind);
         if (memoryChunks[key]) {
             memoryChunks[key].attempts = attempts;
         }
@@ -330,7 +444,7 @@ async function updateChunkAttemptsInDB(sessionId, index, attempts) {
         return new Promise((resolve, reject) => {
             const tx = db.transaction(STORE_NAME, 'readwrite');
             const store = tx.objectStore(STORE_NAME);
-            const key = `${sessionId}_${index}`;
+            const key = chunkStorageKey(sessionId, index, kind);
             const req = store.get(key);
             req.onsuccess = () => {
                 const item = req.result;
@@ -345,7 +459,7 @@ async function updateChunkAttemptsInDB(sessionId, index, attempts) {
     } catch (e) {
         console.warn("[DB] Failed to update attempts in IndexedDB. Falling back to memory storage.", e);
         useMemoryStorage = true;
-        const key = `${sessionId}_${index}`;
+        const key = chunkStorageKey(sessionId, index, kind);
         if (memoryChunks[key]) {
             memoryChunks[key].attempts = attempts;
         }
@@ -353,9 +467,12 @@ async function updateChunkAttemptsInDB(sessionId, index, attempts) {
 }
 
 async function cleanOldChunks(currentSessionId) {
+    const retentionMs = 7 * 24 * 60 * 60 * 1000;
+    const cutoff = Date.now() - retentionMs;
     if (useMemoryStorage) {
         Object.keys(memoryChunks).forEach(key => {
-            if (memoryChunks[key].session_id !== currentSessionId) {
+            const record = memoryChunks[key];
+            if (record.session_id !== currentSessionId && record.uploaded === true && record.updated_at && record.updated_at < cutoff) {
                 delete memoryChunks[key];
             }
         });
@@ -369,7 +486,7 @@ async function cleanOldChunks(currentSessionId) {
         req.onsuccess = () => {
             const all = req.result || [];
             all.forEach(item => {
-                if (item.session_id !== currentSessionId) {
+                if (item.session_id !== currentSessionId && item.uploaded === true && item.updated_at && item.updated_at < cutoff) {
                     store.delete(item.key);
                 }
             });
@@ -378,15 +495,143 @@ async function cleanOldChunks(currentSessionId) {
         console.warn("[DB] Failed to clean up old chunks. Falling back to memory storage.", e);
         useMemoryStorage = true;
         Object.keys(memoryChunks).forEach(key => {
-            if (memoryChunks[key].session_id !== currentSessionId) {
+            const record = memoryChunks[key];
+            if (record.session_id !== currentSessionId && record.uploaded === true && record.updated_at && record.updated_at < cutoff) {
                 delete memoryChunks[key];
             }
         });
     }
 }
 
+async function requestRecordingStoragePersistence() {
+    if (!navigator.storage) return;
+    try {
+        const alreadyPersistent = typeof navigator.storage.persisted === 'function'
+            ? await navigator.storage.persisted()
+            : false;
+        const persistent = alreadyPersistent || (typeof navigator.storage.persist === 'function' && await navigator.storage.persist());
+        const estimate = typeof navigator.storage.estimate === 'function'
+            ? await navigator.storage.estimate()
+            : null;
+        const available = estimate && Number.isFinite(estimate.quota) && Number.isFinite(estimate.usage)
+            ? Math.max(0, estimate.quota - estimate.usage)
+            : null;
+        console.log(`[Storage] Persistent=${persistent ? 'yes' : 'no'}${available === null ? '' : `; available=${Math.round(available / 1024 / 1024)}MB`}`);
+        if (available !== null && available < 150 * 1024 * 1024) {
+            logProctorEvent('storage_warning', `Only ${Math.round(available / 1024 / 1024)}MB of browser recording storage was available at exam start. Offline recovery may be limited.`);
+        }
+    } catch (err) {
+        console.warn('[Storage] Could not request persistent recording storage:', err && err.message);
+    }
+}
+
+async function storedChunkToBase64(record) {
+    if (!record || !record.data) return null;
+    if (typeof record.data === 'string') return record.data;
+    if (typeof Blob !== 'undefined' && record.data instanceof Blob) return await blobToBase64(record.data);
+    return null;
+}
+
+async function getServerChunkReceipt(sessionId, totalChunks, kind = 'primary') {
+    const response = await fetch('/api/session/chunk-receipt', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+            exam_session_id: sessionId,
+            total_chunks: totalChunks,
+            recording_kind: normalizeRecordingKind(kind),
+            token: sessionToken
+        })
+    });
+    if (!response.ok) throw new Error(`Chunk receipt check failed (HTTP ${response.status})`);
+    return await response.json();
+}
+
+async function recoverPreviousSessionRecordings(currentSessionId) {
+    const all = await getAllChunksFromDB();
+    const groups = new Map();
+    for (const record of all) {
+        if (!record || record.session_id === currentSessionId) continue;
+        if (!groups.has(record.session_id)) groups.set(record.session_id, []);
+        groups.get(record.session_id).push(record);
+    }
+
+    for (const [oldSessionId, records] of Array.from(groups.entries()).slice(0, 3)) {
+        try {
+            const byKind = new Map();
+            for (const record of records) {
+                const kind = chunkRecordKind(record);
+                if (!byKind.has(kind)) byKind.set(kind, []);
+                byKind.get(kind).push(record);
+            }
+            const totals = { primary: 0, camera: 0 };
+            for (const [kind, kindRecords] of byKind.entries()) {
+                kindRecords.sort((a, b) => a.index - b.index);
+                const highest = kindRecords[kindRecords.length - 1].index;
+                totals[kind] = highest;
+                let receipt = await getServerChunkReceipt(oldSessionId, highest, kind);
+                for (const index of receipt.missing_indexes || []) {
+                    const record = kindRecords.find(item => item.index === index);
+                    const data = await storedChunkToBase64(record);
+                    if (!data) throw new Error(`Local ${kind} recovery chunk #${index} is unavailable`);
+                    const response = await fetch('/api/session/upload-chunk', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            exam_session_id: oldSessionId,
+                            chunk_index: index,
+                            recording_kind: kind,
+                            base64_video: data,
+                            token: sessionToken
+                        })
+                    });
+                    if (!response.ok) throw new Error(`Recovery upload of ${kind} chunk #${index} failed (HTTP ${response.status})`);
+                    await markChunkUploadedInDB(oldSessionId, index, kind);
+                }
+                receipt = await getServerChunkReceipt(oldSessionId, highest, kind);
+                if (!receipt.complete) throw new Error(`${receipt.missing_indexes.length} ${kind} recovery chunk(s) are still missing`);
+            }
+
+            const finalResponse = await fetch('/api/session/end', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    exam_session_id: oldSessionId,
+                    status: 'completed',
+                    total_chunks: totals.primary,
+                    camera_total_chunks: totals.camera,
+                    token: sessionToken
+                })
+            });
+            if (!finalResponse.ok) throw new Error(`Recovered session finalization failed (HTTP ${finalResponse.status})`);
+            await deleteSessionChunksFromDB(oldSessionId);
+            console.log(`[Recovery] Session ${oldSessionId} was restored from device storage.`);
+        } catch (err) {
+            // A shared device may contain chunks owned by a different Canvas user.
+            // The server correctly refuses those; preserve them for their owner.
+            console.warn(`[Recovery] Session ${oldSessionId} remains on this device:`, err && err.message);
+        }
+    }
+}
+
 let videoStream = null;
 let screenStream = null;
+// The same canvas that feeds MediaRecorder also feeds the teacher's low-bandwidth
+// live snapshots. Keeping the source shared guarantees the still image represents
+// the uploaded evidence (screen plus webcam inset) instead of the hidden webcam
+// element that happened to be used by the AI loop.
+let activeCompositeCanvas = null;
+let screenCaptureProbe = {
+    attempted: false,
+    apiAvailable: false,
+    success: false,
+    isSEB: false,
+    surface: 'unknown',
+    width: 0,
+    height: 0,
+    errorName: '',
+    errorMessage: ''
+};
 let compositeAnimationId = null;
 let isExamCompleted = false;
 let examWatchdogInterval = null;
@@ -396,7 +641,6 @@ let talkingStartTimestamp = null;
 let isCurrentlyTalking = false;
 let urlParams = new URLSearchParams(window.location.search);
 let sessionToken = urlParams.get('token');
-let isSebParam = urlParams.get('seb') === 'true';
 let autoExamCode = urlParams.get('exam_code');
 let placementId = urlParams.get('placement_id');
 let directExamId = urlParams.get('exam_id');
@@ -534,7 +778,7 @@ async function verifyExamCode() {
     try {
         const res = await fetch('/api/exams/verify-code', {
             method: 'POST', headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ exam_code: code, token: sessionToken })
+            body: JSON.stringify({ exam_code: code, token: sessionToken, device_profile: buildDeviceProfile() })
         });
         
         const data = await res.json();
@@ -570,7 +814,7 @@ async function verifyPlacement(pId, eId = null) {
     try {
         const res = await fetch('/api/exams/verify-placement', {
             method: 'POST', headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ placement_id: pId, exam_id: eId, token: sessionToken })
+            body: JSON.stringify({ placement_id: pId, exam_id: eId, token: sessionToken, device_profile: buildDeviceProfile() })
         });
         
         const data = await res.json();
@@ -641,6 +885,185 @@ function getClientProfile() {
     };
 }
 
+const DEVICE_INSTANCE_STORAGE_KEY = 'proctorguard-device-instance-v1';
+
+function getDeviceInstanceId() {
+    try {
+        let value = localStorage.getItem(DEVICE_INSTANCE_STORAGE_KEY);
+        if (!value) {
+            const randomPart = globalThis.crypto && typeof globalThis.crypto.randomUUID === 'function'
+                ? globalThis.crypto.randomUUID()
+                : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}-${Math.random().toString(36).slice(2)}`;
+            value = `pg-device-${randomPart}`;
+            localStorage.setItem(DEVICE_INSTANCE_STORAGE_KEY, value);
+        }
+        return value;
+    } catch (_) {
+        // SEB may disable localStorage in an unusually restrictive profile. Keep a
+        // page-lifetime id so the server can reject the missing continuity signal
+        // cleanly instead of silently accepting an empty device identity.
+        if (!window.__pgFallbackDeviceId) {
+            window.__pgFallbackDeviceId = `pg-device-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}-${Math.random().toString(36).slice(2)}`;
+        }
+        return window.__pgFallbackDeviceId;
+    }
+}
+
+function buildDeviceProfile({ screenCaptureActive = false } = {}) {
+    const profile = getClientProfile();
+    return {
+        instance_id: getDeviceInstanceId(),
+        platform: navigator.platform || '',
+        max_touch_points: navigator.maxTouchPoints || 0,
+        screen_width: window.screen ? window.screen.width : 0,
+        screen_height: window.screen ? window.screen.height : 0,
+        has_display_capture: !!(navigator.mediaDevices && typeof navigator.mediaDevices.getDisplayMedia === 'function'),
+        screen_capture_active: screenCaptureActive,
+        is_seb: profile.isSEB
+    };
+}
+
+function hasActiveScreenCapture() {
+    return !!(localScreenStream && localScreenStream.getVideoTracks &&
+        localScreenStream.getVideoTracks().some(track => track.readyState === 'live'));
+}
+
+function stopSessionHeartbeat() {
+    if (sessionHeartbeatInterval) clearInterval(sessionHeartbeatInterval);
+    sessionHeartbeatInterval = null;
+}
+
+async function sendSessionHeartbeat() {
+    if (!sessionInfo || !sessionInfo.id || isExamCompleted || !navigator.onLine) return;
+    try {
+        const response = await fetch('/api/session/heartbeat', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                exam_session_id: sessionInfo.id,
+                token: sessionToken,
+                device_profile: buildDeviceProfile({ screenCaptureActive: hasActiveScreenCapture() })
+            })
+        });
+        const data = await response.json().catch(() => ({}));
+        if (response.status === 423 || data.resume_approval_required) {
+            showResumeApprovalRequired(data);
+            return;
+        }
+        if (response.status === 403) {
+            if (data.code === 'SCREEN_CAPTURE_NOT_ACTIVE') {
+                // The screen track's own `ended` handler already displays the
+                // actionable re-share control. Keep heartbeats running so the next
+                // successful share clears the server-side requirement naturally.
+                return;
+            }
+            stopSessionHeartbeat();
+            const overlay = document.getElementById('resume-approval-overlay');
+            const title = document.getElementById('resume-approval-title');
+            const desc = document.getElementById('resume-approval-desc');
+            if (title) title.textContent = 'Device Requirement No Longer Met';
+            if (desc) desc.textContent = data.error || 'This device no longer meets the exam security policy.';
+            if (overlay) overlay.style.display = 'flex';
+        }
+    } catch (_) {
+        // Offline is expected. Recorder chunks remain in IndexedDB and the next
+        // heartbeat is attempted automatically after connectivity returns.
+    }
+}
+
+function startSessionHeartbeat() {
+    stopSessionHeartbeat();
+    sendSessionHeartbeat();
+    sessionHeartbeatInterval = setInterval(sendSessionHeartbeat, 15000);
+}
+
+function showResumeApprovalRequired(data) {
+    const sessionId = Number(data && data.session_id) || (sessionInfo && sessionInfo.id);
+    if (!sessionId) return;
+    blockedResumeSessionId = sessionId;
+    stopSessionHeartbeat();
+
+    const overlay = document.getElementById('resume-approval-overlay');
+    const title = document.getElementById('resume-approval-title');
+    const desc = document.getElementById('resume-approval-desc');
+    if (title) title.textContent = 'Instructor Approval Required';
+    if (desc) {
+        desc.textContent = data.error ||
+            'This attempt was interrupted or moved to another device. Your recording is preserved, but the exam stays paused until your instructor approves the resume.';
+    }
+    if (overlay) overlay.style.display = 'flex';
+
+    if (resumeApprovalPollInterval) clearInterval(resumeApprovalPollInterval);
+    resumeApprovalPollInterval = setInterval(pollResumeApproval, 5000);
+    pollResumeApproval();
+}
+
+async function pollResumeApproval() {
+    if (!blockedResumeSessionId || !navigator.onLine) return;
+    try {
+        const response = await fetch(`/api/session/${blockedResumeSessionId}/resume-status?token=${encodeURIComponent(sessionToken)}`);
+        const data = await response.json();
+        if (response.ok && !data.resume_approval_required) resumeAfterInstructorApproval();
+    } catch (_) {}
+}
+
+function resumeAfterInstructorApproval() {
+    if (resumeApprovalPollInterval) clearInterval(resumeApprovalPollInterval);
+    resumeApprovalPollInterval = null;
+    blockedResumeSessionId = null;
+    const overlay = document.getElementById('resume-approval-overlay');
+    if (overlay) overlay.style.display = 'none';
+
+    if (isProctoringStarted && sessionInfo && sessionInfo.id) {
+        socket.emit('join_student', {
+            exam_id: examConfig.id,
+            exam_session_id: sessionInfo.id,
+            student_name: sessionInfo.student_name
+        });
+        startSessionHeartbeat();
+        return;
+    }
+
+    isStartingExam = false;
+    const btn = document.getElementById('btn-begin-exam');
+    if (btn) {
+        btn.disabled = false;
+        btn.innerText = 'Begin Exam Now';
+    }
+    startMainExamSession();
+}
+
+function getScreenCaptureDecision(exam, client) {
+    const policy = globalThis.ProctorGuardSebCapturePolicy;
+    const mediaDevices = navigator.mediaDevices || null;
+
+    if (policy && typeof policy.evaluateScreenCapture === 'function') {
+        return policy.evaluateScreenCapture(exam, client, mediaDevices);
+    }
+
+    // Fail closed if the small policy helper did not load: ordinary browsers keep
+    // their historic behavior, while SEB never gains capture unless its JSON policy
+    // explicitly opted in.
+    let settings = exam && exam.seb_settings ? exam.seb_settings : {};
+    if (typeof settings === 'string') {
+        try { settings = JSON.parse(settings); } catch (_) { settings = {}; }
+    }
+    if (!settings || typeof settings !== 'object' || Array.isArray(settings)) settings = {};
+
+    const requested = !!(exam && (exam.require_screen || exam.verify_desktop));
+    const isSebClient = !!(client && client.isSEB);
+    const isMobileClient = !!(client && client.isMobileClient);
+    const sebOptIn = isSebClient && settings.allow_screen_capture === true;
+    return {
+        requested,
+        isSeb: isSebClient,
+        isMobile: isMobileClient,
+        sebOptIn,
+        apiAvailable: !!(mediaDevices && typeof mediaDevices.getDisplayMedia === 'function'),
+        requireScreen: requested && !isMobileClient && (!isSebClient || sebOptIn)
+    };
+}
+
 function getEffectiveRequirements(exam, client) {
     exam = exam || examConfig || {};
     client = client || getClientProfile();
@@ -653,6 +1076,7 @@ function getEffectiveRequirements(exam, client) {
     // dead-ends (even soft exams without allow_mobile_devices). Extension
     // requirement is only waived when mobileMode (allow_mobile_devices on).
     const onPhoneOrTablet = !!client.isMobileClient;
+    const screenCapture = getScreenCaptureDecision(exam, client);
 
     return {
         mobileMode,
@@ -663,8 +1087,11 @@ function getEffectiveRequirements(exam, client) {
         requireExtension: !PG_EXTENSION_ENFORCEMENT_DISABLED && !!(exam.require_extension && !mobileMode && !client.isCompanion),
         // Companion is a Windows desktop app — never waived for mobile
         requireCompanion: !!(exam.require_companion_app && !client.isCompanion),
-        // Screen share / multi-monitor / forced fullscreen are desktop concepts
-        requireScreen: !!((exam.require_screen || exam.verify_desktop) && !client.isSEB && !onPhoneOrTablet),
+        // Screen share remains a desktop concept. SEB normally supplies kiosk
+        // isolation instead, but the teacher can explicitly opt into the capture
+        // experiment. That adds the normal getDisplayMedia step back inside SEB.
+        requireScreen: screenCapture.requireScreen,
+        screenCapture,
         // Safe Exam Browser is already a kiosk: the window is full-screen, enforced at
         // the OS level, and the student cannot leave it. Asking for the Fullscreen API
         // on top of that is not just redundant — SEB may treat requestFullscreen() as a
@@ -1229,6 +1656,8 @@ function goToStep(step) {
         case 7:
             // SCREEN SHARE
             const ios = isIOS();
+            const captureDecision = getEffectiveRequirements(examConfig).screenCapture;
+            const sebCaptureExperiment = captureDecision.isSeb && captureDecision.sebOptIn;
             contentEl.innerHTML = `
                 <div>
                     <h2 class="step-title">Screen Share</h2>
@@ -1240,14 +1669,25 @@ function goToStep(step) {
                         <p class="step-description">
                             You must share your <strong>ENTIRE SCREEN</strong> (not just a window or Chrome tab) to secure the exam session.
                         </p>
+                        ${sebCaptureExperiment ? `
+                            <div style="margin: 12px 0; padding: 12px 14px; border: 1px solid ${captureDecision.apiAvailable ? 'rgba(16,185,129,.35)' : 'rgba(239,68,68,.35)'}; border-radius: 8px; background: ${captureDecision.apiAvailable ? 'rgba(16,185,129,.08)' : 'rgba(239,68,68,.08)'}; font-size: 12px; line-height: 1.55; color: #475569;">
+                                <strong style="display:block; color:#1e293b; margin-bottom:3px;">SEB screen-capture experiment</strong>
+                                <span id="screen-capture-api-status">Native display-capture API: <strong>${captureDecision.apiAvailable ? 'detected' : 'not exposed by this SEB build'}</strong>.</span>
+                                ${captureDecision.apiAvailable ? ' Select the SEB screen/window when prompted. A frozen proof image will appear below before the exam can start.' : ' This SEB build cannot provide a web screen stream, so ProctorGuard cannot make a browser-based recording on this device.'}
+                            </div>
+                        ` : ''}
                         <div id="screenshare-status" style="font-weight: bold; color: #10b981; margin: 15px 0;">
                             ${localScreenStream ? '✓ Screen Share Active' : 'Screen share not yet active'}
                         </div>
+                        ${sebCaptureExperiment ? `
+                            <div id="screen-capture-test-result" style="display:none; margin-top:12px; font-size:12px; font-weight:600; color:#059669;">Frozen screen proof captured successfully.</div>
+                            <img id="screen-capture-test-image" alt="Frozen proof frame from the selected SEB screen" style="display:none; width:100%; max-width:640px; margin-top:8px; border:1px solid #cbd5e1; border-radius:8px; background:#0f172a;" />
+                        ` : ''}
                     `}
                     <div id="step-error" style="color: var(--danger); font-size: 14px; margin-top: 10px; display: none;"></div>
                 </div>
                 <div style="display: flex; justify-content: flex-end; gap: 15px; margin-top: 20px;">
-                    ${ios ? '' : `<button class="btn btn-primary" onclick="requestScreenShareStep()" style="${localScreenStream ? 'display:none;' : ''}">Share Entire Screen</button>`}
+                    ${ios ? '' : `<button class="btn btn-primary" onclick="requestScreenShareStep()" style="${localScreenStream ? 'display:none;' : ''}">${sebCaptureExperiment ? 'Test & Share SEB Screen' : 'Share Entire Screen'}</button>`}
                     <button id="btn-next-step" class="btn btn-primary" style="background:#2563eb; color:white; border:none;" onclick="goToStep(getNextStep(7))" ${ios || localScreenStream ? '' : 'disabled'}>Next Step</button>
                 </div>
             `;
@@ -1815,23 +2255,119 @@ function requestFullscreenStep() {
         });
 }
 
-async function requestScreenShareStep() {
+async function renderScreenCaptureProof(stream) {
+    const resultEl = document.getElementById('screen-capture-test-result');
+    const imageEl = document.getElementById('screen-capture-test-image');
+    const video = document.createElement('video');
+
     try {
-        localScreenStream = await navigator.mediaDevices.getDisplayMedia({
-            video: { cursor: "always", width: { max: 1280 }, height: { max: 720 }, frameRate: { max: 15 } },
+        video.muted = true;
+        video.playsInline = true;
+        video.srcObject = stream;
+        await video.play();
+
+        const waitStarted = Date.now();
+        while (Date.now() - waitStarted < 2500 && (!video.videoWidth || !video.videoHeight)) {
+            await new Promise(resolve => setTimeout(resolve, 50));
+        }
+        if (!video.videoWidth || !video.videoHeight) {
+            throw new Error('The stream opened but did not produce a visible frame.');
+        }
+
+        const canvas = document.createElement('canvas');
+        canvas.width = 640;
+        canvas.height = 360;
+        const ctx = canvas.getContext('2d', { alpha: false });
+        ctx.fillStyle = '#0f172a';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+        const scale = Math.min(canvas.width / video.videoWidth, canvas.height / video.videoHeight);
+        const width = Math.round(video.videoWidth * scale);
+        const height = Math.round(video.videoHeight * scale);
+        const x = Math.round((canvas.width - width) / 2);
+        const y = Math.round((canvas.height - height) / 2);
+        ctx.drawImage(video, x, y, width, height);
+
+        if (imageEl) {
+            imageEl.src = canvas.toDataURL('image/jpeg', 0.72);
+            imageEl.style.display = 'block';
+        }
+        if (resultEl) {
+            resultEl.textContent = '✓ Frozen proof captured. This screen can be recorded and streamed to the teacher view.';
+            resultEl.style.display = 'block';
+            resultEl.style.color = '#059669';
+        }
+        return true;
+    } catch (error) {
+        console.warn('[SEB Capture] Stream opened, but the frozen proof frame failed:', error);
+        if (resultEl) {
+            resultEl.textContent = `Screen stream opened, but a frozen proof image could not be drawn: ${error.message}`;
+            resultEl.style.display = 'block';
+            resultEl.style.color = '#b45309';
+        }
+        return false;
+    } finally {
+        video.pause();
+        video.srcObject = null;
+    }
+}
+
+async function requestScreenShareStep() {
+    const client = getClientProfile();
+    const mediaDevices = navigator.mediaDevices || null;
+    const apiAvailable = !!(mediaDevices && typeof mediaDevices.getDisplayMedia === 'function');
+
+    screenCaptureProbe = {
+        attempted: true,
+        apiAvailable,
+        success: false,
+        proofCaptured: false,
+        isSEB: client.isSEB,
+        surface: 'unknown',
+        width: 0,
+        height: 0,
+        errorName: '',
+        errorMessage: ''
+    };
+
+    try {
+        if (!apiAvailable) {
+            const unsupported = new Error('This SEB build does not expose the browser display-capture API (getDisplayMedia). Browser-based SEB screen recording is unavailable on this device.');
+            unsupported.name = 'NotSupportedError';
+            throw unsupported;
+        }
+
+        localScreenStream = await mediaDevices.getDisplayMedia({
+            video: { cursor: 'always', width: { max: 1280 }, height: { max: 720 }, frameRate: { max: 15 } },
             audio: false
         });
-        
+
         const track = localScreenStream.getVideoTracks()[0];
-        if (track && 'contentHint' in track) {
+        if (!track) {
+            throw new Error('The capture API returned no screen video track.');
+        }
+        if ('contentHint' in track) {
             track.contentHint = 'detail';
         }
-        const settings = track.getSettings();
-        if (settings.displaySurface && settings.displaySurface !== 'monitor') {
+
+        const settings = track.getSettings ? track.getSettings() : {};
+        const surface = settings.displaySurface || 'unknown';
+        // A standard browser must share the whole monitor. Inside SEB, accept the
+        // SEB window/browser surface too: some SEB Chromium builds may expose only
+        // their protected window, which is exactly the surface this experiment is
+        // trying to record.
+        if (!client.isSEB && surface !== 'unknown' && surface !== 'monitor') {
             track.stop();
-            throw new Error("You must share your ENTIRE SCREEN, not just a window or tab.");
+            localScreenStream = null;
+            throw new Error('You must share your ENTIRE SCREEN, not just a window or tab.');
         }
-        
+
+        screenCaptureProbe.success = true;
+        screenCaptureProbe.surface = surface;
+        screenCaptureProbe.width = Number(settings.width) || 0;
+        screenCaptureProbe.height = Number(settings.height) || 0;
+        screenCaptureProbe.proofCaptured = await renderScreenCaptureProof(localScreenStream);
+
         track.onended = () => {
             localScreenStream = null;
             if (currentStep === 7) {
@@ -1840,17 +2376,27 @@ async function requestScreenShareStep() {
                 if (nextBtn) nextBtn.disabled = true;
                 if (ssBtn) ssBtn.style.display = 'inline-block';
                 const statusEl = document.getElementById('screenshare-status');
-                if (statusEl) statusEl.innerHTML = "Screen share not yet active";
+                if (statusEl) statusEl.innerHTML = 'Screen share not yet active';
             }
         };
-        
-        document.getElementById('screenshare-status').innerHTML = "✓ Screen Share Active";
+
+        const details = [surface !== 'unknown' ? surface : null, settings.width && settings.height ? `${settings.width}×${settings.height}` : null]
+            .filter(Boolean)
+            .join(', ');
+        const statusEl = document.getElementById('screenshare-status');
+        if (statusEl) statusEl.textContent = `✓ Screen capture active${details ? ` (${details})` : ''}`;
+        const apiStatus = document.getElementById('screen-capture-api-status');
+        if (apiStatus) apiStatus.textContent = `Native display-capture API succeeded${details ? `: ${details}` : ''}.`;
         document.getElementById('btn-next-step').disabled = false;
-        
+
         const ssBtn = document.querySelector('button[onclick="requestScreenShareStep()"]');
         if (ssBtn) ssBtn.style.display = 'none';
     } catch (screenErr) {
-        showStepError(screenErr.message);
+        screenCaptureProbe.errorName = screenErr.name || 'Error';
+        screenCaptureProbe.errorMessage = screenErr.message || String(screenErr);
+        const apiStatus = document.getElementById('screen-capture-api-status');
+        if (apiStatus) apiStatus.textContent = `Capture failed: ${screenCaptureProbe.errorName} — ${screenCaptureProbe.errorMessage}`;
+        showStepError(screenCaptureProbe.errorMessage);
     }
 }
 
@@ -1877,12 +2423,22 @@ async function startMainExamSession() {
         console.log("[Session] Registering session on backend...");
         const sessionRes = await fetch('/api/session/start', {
             method: 'POST', headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ exam_id: examConfig.id, token: sessionToken })
+            body: JSON.stringify({
+                exam_id: examConfig.id,
+                token: sessionToken,
+                device_profile: buildDeviceProfile({ screenCaptureActive: hasActiveScreenCapture() })
+            })
         });
-        sessionInfo = await sessionRes.json();
-        if (!sessionRes.ok || sessionInfo.error) {
-            throw new Error(sessionInfo.error || "Session authentication failed");
+        const sessionPayload = await sessionRes.json();
+        if (sessionRes.status === 423 || sessionPayload.resume_approval_required) {
+            isStartingExam = false;
+            showResumeApprovalRequired(sessionPayload);
+            return;
         }
+        if (!sessionRes.ok || sessionPayload.error) {
+            throw new Error(sessionPayload.error || "Session authentication failed");
+        }
+        sessionInfo = sessionPayload;
         if (sessionInfo.next_chunk_index !== undefined) {
             chunkIndex = sessionInfo.next_chunk_index;
             console.log(`[Resume] Setting chunkIndex to ${chunkIndex}`);
@@ -1945,24 +2501,36 @@ async function startMainExamSession() {
             }
         }
 
-        // Clean up chunks from any old sessions to save disk space
+        // Ask the browser not to evict recording data under storage pressure. This
+        // is best-effort (especially on iOS), but when granted it makes reconnect
+        // recovery materially safer.
+        await requestRecordingStoragePersistence();
+
+        // Keep recent old-session chunks until their server receipt is verified.
+        // A background recovery pass can finish an upload after Wi-Fi returns or
+        // after SEB is reopened.
         await cleanOldChunks(sessionInfo.id);
+        recoverPreviousSessionRecordings(sessionInfo.id).catch(err => console.warn('[Recovery] Background recovery failed:', err));
 
         // Recover any pending chunks in IndexedDB for the current session
+        const allCurrentChunks = await getSessionChunksFromDB(sessionInfo.id);
         const pending = await getPendingChunksFromDB(sessionInfo.id);
         if (pending.length > 0) {
             console.log(`[DB] Found ${pending.length} pending chunks in IndexedDB for current session. Restoring queue.`);
-            uploadQueue = pending.map(p => ({ index: p.index, attempts: p.attempts }));
-            
-            // Sync chunkIndex to the highest pending chunk index if it's greater to avoid collision
-            const maxIdx = Math.max(...pending.map(p => p.index));
-            if (maxIdx > chunkIndex) {
-                chunkIndex = maxIdx;
-                console.log(`[DB] Adjusted chunkIndex to ${chunkIndex} based on pending chunks.`);
-            }
-            
+            uploadQueue = pending.map(p => ({ index: p.index, kind: chunkRecordKind(p), attempts: p.attempts || 0, persisted: true }));
             // Start processing the restored queue
             processUploadQueue();
+        }
+        if (allCurrentChunks.length > 0) {
+            const primaryChunks = allCurrentChunks.filter(p => chunkRecordKind(p) === 'primary');
+            const cameraChunks = allCurrentChunks.filter(p => chunkRecordKind(p) === 'camera');
+            const maxIdx = primaryChunks.length ? Math.max(...primaryChunks.map(p => p.index)) : 0;
+            const maxCameraIdx = cameraChunks.length ? Math.max(...cameraChunks.map(p => p.index)) : 0;
+            if (maxIdx > chunkIndex) {
+                chunkIndex = maxIdx;
+                console.log(`[DB] Adjusted chunkIndex to ${chunkIndex} based on device-stored chunks.`);
+            }
+            if (maxCameraIdx > cameraChunkIndex) cameraChunkIndex = maxCameraIdx;
         }
 
         if (isIOS()) {
@@ -2418,6 +2986,7 @@ async function startProctoring() {
         
         videoStream = localCamStream;
         screenStream = localScreenStream;
+        primaryRecordingKind = screenStream && screenStream.getVideoTracks().length > 0 ? 'screen' : 'camera';
 
         if (screenStream && screenStream.getVideoTracks().length > 0) {
             const screenTrack = screenStream.getVideoTracks()[0];
@@ -2488,15 +3057,21 @@ async function startProctoring() {
                         });
                     }
                     finalStream = new MediaStream(tracks);
+                    primaryRecordingKind = screenStream ? 'composite' : 'camera';
                 } else {
                     throw mediaErr;
                 }
             }
         } else {
-            // Desktop: composite layout (screen + webcam sidebar + status flags)
-            console.log("[Media] Initializing composite track layout...");
+            // Keep the composite canvas for live teacher snapshots, but record the
+            // screen and camera independently. Reviewers can enlarge either source
+            // without the webcam being baked into a small screen-recording sidebar.
+            console.log("[Media] Initializing independent screen and camera recordings...");
             compositeStream = await createCompositeTrack(screenStream, videoStream);
-            compositeStream.getTracks().forEach(t => {
+            const primaryVideoSource = screenStream && screenStream.getVideoTracks().length > 0
+                ? screenStream
+                : videoStream;
+            (primaryVideoSource ? primaryVideoSource.getVideoTracks() : []).forEach(t => {
                 if (!addedTrackIds.has(t.id)) {
                     tracks.push(t);
                     addedTrackIds.add(t.id);
@@ -2513,6 +3088,7 @@ async function startProctoring() {
                 });
             }
             finalStream = new MediaStream(tracks);
+            primaryRecordingKind = screenStream && screenStream.getVideoTracks().length > 0 ? 'screen' : 'camera';
         }
         console.log(`[Media] Final stream ready with ${finalStream ? finalStream.getVideoTracks().length : 0} video and ${finalStream ? finalStream.getAudioTracks().length : 0} audio tracks.`);
 
@@ -2522,11 +3098,26 @@ async function startProctoring() {
 
         if (sessionInfo && sessionInfo.id && mediaRecorder) {
             const mimeType = mediaRecorder.mimeType || 'video/webm';
-            fetch(`/api/session/${sessionInfo.id}/format`, {
-                method: 'PATCH',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ mime_type: mimeType, token: sessionToken })
-            }).catch(err => console.warn("[Format] Handshake failed."));
+            const cameraMimeType = cameraRecorder ? (cameraRecorder.mimeType || 'video/webm') : null;
+            try {
+                const formatResponse = await fetch(`/api/session/${sessionInfo.id}/format`, {
+                    method: 'PATCH',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        mime_type: mimeType,
+                        camera_mime_type: cameraMimeType,
+                        primary_recording_kind: primaryRecordingKind,
+                        token: sessionToken
+                    })
+                });
+                if (!formatResponse.ok) throw new Error(`HTTP ${formatResponse.status}`);
+            } catch (err) {
+                // Recording can still continue and the camera file itself lets the
+                // reviewer infer a split-source attempt, but make the metadata issue
+                // visible for forensic review.
+                console.warn("[Format] Recording source handshake failed:", err && err.message);
+                logProctorEvent('system_error', 'Recording source metadata could not be confirmed before capture began.');
+            }
         }
 
         console.log("[Media] Warming up tracks for stable recording...");
@@ -2542,6 +3133,8 @@ async function startProctoring() {
             // attempt. Three costs ~1.7x the request count, which the upload path
             // comfortably handles now that chunks are small and retries persist.
             mediaRecorder.start(3000);
+            if (cameraRecorder) cameraRecorder.start(3000);
+            recordingStartPerformanceMs = performance.now();
             console.log("[Recorder] Session recording started with 3s slices.");
             // Tell the server the footage timeline starts now. Everything that
             // compares video length to attempt length anchors here, so the setup
@@ -2561,6 +3154,7 @@ async function startProctoring() {
             exam_session_id: sessionInfo.id,
             student_name: sessionInfo.student_name
         });
+        startSessionHeartbeat();
 
         socket.emit('laptop_begin_exam', { token: sessionToken });
 
@@ -2592,6 +3186,12 @@ async function startProctoring() {
         const plat = getClientProfile();
         const platformLabel = plat.isIOS ? 'iOS/iPad' : (plat.isAndroid ? 'Android' : (plat.isMobileClient ? 'Mobile' : 'Desktop'));
         logProctorEvent('client_platform', `Client: ${platformLabel}; UA: ${(navigator.userAgent || '').slice(0, 180)}`);
+        if (runtimeEff.screenCapture.isSeb && runtimeEff.screenCapture.sebOptIn) {
+            const probeSummary = screenCaptureProbe.success
+                ? `SUCCESS; API exposed; surface=${screenCaptureProbe.surface}; resolution=${screenCaptureProbe.width || '?'}x${screenCaptureProbe.height || '?'}; frozen_proof=${screenCaptureProbe.proofCaptured ? 'yes' : 'no'}`
+                : `FAILED; API exposed=${screenCaptureProbe.apiAvailable ? 'yes' : 'no'}; ${screenCaptureProbe.errorName || 'NoErrorName'}: ${screenCaptureProbe.errorMessage || 'No screen stream was acquired'}`;
+            logProctorEvent('seb_screen_capture_probe', `SEB browser capture experiment: ${probeSummary}`);
+        }
         if (plat.isMobileClient) {
             logProctorEvent(
                 'mobile_browser_mode',
@@ -2600,9 +3200,12 @@ async function startProctoring() {
             setupMobileIntegrityMonitoring();
         }
         if ((examConfig.require_screen || examConfig.verify_desktop) && !localScreenStream) {
+            const unavailableMessage = plat.isSEB
+                ? `SEB screen capture was requested but no display stream is active. API exposed=${screenCaptureProbe.apiAvailable ? 'yes' : 'no'}; ${screenCaptureProbe.errorName || 'capture unavailable'}: ${screenCaptureProbe.errorMessage || 'no screen track'}. Review webcam/audio evidence carefully.`
+                : 'Screen share was enabled for this exam but could not be captured on this device (common on phones/tablets). Review webcam/audio and app-switch events carefully.';
             logProctorEvent(
                 'screen_share_unavailable',
-                'Screen share was enabled for this exam but could not be captured on this device (common on phones/tablets). Review webcam/audio and app-switch events carefully.'
+                unavailableMessage
             );
         }
         
@@ -2631,10 +3234,11 @@ async function startProctoring() {
 }
 
 function isSEB() {
-    // Check User Agent or our explicit URL flag
-    // We NO LONGER check for just !!sessionToken here because that was causing 
-    // loops/premature prompts in regular Chrome.
-    return navigator.userAgent.includes('SafeExamBrowser') || isSebParam;
+    // SEB 3.x appends "SEB/<version>" to the Chromium user agent. Older
+    // releases used the longer product name. Never trust ?seb=true here: query
+    // parameters are student-controlled and made the old client gate trivial to
+    // bypass in ordinary Chrome. /api/session/start repeats this check server-side.
+    return /(?:SafeExamBrowser|(?:^|\s)SEB\/\d)/i.test(navigator.userAgent || '');
 }
 
 function showSEBBlocker() {
@@ -2747,38 +3351,75 @@ function setupRecording() {
         options.mimeType = mimeType;
     }
 
-    mediaRecorder = new MediaRecorder(finalStream, options);
-    mediaRecorder.ondataavailable = async (e) => {
+    const preserveRecordedChunk = async (e, kind = 'primary') => {
         if (e.data && e.data.size > 0 && sessionInfo && sessionInfo.id) {
-            // CRITICAL: Capture the current index locally to prevent race conditions during upload
-            const currentIndex = ++chunkIndex;
+            const recordingKind = normalizeRecordingKind(kind);
+            // Each source has its own ordered index sequence and durable namespace.
+            const currentIndex = recordingKind === 'camera' ? ++cameraChunkIndex : ++chunkIndex;
             activeUploads++; // Increment to track that file reading/db writing is in progress
 
             try {
-                const base64Data = await blobToBase64(e.data);
-
-                console.log(`[Recorder] Saving chunk #${currentIndex} (${e.data.size} bytes) to IndexedDB...`);
-                const saved = await saveChunkToDB(sessionInfo.id, currentIndex, base64Data);
+                console.log(`[Recorder] Saving ${recordingKind} chunk #${currentIndex} (${e.data.size} bytes) to IndexedDB...`);
+                // Store the Blob itself: base64 costs roughly 33% more disk, which is
+                // exactly the wrong trade-off for a long exam that must survive being
+                // offline. Conversion is only needed for the JSON upload request.
+                const saved = await saveChunkToDB(sessionInfo.id, currentIndex, e.data, recordingKind);
+                let base64Data = null;
+                try {
+                    base64Data = await blobToBase64(e.data);
+                } catch (readErr) {
+                    // The Blob is already durable. Queue it without a memory copy so
+                    // the processor can read and convert it again from IndexedDB.
+                    console.warn(`[Recorder] Immediate conversion of chunk #${currentIndex} failed; using the saved device copy.`, readErr);
+                }
 
                 // Queue the chunk with its bytes attached. Losing a single chunk makes
                 // every chunk after it undecodable, so the upload must not depend on
                 // being able to read it back out of storage later.
-                uploadQueue.push({ index: currentIndex, attempts: 0, data: base64Data, persisted: saved !== false });
+                uploadQueue.push({ index: currentIndex, kind: recordingKind, attempts: 0, data: base64Data, persisted: saved !== false });
                 trimQueueMemory();
 
                 // Trigger background queue processor
                 processUploadQueue();
             } catch (err) {
-                // A chunk lost here is a hole in the recording, not a dropped frame.
-                console.error(`[Recorder] Could not read chunk #${currentIndex}:`, err);
+                console.error(`[Recorder] Could not preserve ${recordingKind} chunk #${currentIndex}:`, err);
                 logProctorEvent('upload_incomplete',
-                    `Recording chunk #${currentIndex} could not be read from the browser (${err && err.message ? err.message : 'unknown error'}). ` +
+                    `${recordingKind === 'camera' ? 'Camera' : 'Screen'} recording chunk #${currentIndex} could not be preserved by the browser (${err && err.message ? err.message : 'unknown error'}). ` +
                     `This leaves a gap in the video.`);
             } finally {
                 activeUploads--;
             }
         }
     };
+
+    mediaRecorder = new MediaRecorder(finalStream, options);
+    mediaRecorder.ondataavailable = (e) => preserveRecordedChunk(e, 'primary');
+
+    // A second recorder is only necessary when the primary stream is the screen.
+    // Camera-only/mobile attempts already store the webcam as the primary recording.
+    if (primaryRecordingKind === 'screen' && videoStream && videoStream.getVideoTracks().length > 0) {
+        const cameraTracks = [...videoStream.getVideoTracks()];
+        if (localMicStream) cameraTracks.push(...localMicStream.getAudioTracks());
+        const cameraOptions = {
+            videoBitsPerSecond: 800000,
+            audioBitsPerSecond: 96000
+        };
+        if (mimeType) cameraOptions.mimeType = mimeType;
+        cameraRecorder = new MediaRecorder(new MediaStream(cameraTracks), cameraOptions);
+        cameraRecorder.ondataavailable = (e) => preserveRecordedChunk(e, 'camera');
+        cameraRecorder.onerror = (e) => {
+            console.error("[Recorder] Camera MediaRecorder Error:", e.error);
+            if (socket) {
+                socket.emit('proctor_log', {
+                    exam_session_id: sessionInfo.id,
+                    event_type: 'error',
+                    event_message: `Camera MediaRecorder Error: ${e.error ? e.error.name : 'Unknown'}`
+                });
+            }
+        };
+    } else {
+        cameraRecorder = null;
+    }
     
     mediaRecorder.onerror = (e) => {
         console.error("[Recorder] MediaRecorder Error:", e.error);
@@ -2809,6 +3450,10 @@ function trimQueueMemory() {
     }
 }
 
+function uploadItemKey(index, kind = 'primary') {
+    return `${normalizeRecordingKind(kind)}:${index}`;
+}
+
 async function processUploadQueue() {
     if (isProcessingQueue) return;
     if (uploadQueue.length === 0) return;
@@ -2818,6 +3463,7 @@ async function processUploadQueue() {
     
     while (uploadQueue.length > 0) {
         const item = uploadQueue[0];
+        item.kind = normalizeRecordingKind(item.kind);
         activeUploads++; // Count as active upload while fetch is active
         
         let success = false;
@@ -2832,7 +3478,7 @@ async function processUploadQueue() {
                 // Check both stores rather than branching on useMemoryStorage. That
                 // flag can flip mid-exam when IndexedDB starts failing, and chunks
                 // written before the flip live on the other side of it.
-                const chunkKey = `${sessionInfo.id}_${item.index}`;
+                const chunkKey = chunkStorageKey(sessionInfo.id, item.index, item.kind);
                 let chunkRecord = memoryChunks[chunkKey];
 
                 if (!chunkRecord || !chunkRecord.data) {
@@ -2851,7 +3497,7 @@ async function processUploadQueue() {
                 }
 
                 if (chunkRecord && chunkRecord.data) {
-                    chunkData = chunkRecord.data;
+                    chunkData = await storedChunkToBase64(chunkRecord);
                     item.data = chunkData;
                 }
             }
@@ -2865,6 +3511,7 @@ async function processUploadQueue() {
                         event_message: `Recording chunk #${item.index} was lost from browser storage before it could be uploaded. The video will skip this point.`
                     });
                 }
+                permanentUploadFailures.add(uploadItemKey(item.index, item.kind));
                 uploadQueue.shift();
                 continue;
             }
@@ -2876,6 +3523,7 @@ async function processUploadQueue() {
                 body: JSON.stringify({
                     exam_session_id: sessionInfo.id,
                     chunk_index: item.index,
+                    recording_kind: item.kind,
                     base64_video: chunkData,
                     token: sessionToken
                 })
@@ -2883,8 +3531,8 @@ async function processUploadQueue() {
 
             if (response.ok) {
                 success = true;
-                console.log(`[Queue] Chunk #${item.index} upload success. Deleting from IndexedDB.`);
-                await deleteChunkFromDB(sessionInfo.id, item.index);
+                console.log(`[Queue] Chunk #${item.index} upload success. Keeping the device copy until server receipt verification.`);
+                await markChunkUploadedInDB(sessionInfo.id, item.index, item.kind);
             } else {
                 const errorData = await response.json().catch(() => ({}));
                 console.warn(`[Queue] Chunk #${item.index} rejected by server (HTTP ${response.status}):`, errorData.error);
@@ -2925,24 +3573,24 @@ async function processUploadQueue() {
             // Give up on this one immediately and keep the queue moving. The operator
             // already has one clear message naming the cause; a hundred more would
             // only bury it.
-            await deleteChunkFromDB(sessionInfo.id, item.index);
+            permanentUploadFailures.add(uploadItemKey(item.index, item.kind));
             uploadQueue.shift();
         } else {
             item.attempts++;
             if (item.attempts >= 100) {
-                console.error(`[Queue] Chunk #${item.index} failed permanently after 100 attempts. Discarding from DB and queue.`);
-                await deleteChunkFromDB(sessionInfo.id, item.index);
+                console.error(`[Queue] Chunk #${item.index} failed after 100 attempts. Keeping it on this device for a later recovery.`);
+                permanentUploadFailures.add(uploadItemKey(item.index, item.kind));
                 if (socket) {
                     socket.emit('proctor_log', {
                         exam_session_id: sessionInfo.id,
                         event_type: 'error',
-                        event_message: `Chunk #${item.index} upload failed permanently after 100 attempts. The video will be missing everything from this point in the attempt onward unless later chunks recovered.`
+                        event_message: `Chunk #${item.index} upload failed after 100 attempts. It remains stored on the device for a later reconnect, but the server recording is not complete yet.`
                     });
                 }
                 uploadQueue.shift(); // Discard failed item
             } else {
                 // Update attempts in IndexedDB
-                await updateChunkAttemptsInDB(sessionInfo.id, item.index, item.attempts);
+                await updateChunkAttemptsInDB(sessionInfo.id, item.index, item.attempts, item.kind);
                 // Wait before retrying (exponential backoff capped at 30s)
                 const delay = Math.min(item.attempts * 2000, 30000);
                 console.log(`[Queue] Retrying chunk #${item.index} in ${delay}ms...`);
@@ -2982,6 +3630,7 @@ async function createCompositeTrack(screenStream, cameraStream) {
     canvas.width = useSidebar ? 1600 : 1280;
     canvas.height = 720;
     const ctx = canvas.getContext('2d', { alpha: false });
+    activeCompositeCanvas = canvas;
 
     let vScreen = null;
     if (screenStream) {
@@ -3113,21 +3762,37 @@ async function createCompositeTrack(screenStream, cameraStream) {
 }
 
 function sendSnapshot() {
+    if (!socket || !sessionInfo || !examConfig) return;
+
     const video = document.getElementById('local-video');
-    if(video.videoWidth === 0) return;
+    const useComposite = !!(activeCompositeCanvas && activeCompositeCanvas.width && activeCompositeCanvas.height);
+    if (!useComposite && (!video || video.videoWidth === 0 || video.videoHeight === 0)) return;
+
+    const source = useComposite ? activeCompositeCanvas : video;
+    const sourceWidth = useComposite ? source.width : source.videoWidth;
+    const sourceHeight = useComposite ? source.height : source.videoHeight;
     
     const canvas = document.createElement('canvas');
     canvas.width = 640; 
     canvas.height = 360; 
-    const ctx = canvas.getContext('2d');
-    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+    const ctx = canvas.getContext('2d', { alpha: false });
+    ctx.fillStyle = '#0f172a';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+    const scale = Math.min(canvas.width / sourceWidth, canvas.height / sourceHeight);
+    const width = Math.round(sourceWidth * scale);
+    const height = Math.round(sourceHeight * scale);
+    const x = Math.round((canvas.width - width) / 2);
+    const y = Math.round((canvas.height - height) / 2);
+    ctx.drawImage(source, x, y, width, height);
     
     const dataUrl = canvas.toDataURL('image/jpeg', 0.5);
     
     socket.emit('student_snapshot', {
         exam_id: examConfig.id,
         exam_session_id: sessionInfo.id,
-        screenshot_data_url: dataUrl
+        screenshot_data_url: dataUrl,
+        snapshot_source: useComposite ? 'recording_composite' : 'camera'
     });
 }
 let pendingFullscreenReentry = false;
@@ -3292,6 +3957,7 @@ function setupFocusTracking() {
 
 async function bootStudent() {
     isExamCompleted = true; // Stop tracking violations
+    stopSessionHeartbeat();
     window.postMessage({ type: 'END_EXAM_LOCKDOWN' }, '*');
     
     if (examTrackerTask) {
@@ -3513,6 +4179,7 @@ function renderFinalizingScreen(container, headline) {
             <p id="proctor-upload-warning" style="color: var(--warning); font-size: 12.5px; line-height: 1.5; margin: 18px 0 0 0;">
                 Closing this window now will leave your recording incomplete.
             </p>
+            <button id="proctor-upload-retry" class="btn btn-primary" style="display:none; margin:16px auto 0;" onclick="retryFinalUpload()">Retry upload now</button>
         </div>
     `;
 }
@@ -3537,6 +4204,7 @@ function markUploadComplete(readyMessage) {
     const detail = document.getElementById('proctor-upload-detail');
     const bar = document.getElementById('proctor-upload-bar');
     const warning = document.getElementById('proctor-upload-warning');
+    const retry = document.getElementById('proctor-upload-retry');
     if (status) status.innerText = readyMessage;
     if (detail) detail.innerText = 'Recording uploaded in full.';
     if (bar) {
@@ -3544,21 +4212,51 @@ function markUploadComplete(readyMessage) {
         bar.style.background = 'var(--success)';
     }
     if (warning) warning.style.display = 'none';
+    if (retry) retry.style.display = 'none';
 }
 
 function markUploadIncomplete(pendingCount) {
     const status = document.getElementById('proctor-upload-status');
     const detail = document.getElementById('proctor-upload-detail');
     const warning = document.getElementById('proctor-upload-warning');
+    const retry = document.getElementById('proctor-upload-retry');
     if (status) status.innerText = 'Your quiz was submitted, but the recording could not finish uploading.';
     if (detail) detail.innerText = `${pendingCount} segment(s) could not be sent.`;
     if (warning) {
         warning.style.color = 'var(--danger)';
-        warning.innerText = 'Your answers are safe. Tell your instructor the recording upload did not complete.';
+        warning.innerText = navigator.onLine
+            ? 'The recording remains saved on this device. Retry the upload before closing SEB.'
+            : 'Internet connection lost. Keep SEB open; upload will retry automatically when Wi-Fi returns.';
     }
+    if (retry) retry.style.display = 'inline-flex';
+}
+
+async function enqueueMissingReceiptChunks(missingIndexes, kind = 'primary') {
+    const recordingKind = normalizeRecordingKind(kind);
+    const records = await getSessionChunksFromDB(sessionInfo.id, recordingKind);
+    const queued = new Set(uploadQueue.map(item => uploadItemKey(item.index, item.kind)));
+    let added = 0;
+    for (const index of missingIndexes || []) {
+        const itemKey = uploadItemKey(index, recordingKind);
+        if (permanentUploadFailures.has(itemKey) || queued.has(itemKey)) continue;
+        const record = records.find(item => item.index === index);
+        if (!record || !record.data) {
+            permanentUploadFailures.add(itemKey);
+            continue;
+        }
+        uploadQueue.push({ index, kind: recordingKind, attempts: 0, persisted: true });
+        queued.add(itemKey);
+        added++;
+    }
+    if (added > 0) {
+        uploadQueue.sort((a, b) => a.kind.localeCompare(b.kind) || a.index - b.index);
+        processUploadQueue();
+    }
+    return added;
 }
 
 async function stopRecordingAndAwaitUploads() {
+    let recorderStoppedNow = false;
     if (isCurrentlyTalking && talkingStartTimestamp) {
         const duration = Math.round((new Date() - talkingStartTimestamp) / 1000);
         const finalDuration = Math.max(1, duration);
@@ -3572,11 +4270,13 @@ async function stopRecordingAndAwaitUploads() {
     }
     isCurrentlyTalking = false;
 
-    if (mediaRecorder && mediaRecorder.state !== 'inactive') {
+    const stopRecorder = async (recorder, label) => {
+        if (!recorder || recorder.state === 'inactive') return false;
+        recorderStoppedNow = true;
         let stopped = false;
-        mediaRecorder.addEventListener('stop', () => {
+        recorder.addEventListener('stop', () => {
             stopped = true;
-            console.log("[Recorder] MediaRecorder stop event received.");
+            console.log(`[Recorder] ${label} stop event received.`);
         }, { once: true });
 
         // Force the partial timeslice out before stopping.
@@ -3587,8 +4287,8 @@ async function stopRecordingAndAwaitUploads() {
         // requestData() emits the partial chunk as its own dataavailable first, which
         // is materially more reliable across browsers than trusting stop() to do it.
         try {
-            if (mediaRecorder.state === 'recording') {
-                mediaRecorder.requestData();
+            if (recorder.state === 'recording') {
+                recorder.requestData();
                 await new Promise(r => setTimeout(r, 300));
             }
         } catch (e) {
@@ -3596,9 +4296,9 @@ async function stopRecordingAndAwaitUploads() {
         }
 
         try {
-            mediaRecorder.stop();
+            recorder.stop();
         } catch(e) {
-            console.warn("Failed to stop mediaRecorder:", e);
+            console.warn(`Failed to stop ${label}:`, e);
             stopped = true;
         }
 
@@ -3607,6 +4307,16 @@ async function stopRecordingAndAwaitUploads() {
         while (!stopped && (Date.now() - stopWaitStart < 4000)) {
             await new Promise(r => setTimeout(r, 100));
         }
+        return true;
+    };
+
+    await Promise.all([
+        stopRecorder(mediaRecorder, 'screen/primary recorder'),
+        stopRecorder(cameraRecorder, 'camera recorder')
+    ]);
+
+    if (recorderStoppedNow && recordingStartPerformanceMs !== null) {
+        finalRecordingDurationMs = Math.max(0, Math.round(performance.now() - recordingStartPerformanceMs));
     }
 
     // Wait for the recording to actually be uploaded before letting the session end.
@@ -3659,25 +4369,133 @@ async function stopRecordingAndAwaitUploads() {
         }
     }
 
+    let receiptComplete = chunkIndex === 0;
+    let cameraReceiptComplete = cameraChunkIndex === 0;
+    if (!pendingWork() && chunkIndex > 0) {
+        try {
+            for (let pass = 0; pass < 3; pass++) {
+                const receipt = await getServerChunkReceipt(sessionInfo.id, chunkIndex, 'primary');
+                if (receipt.complete) {
+                    receiptComplete = true;
+                    break;
+                }
+                console.warn(`[Recorder] Server receipt is missing chunks: ${(receipt.missing_indexes || []).join(', ')}`);
+                const added = await enqueueMissingReceiptChunks(receipt.missing_indexes || [], 'primary');
+                if (added === 0) break;
+                while (pendingWork() && (Date.now() - uploadWaitStart < UPLOAD_DRAIN_BUDGET_MS)) {
+                    await new Promise(r => setTimeout(r, 100));
+                    if (!isProcessingQueue && uploadQueue.length > 0) processUploadQueue();
+                }
+                if (pendingWork()) break;
+            }
+        } catch (err) {
+            console.warn('[Recorder] Could not verify the server chunk receipt:', err && err.message);
+        }
+    }
+
+    if (!pendingWork() && cameraChunkIndex > 0) {
+        try {
+            for (let pass = 0; pass < 3; pass++) {
+                const receipt = await getServerChunkReceipt(sessionInfo.id, cameraChunkIndex, 'camera');
+                if (receipt.complete) {
+                    cameraReceiptComplete = true;
+                    break;
+                }
+                console.warn(`[Recorder] Server camera receipt is missing chunks: ${(receipt.missing_indexes || []).join(', ')}`);
+                const added = await enqueueMissingReceiptChunks(receipt.missing_indexes || [], 'camera');
+                if (added === 0) break;
+                while (pendingWork() && (Date.now() - uploadWaitStart < UPLOAD_DRAIN_BUDGET_MS)) {
+                    await new Promise(r => setTimeout(r, 100));
+                    if (!isProcessingQueue && uploadQueue.length > 0) processUploadQueue();
+                }
+                if (pendingWork()) break;
+            }
+        } catch (err) {
+            console.warn('[Recorder] Could not verify the server camera chunk receipt:', err && err.message);
+        }
+    }
+
     isFinalizingUpload = false;
 
-    if (pendingWork()) {
+    if (pendingWork() || !receiptComplete || !cameraReceiptComplete) {
         // Record the shortfall rather than ending quietly: an instructor looking at
         // a short recording needs to know it was a network failure and not a
         // student who closed the tab.
         console.warn(`[Recorder] Upload drain timed out. active=${activeUploads} queued=${uploadQueue.length}`);
-        markUploadIncomplete(uploadQueue.length + activeUploads);
+        const missingCount = Math.max(uploadQueue.length + activeUploads, permanentUploadFailures.size, receiptComplete ? 0 : 1);
+        markUploadIncomplete(missingCount);
         try {
             logProctorEvent('upload_incomplete', `Recording upload did not finish: ${uploadQueue.length} chunk(s) still pending after ${UPLOAD_DRAIN_BUDGET_MS / 1000}s. Video may be shorter than the attempt.`);
         } catch (e) {}
     } else {
         console.log('[Recorder] All chunks uploaded.');
     }
-    return !pendingWork();
+    return !pendingWork() && receiptComplete && cameraReceiptComplete;
+}
+
+async function finalizeCompletedSessionOnServer() {
+    const response = await fetch('/api/session/end', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+            exam_session_id: sessionInfo.id,
+            status: 'completed',
+            token: sessionToken,
+            total_chunks: chunkIndex,
+            camera_total_chunks: cameraChunkIndex,
+            recording_duration_ms: finalRecordingDurationMs
+        })
+    });
+    if (!response.ok) throw new Error(`Session finalization failed (HTTP ${response.status})`);
+    await deleteSessionChunksFromDB(sessionInfo.id);
+    finalUploadComplete = true;
+    return true;
+}
+
+async function retryFinalUpload() {
+    if (!isExamCompleted || finalUploadComplete || finalUploadRetryInProgress || !sessionInfo) return;
+    finalUploadRetryInProgress = true;
+    const retry = document.getElementById('proctor-upload-retry');
+    const status = document.getElementById('proctor-upload-status');
+    const warning = document.getElementById('proctor-upload-warning');
+    if (retry) retry.style.display = 'none';
+    if (status) status.innerText = navigator.onLine ? 'Retrying the saved recording upload…' : 'Waiting for the internet connection…';
+    if (warning) warning.innerText = 'Do not close Safe Exam Browser while recovery is in progress.';
+
+    try {
+        permanentUploadFailures.clear();
+        const pending = await getPendingChunksFromDB(sessionInfo.id);
+        const queued = new Set(uploadQueue.map(item => uploadItemKey(item.index, item.kind)));
+        for (const record of pending) {
+            const kind = chunkRecordKind(record);
+            const itemKey = uploadItemKey(record.index, kind);
+            if (!queued.has(itemKey) && !permanentUploadFailures.has(itemKey)) {
+                uploadQueue.push({ index: record.index, kind, attempts: record.attempts || 0, persisted: true });
+            }
+        }
+        uploadQueue.sort((a, b) => normalizeRecordingKind(a.kind).localeCompare(normalizeRecordingKind(b.kind)) || a.index - b.index);
+
+        const uploaded = await stopRecordingAndAwaitUploads();
+        if (!uploaded) return;
+        await finalizeCompletedSessionOnServer();
+        markUploadComplete(isSEB()
+            ? 'Recording recovered and verified. Exiting Safe Exam Browser…'
+            : 'Recording recovered and verified. You may safely close this tab.');
+        if (isSEB()) {
+            await new Promise(resolve => setTimeout(resolve, 1500));
+            window.location.href = '/api/seb/quit';
+        }
+    } catch (err) {
+        console.error('[Recovery] Final upload retry failed:', err);
+        markUploadIncomplete(Math.max(1, uploadQueue.length + activeUploads));
+    } finally {
+        finalUploadRetryInProgress = false;
+    }
 }
 
 async function endExam() {
     isExamCompleted = true; // Instantly disable focus tracking
+    stopSessionHeartbeat();
     window.postMessage({ type: 'END_EXAM_LOCKDOWN' }, '*');
     
     if (examTrackerTask) {
@@ -3708,6 +4526,9 @@ async function endExam() {
         document.getElementById('active-exam-container'),
         isSeb ? 'Quiz submitted' : 'Exam submitted'
     );
+    try {
+        logProctorEvent('exam_submitted', 'Canvas submission detected. ProctorGuard is flushing and verifying the final recording segment.');
+    } catch (e) {}
 
     // Perform final actions in the background
     let uploadFinished = false;
@@ -3743,17 +4564,14 @@ async function endExam() {
             document.getElementById('quiz-iframe').src = '';
         } catch(e){}
         
-        try {
-            logProctorEvent('exam_ended', 'Student securely finished the exam.');
-        } catch(e){}
-        
-        try {
-            await fetch('/api/session/end', {
-                method: 'POST', headers: {'Content-Type':'application/json'},
-                body: JSON.stringify({ exam_session_id: sessionInfo.id, token: sessionToken, total_chunks: chunkIndex })
-            });
-        } catch(err) {
-            console.error("Failed to call exam end API:", err);
+        if (uploadFinished) {
+            try {
+                await finalizeCompletedSessionOnServer();
+                logProctorEvent('exam_ended', 'Student securely finished the exam; recording upload receipt was verified.');
+            } catch(err) {
+                uploadFinished = false;
+                console.error("Failed to finalize the completed session:", err);
+            }
         }
     } catch(err) {
         console.error("Background teardown error:", err);
@@ -3764,9 +4582,11 @@ async function endExam() {
         markUploadComplete(isSeb
             ? 'Recording uploaded. Exiting Safe Exam Browser…'
             : 'Your proctored exam session is complete. You may safely close this tab.');
+    } else {
+        markUploadIncomplete(Math.max(1, uploadQueue.length + activeUploads));
     }
 
-    if (isSeb) {
+    if (isSeb && uploadFinished) {
         await new Promise(r => setTimeout(r, 1500));
         window.location.href = '/api/seb/quit';
     }
@@ -3775,6 +4595,7 @@ async function endExam() {
 async function autoEndExamSession() {
     if (isExamCompleted) return;
     isExamCompleted = true;
+    stopSessionHeartbeat();
     window.postMessage({ type: 'END_EXAM_LOCKDOWN' }, '*');
     
     if (examTrackerTask) {
@@ -3799,6 +4620,9 @@ async function autoEndExamSession() {
     
     const isSeb = isSEB();
     renderFinalizingScreen(document.getElementById('active-exam-container'), 'Quiz submitted');
+    try {
+        logProctorEvent('exam_submitted', 'Canvas submission detected. ProctorGuard is flushing and verifying the final recording segment.');
+    } catch (e) {}
 
     let uploadFinished = false;
     try {
@@ -3832,17 +4656,14 @@ async function autoEndExamSession() {
             document.getElementById('quiz-iframe').src = '';
         } catch(e){}
         
-        try {
-            logProctorEvent('exam_ended', 'Student securely finished the exam via Canvas submit.');
-        } catch(e){}
-        
-        try {
-            await fetch('/api/session/end', {
-                method: 'POST', headers: {'Content-Type':'application/json'},
-                body: JSON.stringify({ exam_session_id: sessionInfo.id, token: sessionToken, total_chunks: chunkIndex })
-            });
-        } catch(err) {
-            console.error("Failed to call exam end API:", err);
+        if (uploadFinished) {
+            try {
+                await finalizeCompletedSessionOnServer();
+                logProctorEvent('exam_ended', 'Student securely finished the exam via Canvas submit; recording upload receipt was verified.');
+            } catch(err) {
+                uploadFinished = false;
+                console.error("Failed to finalize the completed session:", err);
+            }
         }
     } catch(err) {
         console.error("Background teardown error:", err);
@@ -3856,11 +4677,7 @@ async function autoEndExamSession() {
     // destroys any chunks still queued and hides the fact that it happened.
     if (!uploadFinished) {
         console.warn('[End Session] Upload did not finish. Holding the student on the status screen rather than redirecting.');
-        const warning = document.getElementById('proctor-upload-warning');
-        if (warning) {
-            warning.insertAdjacentHTML('afterend',
-                `<button class="btn btn-primary" style="margin-top:16px;" onclick="proceedAfterIncompleteUpload()">Continue to Canvas anyway</button>`);
-        }
+        markUploadIncomplete(Math.max(1, uploadQueue.length + activeUploads));
         return;
     }
 
@@ -3881,21 +4698,6 @@ async function autoEndExamSession() {
         } else {
             window.location.href = examConfig.canvas_quiz_url;
         }
-    }
-}
-
-// Escape hatch for the timed-out case. Deliberately an explicit choice by the
-// student rather than an automatic redirect, so leaving with an incomplete
-// recording is something they did knowingly and the log reflects it.
-function proceedAfterIncompleteUpload() {
-    try {
-        logProctorEvent('upload_incomplete', 'Student chose to leave the page before the recording finished uploading.');
-    } catch (e) {}
-    const url = (typeof examConfig !== 'undefined' && examConfig && examConfig.canvas_quiz_url) ? examConfig.canvas_quiz_url : '/';
-    if (window.top !== window.self) {
-        window.top.location.href = url;
-    } else {
-        window.location.href = url;
     }
 }
 
@@ -3934,7 +4736,7 @@ window.addEventListener('beforeunload', (event) => {
     // If chunks are still in flight, ask before letting the page go. The browser
     // kills outstanding uploads on unload, so this is the last chance to keep the
     // tail of the recording — and the student has no other way to know.
-    if (isFinalizingUpload) {
+    if (isFinalizingUpload || (isExamCompleted && !finalUploadComplete)) {
         event.preventDefault();
         event.returnValue = 'Your proctoring recording is still uploading. Leaving now will leave it incomplete.';
     }
@@ -3958,10 +4760,27 @@ window.addEventListener('beforeunload', (event) => {
     if (sessionInfo && sessionInfo.id) {
         const url = `/api/session/end?token=${encodeURIComponent(sessionToken)}`;
         const exitType = isExamCompleted ? 'completed' : 'unexpected';
-        const data = JSON.stringify({ exam_session_id: sessionInfo.id, exit_type: exitType, total_chunks: chunkIndex });
+        const data = JSON.stringify({
+            exam_session_id: sessionInfo.id,
+            exit_type: exitType,
+            total_chunks: chunkIndex,
+            recording_duration_ms: finalRecordingDurationMs
+        });
         const blob = new Blob([data], { type: 'application/json' });
         navigator.sendBeacon(url, blob);
     }
+});
+
+window.addEventListener('online', () => {
+    console.log('[Network] Connection restored. Resuming saved recording uploads.');
+    sendSessionHeartbeat();
+    if (uploadQueue.length > 0) processUploadQueue();
+    if (isExamCompleted && !finalUploadComplete) retryFinalUpload();
+});
+
+window.addEventListener('offline', () => {
+    console.warn('[Network] Connection lost. New recording chunks will remain on this device until connectivity returns.');
+    if (isExamCompleted && !finalUploadComplete) markUploadIncomplete(Math.max(1, uploadQueue.length + activeUploads));
 });
 
 function setupAudioAnalysis(stream) {
@@ -4075,6 +4894,29 @@ function setupAudioAnalysis(stream) {
 }
 
 let speechRecognition = null;
+let pendingSpeechTranscript = '';
+let pendingSpeechTimer = null;
+let lastLoggedSpeechTranscript = '';
+
+function logRecognizedSpeech(transcript, partial = false) {
+    const clean = String(transcript || '').trim();
+    if (!clean || clean === lastLoggedSpeechTranscript) return;
+    lastLoggedSpeechTranscript = clean;
+    console.log(`[Speech] Student said${partial ? ' (stable partial)' : ''}: "${clean}"`);
+    logProctorEvent('voice_transcript', `Speaking detected${partial ? ' (partial transcript)' : ''}: "${clean}"`);
+}
+
+function flushPendingSpeechTranscript() {
+    if (pendingSpeechTimer) {
+        clearTimeout(pendingSpeechTimer);
+        pendingSpeechTimer = null;
+    }
+    if (!pendingSpeechTranscript) return;
+    const transcript = pendingSpeechTranscript;
+    pendingSpeechTranscript = '';
+    logRecognizedSpeech(transcript, true);
+}
+
 function setupSpeechRecognition() {
     const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
     if (!SpeechRecognition) {
@@ -4088,7 +4930,7 @@ function setupSpeechRecognition() {
         speechRecognition.continuous = true;
         speechRecognition.interimResults = true; // catch short phrases sooner on mobile
         speechRecognition.lang = 'en-US';
-        let lastFinalTranscript = '';
+        let lastRecognitionError = '';
 
         speechRecognition.onresult = (event) => {
             for (let i = event.resultIndex; i < event.results.length; i++) {
@@ -4096,37 +4938,39 @@ function setupSpeechRecognition() {
                 const transcript = (result[0] && result[0].transcript ? result[0].transcript : '').trim();
                 if (!transcript) continue;
 
-                // Only finals. Interim results are successive *guesses at the same
-                // utterance*, not separate speech: the API emits "that's", then
-                // "that's what", then "that's one" while it refines one phrase.
-                // Logging each produced a violation per keystroke-equivalent — a
-                // single sentence generated 25 alerts, all stamped at the same
-                // second, which reads to an instructor as sustained talking and is
-                // exactly the kind of false accusation this tool must not make.
-                //
-                // The old `transcript.length >= 4` guard let every interim through,
-                // and the lastFinalTranscript check could not stop it because each
-                // refinement is a different string.
-                if (!result.isFinal) continue;
-                if (transcript === lastFinalTranscript) continue;
-                lastFinalTranscript = transcript;
+                if (result.isFinal) {
+                    if (pendingSpeechTimer) clearTimeout(pendingSpeechTimer);
+                    pendingSpeechTimer = null;
+                    pendingSpeechTranscript = '';
+                    logRecognizedSpeech(transcript, false);
+                    continue;
+                }
 
-                console.log(`[Speech] Student said: "${transcript}"`);
-                logProctorEvent('voice_transcript', `Speaking detected: "${transcript}"`);
+                // SEB's Chromium engine sometimes supplies useful interim text but
+                // never promotes it to a final result. Keep only the latest revision
+                // and log it once it stays unchanged, avoiding one event per guess.
+                pendingSpeechTranscript = transcript;
+                if (pendingSpeechTimer) clearTimeout(pendingSpeechTimer);
+                pendingSpeechTimer = setTimeout(flushPendingSpeechTranscript, 1400);
             }
         };
 
         speechRecognition.onerror = (event) => {
             console.warn("[Speech] Recognition error:", event.error);
+            if (event.error && event.error !== 'no-speech' && event.error !== 'aborted' && event.error !== lastRecognitionError) {
+                lastRecognitionError = event.error;
+                logProctorEvent('speech_recognition_unavailable',
+                    `Automatic word transcription unavailable: ${event.error}. Voice-activity detection remains active.`);
+            }
             // network / not-allowed / service-not-allowed are common on Android — don't loop spam
-            if (event.error === 'not-allowed' || event.error === 'service-not-allowed') {
-                logProctorEvent('speech_recognition_unavailable', `Speech recognition blocked: ${event.error}`);
+            if (event.error === 'not-allowed' || event.error === 'service-not-allowed' || event.error === 'audio-capture') {
                 try { speechRecognition.onend = null; speechRecognition.stop(); } catch (e) {}
                 speechRecognition = null;
             }
         };
 
         speechRecognition.onend = () => {
+            flushPendingSpeechTranscript();
             if (!isExamCompleted && speechRecognition) {
                 try {
                     speechRecognition.start();

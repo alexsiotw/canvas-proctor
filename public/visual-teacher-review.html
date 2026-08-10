@@ -1,0 +1,129 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ProctorGuard Teacher UI Review</title>
+  <link rel="stylesheet" href="/css/styles.css">
+  <script>
+    const reviewSocket = {
+      connected: true,
+      on() { return this; },
+      emit() { return this; },
+      connect() { this.connected = true; return this; },
+      disconnect() { this.connected = false; return this; }
+    };
+    window.io = () => reviewSocket;
+
+    const sampleExam = {
+      id: 42,
+      title: 'Midterm Physics Examination',
+      canvas_quiz_url: 'https://canvas.instructure.com/courses/demo_course/quizzes/103',
+      exam_code: 'PHYS42',
+      max_attempts: 1,
+      is_open: true,
+      device_policy: 'desktop_only',
+      require_camera: true,
+      require_mic: true,
+      require_screen: true,
+      require_screen_capability: true,
+      require_resume_approval: true,
+      require_seb: true
+    };
+
+    const sampleSession = {
+      id: 5001,
+      student_canvas_id: 'student-0142',
+      student_name: 'Jordan Lee',
+      status: 'completed',
+      attempt_number: 1,
+      started_at: '2026-08-09T14:02:00Z',
+      recording_started_at: '2026-08-09T14:03:00Z',
+      ended_at: '2026-08-09T14:54:00Z',
+      recording_url: '',
+      screen_recording_url: '',
+      primary_recording_kind: 'screen',
+      drive_file_id: 'visual-screen-recording',
+      camera_drive_file_id: 'visual-primary-camera',
+      camera_mime_type: 'video/mp4',
+      device_family: 'desktop',
+      device_platform: 'Windows',
+      interruption_count: 1,
+      mobile_drive_file_id: 'visual-secondary-camera',
+      drive_snapshots_id: 'visual-snapshots',
+      annotations: [],
+      logs: [
+        ...Array.from({ length: 22 }, (_, index) => ({
+          id: index + 1,
+          event_type: index % 4 === 0 ? 'tab_blur' : (index % 5 === 0 ? 'multiple_faces' : 'connection_restored'),
+          event_message: index % 4 === 0 ? 'Focus left the secure exam window' : (index % 5 === 0 ? 'More than one face appeared in the frame' : 'Student remained connected to the proctoring session'),
+          event_timestamp: new Date(Date.parse('2026-08-09T14:03:00Z') + (index + 1) * 105000).toISOString()
+        })),
+        { id: 90, event_type: 'room_scan_video', event_message: 'https://example.com/room-scan', event_timestamp: '2026-08-09T14:02:30Z' },
+        { id: 91, event_type: 'verify_id_image', event_message: 'https://example.com/id', event_timestamp: '2026-08-09T14:02:35Z' },
+        { id: 92, event_type: 'verify_signature_image', event_message: 'https://example.com/signature', event_timestamp: '2026-08-09T14:02:40Z' }
+        ,{ id: 93, event_type: 'audio_violation', event_message: 'Sustained speech detected near the workstation', event_timestamp: '2026-08-09T14:18:40Z' }
+      ]
+    };
+
+    const jsonResponse = (value, status = 200) => new Response(JSON.stringify(value), {
+      status,
+      headers: { 'Content-Type': 'application/json' }
+    });
+
+    window.fetch = async input => {
+      const url = String(input);
+      if (url.includes('/api/me')) {
+        return jsonResponse({ user_name: 'Dr. Rivera', role: 'instructor', passcode_required: false });
+      }
+      if (url.includes('/api/exams/42/reports')) {
+        return jsonResponse({ sessions: [sampleSession], enrolled_count: 24 });
+      }
+      if (url.endsWith('/api/exams') || url.includes('/api/exams?')) return jsonResponse([sampleExam]);
+      if (url.includes('/api/canvas-quizzes')) return jsonResponse([]);
+      if (url.includes('/api/db-status')) return jsonResponse({ used_bytes: 0 });
+      return jsonResponse({ ok: true });
+    };
+  </script>
+</head>
+<body class="pg-instructor">
+  <div id="passcode-overlay" style="display:none"></div>
+  <div class="app-container" id="app">
+    <div class="top-bar">
+      <div class="logo">
+        <img src="/icons/proctorguard-logo.png" alt="" class="logo-icon" style="width:36px;height:36px;object-fit:contain;border-radius:8px">
+        <span>ProctorGuard<span class="pg-appbar-eyebrow">Review Console</span></span>
+      </div>
+      <div class="user-info"><span id="user-name">Instructor</span></div>
+    </div>
+    <div class="main-content" id="content"></div>
+  </div>
+  <div class="modal-overlay" id="modal-overlay"><div class="modal" id="modal-content"></div></div>
+  <div class="toast-container" id="toast-container"></div>
+  <div class="modal-overlay" id="image-overlay"><img id="fullscreen-image" alt=""></div>
+  <script src="/js/app.js?v=4.7.0"></script>
+  <script>
+    window.addEventListener('load', () => setTimeout(() => {
+      loadExamDashboard(42);
+      if (new URLSearchParams(location.search).get('report') === '1') {
+        if (new URLSearchParams(location.search).get('secondary') === '0') {
+          sampleSession.mobile_drive_file_id = null;
+        }
+        if (new URLSearchParams(location.search).get('legacy') === '1') {
+          sampleSession.primary_recording_kind = 'composite';
+          sampleSession.camera_drive_file_id = null;
+        }
+        currentSessionsList = [sampleSession];
+        viewStudentReport(5001, 42);
+        return;
+      }
+      liveStudents = {
+        9001: { name: 'Jordan Lee', status: 'online', hasFlags: true, lastFlagType: 'tab_blur' },
+        9002: { name: 'Morgan Patel', status: 'approval_required' },
+        9003: { name: 'Casey Wilson', status: 'offline' }
+      };
+      updateLiveGrid();
+    }, 200));
+  </script>
+</body>
+</html>

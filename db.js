@@ -112,6 +112,9 @@ async function initDatabase() {
       ALTER TABLE exams ADD COLUMN IF NOT EXISTS allowed_apps TEXT DEFAULT null;
       ALTER TABLE exams ADD COLUMN IF NOT EXISTS blocked_apps TEXT DEFAULT null;
       ALTER TABLE exams ADD COLUMN IF NOT EXISTS allowed_urls TEXT DEFAULT null;
+      -- Exam-specific Safe Exam Browser policy. Keeping this as JSONB lets us add
+      -- new SEB capabilities without a database migration for every checkbox.
+      ALTER TABLE exams ADD COLUMN IF NOT EXISTS seb_settings JSONB NOT NULL DEFAULT '{}'::jsonb;
 
 
       ALTER TABLE exam_sessions ADD COLUMN IF NOT EXISTS video_archived BOOLEAN DEFAULT false;
@@ -130,6 +133,12 @@ async function initDatabase() {
       -- Opt-in: let phones/tablets take the exam in-browser without the Chrome extension.
       -- Default false so existing desktop lockdown exams are unchanged.
       ALTER TABLE exams ADD COLUMN IF NOT EXISTS allow_mobile_devices BOOLEAN DEFAULT false;
+      -- Explicit primary-device rules replace the old ambiguous mobile toggle.
+      -- Existing exams remain permissive until an instructor deliberately selects a
+      -- stricter policy; new dashboard-created exams default to desktop-only in UI.
+      ALTER TABLE exams ADD COLUMN IF NOT EXISTS device_policy VARCHAR(32) DEFAULT 'any_supported';
+      ALTER TABLE exams ADD COLUMN IF NOT EXISTS require_screen_capability BOOLEAN DEFAULT false;
+      ALTER TABLE exams ADD COLUMN IF NOT EXISTS require_resume_approval BOOLEAN DEFAULT false;
       ALTER TABLE exams ADD COLUMN IF NOT EXISTS behavior_preset VARCHAR(100) DEFAULT 'Recommended';
       ALTER TABLE exams ADD COLUMN IF NOT EXISTS weight_navigating_away INTEGER DEFAULT 1;
       ALTER TABLE exams ADD COLUMN IF NOT EXISTS weight_keystrokes INTEGER DEFAULT 1;
@@ -148,10 +157,28 @@ async function initDatabase() {
       -- overstates the attempt length and shifts every log video-marker out of
       -- sync with the footage it points at.
       ALTER TABLE exam_sessions ADD COLUMN IF NOT EXISTS recording_started_at TIMESTAMP;
+      ALTER TABLE exam_sessions ADD COLUMN IF NOT EXISTS recording_stopped_at TIMESTAMP;
+      -- Device continuity and interruption recovery evidence. The opaque instance
+      -- id is generated once in the student's browser profile; it contains no
+      -- hardware serial number or fingerprinting data.
+      ALTER TABLE exam_sessions ADD COLUMN IF NOT EXISTS device_instance_id VARCHAR(128);
+      ALTER TABLE exam_sessions ADD COLUMN IF NOT EXISTS device_family VARCHAR(32);
+      ALTER TABLE exam_sessions ADD COLUMN IF NOT EXISTS device_platform VARCHAR(120);
+      ALTER TABLE exam_sessions ADD COLUMN IF NOT EXISTS device_user_agent TEXT;
+      ALTER TABLE exam_sessions ADD COLUMN IF NOT EXISTS last_seen_at TIMESTAMP;
+      ALTER TABLE exam_sessions ADD COLUMN IF NOT EXISTS interruption_count INTEGER DEFAULT 0;
+      ALTER TABLE exam_sessions ADD COLUMN IF NOT EXISTS resume_approval_required BOOLEAN DEFAULT false;
+      ALTER TABLE exam_sessions ADD COLUMN IF NOT EXISTS resume_approved_at TIMESTAMP;
       -- The phone may record a different container than the laptop (Safari gives
       -- MP4 where Chrome gives WebM), so the secondary recording needs its own.
       ALTER TABLE exam_sessions ADD COLUMN IF NOT EXISTS mobile_mime_type VARCHAR(255);
       ALTER TABLE exam_sessions ADD COLUMN IF NOT EXISTS mobile_drive_file_id VARCHAR(255);
+      -- New desktop attempts store the student's camera independently from the
+      -- primary screen recording. Legacy attempts remain marked composite so the
+      -- review UI can crop their historic side-by-side recording safely.
+      ALTER TABLE exam_sessions ADD COLUMN IF NOT EXISTS camera_mime_type VARCHAR(255);
+      ALTER TABLE exam_sessions ADD COLUMN IF NOT EXISTS camera_drive_file_id VARCHAR(255);
+      ALTER TABLE exam_sessions ADD COLUMN IF NOT EXISTS primary_recording_kind VARCHAR(32) DEFAULT 'composite';
       ALTER TABLE exam_sessions ADD COLUMN IF NOT EXISTS room_scan_drive_file_id VARCHAR(255);
       ALTER TABLE exam_sessions ADD COLUMN IF NOT EXISTS verify_id_image TEXT;
       ALTER TABLE exam_sessions ADD COLUMN IF NOT EXISTS verify_signature_image TEXT;
