@@ -185,6 +185,9 @@ function transcodeSegmentToMp4(inputPath, outputPath, timeoutMs = 300000) {
             // resample, since forcing a rate is itself a common pitch-shift cause.
             .outputOptions('-af aresample=async=1:first_pts=0')
             .outputOptions('-c:a aac')
+            // Put MP4 metadata at the front so browsers learn the duration before
+            // downloading the complete Drive-backed file and can seek immediately.
+            .outputOptions('-movflags +faststart')
             // Uniform output parameters matter: the concat demuxer stream-copies,
             // so every segment has to share a timebase.
             .outputOptions('-video_track_timescale 90000')

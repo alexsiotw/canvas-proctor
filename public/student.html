@@ -21,7 +21,7 @@
       }).catch(err => {});
     });
   </script>
-  <link rel="stylesheet" href="/css/styles.css?v=2.6.0">
+  <link rel="stylesheet" href="/css/styles.css?v=2.7.0">
   <link rel="icon" href="/icons/proctorguard-logo.png">
   <script src="/socket.io/socket.io.js"></script>
   <style>
@@ -577,6 +577,23 @@
       </div>
   </div>
 
+  <!-- A strict exam can require the instructor to review a force-close, long
+       disconnect, or device change before the same attempt resumes. Recording
+       chunks stay on-device while this blocker is visible. -->
+  <div id="resume-approval-overlay" style="display: none; position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; background: rgba(15, 23, 42, 0.985); z-index: 1000001; justify-content: center; align-items: center; flex-direction: column; color: white; font-family: var(--font-sans); text-align: center;">
+      <div style="background: #1e293b; border: 2px solid #f59e0b; padding: 38px; border-radius: 16px; max-width: 590px; width: 90%; box-shadow: 0 24px 50px rgba(0,0,0,0.55);">
+          <div style="font-size: 50px; margin-bottom: 14px;">&#128274;</div>
+          <h1 id="resume-approval-title" style="color: #fbbf24; font-size: 25px; font-weight: 800; margin: 0 0 14px 0;">Instructor Approval Required</h1>
+          <p id="resume-approval-desc" style="color: #cbd5e1; font-size: 15px; line-height: 1.65; margin-bottom: 22px;">
+              This attempt was interrupted. Your recording is preserved, but the exam is paused until your instructor approves the resume.
+          </p>
+          <div style="background: rgba(245, 158, 11, 0.1); border: 1px solid rgba(245, 158, 11, 0.28); padding: 14px; border-radius: 8px; color: #fde68a; font-size: 13px; line-height: 1.55;">
+              Keep this page open. ProctorGuard checks automatically every five seconds. The Canvas timer may continue running according to the quiz settings.
+          </div>
+          <div class="spinner" style="margin: 22px auto 0; width: 28px; height: 28px;"></div>
+      </div>
+  </div>
+
   <!-- Screen Share Blocker Overlay -->
   <div id="screen-share-blocker-overlay" style="display: none; position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; background: rgba(15, 23, 42, 0.98); z-index: 999999; justify-content: center; align-items: center; flex-direction: column; color: white; font-family: var(--font-sans); text-align: center;">
       <div style="background: #1e293b; border: 2px solid #ef4444; padding: 40px; border-radius: 16px; max-width: 550px; width: 90%; box-shadow: 0 20px 25px -5px rgba(0,0,0,0.5);">
@@ -589,7 +606,8 @@
       </div>
   </div>
 
-  <script src="/js/student.js?v=3.7.0"></script>
+  <script src="/js/sebCapturePolicy.js?v=3.8.0"></script>
+  <script src="/js/student.js?v=4.7.0"></script>
 </body>
 
 </html>
