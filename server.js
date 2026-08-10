@@ -11,25 +11,9 @@ const multer = require('multer');
 const http = require('http');
 const { Server } = require('socket.io');
 const { pool, initDatabase } = require('./db');
-const { buildSebConfig, isSebUserAgent, normalizeSebSettings } = require('./services/sebConfig');
-const {
-    deriveLegacyMobileFlags,
-    didDeviceInstanceChange,
-    evaluateDevicePolicy,
-    hasFreshResumeApproval,
-    normalizeDeviceAttestation,
-    normalizeDevicePolicy,
-    shouldRequireApprovalForExistingStart
-} = require('./services/devicePolicy');
 const archiver = require('archiver');
 const fs = require('fs');
 const os = require('os');
-const {
-    buildChunkReceipt,
-    ensureSessionChunkDir,
-    getSessionChunkDir,
-    purgeExpiredChunkDirectories
-} = require('./services/chunkStorage');
 const { uploadVideoToDrive, downloadVideoFromDrive, uploadLogsToDriveDoc, createFolder, getFolderId } = require('./services/googleDrive');
 const webmDurationFix = require('webm-duration-fix').default;
 const ffmpeg = require('fluent-ffmpeg');
@@ -242,7 +226,6 @@ const server = http.createServer(app);
 const io = new Server(server, { cors: { origin: '*' } });
 const PORT = process.env.PORT || 3000;
 const activeAssemblies = new Set();
-const pendingAssemblyHints = new Map();
 const mobileUploadStatus = new Map(); // exam_session_id -> { total: number, finished: boolean }
 
 // A `beforeunload` beacon is not proof the attempt is over. The student may be
@@ -252,23 +235,7 @@ const mobileUploadStatus = new Map(); // exam_session_id -> { total: number, fin
 // chunks the resumed recording is still appending to. So an unexpected exit only
 // *schedules* finalization, and resuming cancels it.
 const pendingFinalizations = new Map(); // exam_session_id -> Timeout
-// A reboot, SEB crash, or router restart routinely takes longer than three minutes
-// to recover from. Keep the same session resumable for thirty minutes; source
-// chunks themselves remain retained for the longer chunk-storage policy window.
-const UNEXPECTED_EXIT_GRACE_MS = 30 * 60 * 1000;
-
-function cleanExpiredRecordingChunks() {
-    try {
-        const removed = purgeExpiredChunkDirectories();
-        if (removed.length > 0) console.log(`[Chunk Storage] Purged ${removed.length} expired staging director${removed.length === 1 ? 'y' : 'ies'}.`);
-    } catch (err) {
-        console.error('[Chunk Storage] Retention cleanup failed:', err.message);
-    }
-}
-
-cleanExpiredRecordingChunks();
-const chunkCleanupTimer = setInterval(cleanExpiredRecordingChunks, 60 * 60 * 1000);
-if (typeof chunkCleanupTimer.unref === 'function') chunkCleanupTimer.unref();
+const UNEXPECTED_EXIT_GRACE_MS = 3 * 60 * 1000;
 
 app.set('trust proxy', 1);
 
@@ -1121,11 +1088,6 @@ app.post('/api/exams', requireInstructor, async (req, res) => {
     try {
         const { canvasCourseId } = req.session.lti;
         const { title, canvas_quiz_url, require_mic, require_camera, require_screen, disable_right_click, require_fullscreen, require_seb, max_attempts, exam_code, max_violations, canvas_quiz_password, disable_clipboard, disable_printing, only_one_screen, block_downloads, prevent_reentry, require_room_scan, additional_instructions, require_mobile_camera } = req.body;
-        const device_policy = normalizeDevicePolicy(req.body.device_policy, 'desktop_only');
-        const legacyMobile = deriveLegacyMobileFlags(device_policy);
-        const require_screen_capability = req.body.require_screen_capability === true;
-        const require_resume_approval = req.body.require_resume_approval === true;
-        const effective_require_screen = !!(require_screen || require_screen_capability);
         
         const record_web_traffic = req.body.record_web_traffic || false;
         const disable_new_tabs = req.body.disable_new_tabs || false;
@@ -1137,13 +1099,12 @@ app.post('/api/exams', requireInstructor, async (req, res) => {
         const advanced_vm_detection = req.body.advanced_vm_detection || false;
         const advanced_hardware_detection = req.body.advanced_hardware_detection || false;
         const allow_apps = req.body.allow_apps || false;
-        const block_mobile = legacyMobile.blockMobile;
+        const block_mobile = req.body.block_mobile || false;
         
         const require_companion_app = req.body.require_companion_app || false;
         const allowed_apps = req.body.allowed_apps || null;
         const blocked_apps = req.body.blocked_apps || null;
         const allowed_urls = req.body.allowed_urls || null;
-        const seb_settings = normalizeSebSettings(req.body.seb_settings);
 
         // Proctorio makeover specific parameters
         const verify_video = req.body.verify_video || false;
@@ -1153,7 +1114,7 @@ app.post('/api/exams', requireInstructor, async (req, res) => {
         const verify_signature = req.body.verify_signature || false;
         const allow_calculator = req.body.allow_calculator || false;
         const allow_whiteboard = req.body.allow_whiteboard || false;
-        const allow_mobile_devices = legacyMobile.allowMobileDevices;
+        const allow_mobile_devices = req.body.allow_mobile_devices || false;
         const behavior_preset = req.body.behavior_preset || 'Recommended';
         const weight_navigating_away = req.body.weight_navigating_away !== undefined ? parseInt(req.body.weight_navigating_away) : 1;
         const weight_keystrokes = req.body.weight_keystrokes !== undefined ? parseInt(req.body.weight_keystrokes) : 1;
@@ -1181,12 +1142,11 @@ app.post('/api/exams', requireInstructor, async (req, res) => {
                 verify_video, verify_audio, verify_desktop, verify_id, verify_signature,
                 allow_calculator, allow_whiteboard, behavior_preset,
                 weight_navigating_away, weight_keystrokes, weight_copy_paste, weight_browser_resize,
-                weight_head_movement, weight_multi_face, weight_leaving_room, allow_mobile_devices,
-                seb_settings, device_policy, require_screen_capability, require_resume_approval
+                weight_head_movement, weight_multi_face, weight_leaving_room, allow_mobile_devices
             )
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, false, $38, $39, $40, $41, $42, $43, $44, $45, $46, $47, $48, $49, $50, $51, $52, $53, $54::jsonb, $55, $56, $57) RETURNING *
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, false, $38, $39, $40, $41, $42, $43, $44, $45, $46, $47, $48, $49, $50, $51, $52, $53) RETURNING *
         `, [
-            canvasCourseId, title, canvas_quiz_url, require_mic, require_camera, effective_require_screen,
+            canvasCourseId, title, canvas_quiz_url, require_mic, require_camera, require_screen, 
             disable_right_click, require_fullscreen, require_seb || false, max_attempts || 1, exam_code, max_violations || 0, 
             canvas_quiz_password || '', disable_clipboard || false, disable_printing || false,
             only_one_screen || false, block_downloads || false, prevent_reentry || false,
@@ -1197,8 +1157,7 @@ app.post('/api/exams', requireInstructor, async (req, res) => {
             verify_video, verify_audio, verify_desktop, verify_id, verify_signature,
             allow_calculator, allow_whiteboard, behavior_preset,
             weight_navigating_away, weight_keystrokes, weight_copy_paste, weight_browser_resize,
-            weight_head_movement, weight_multi_face, weight_leaving_room, allow_mobile_devices,
-            JSON.stringify(seb_settings), device_policy, require_screen_capability, require_resume_approval
+            weight_head_movement, weight_multi_face, weight_leaving_room, allow_mobile_devices
         ]);
         
         // Enable proctor mode on the Canvas quiz, and explicitly clear Canvas's
@@ -1456,17 +1415,6 @@ app.post('/api/canvas-native/exam/:quiz_id', verifyExtensionToken, async (req, r
     try {
         const { quiz_id } = req.params;
         const body = req.body;
-        const device_policy = body.device_policy === undefined
-            ? null
-            : normalizeDevicePolicy(body.device_policy, 'desktop_only');
-        const legacyMobile = deriveLegacyMobileFlags(device_policy || 'any_supported');
-        const require_screen_capability = body.require_screen_capability === undefined
-            ? null
-            : body.require_screen_capability === true;
-        const require_resume_approval = body.require_resume_approval === undefined
-            ? null
-            : body.require_resume_approval === true;
-        const effective_require_screen = !!(body.require_screen || require_screen_capability === true);
         
         const record_web_traffic = body.record_web_traffic || false;
         const disable_new_tabs = body.disable_new_tabs || false;
@@ -1478,7 +1426,7 @@ app.post('/api/canvas-native/exam/:quiz_id', verifyExtensionToken, async (req, r
         const advanced_vm_detection = body.advanced_vm_detection || false;
         const advanced_hardware_detection = body.advanced_hardware_detection || false;
         const allow_apps = body.allow_apps || false;
-        const block_mobile = device_policy === null ? !!body.block_mobile : legacyMobile.blockMobile;
+        const block_mobile = body.block_mobile || false;
         
         const require_room_scan = body.require_room_scan || false;
         const require_companion_app = body.require_companion_app || false;
@@ -1501,12 +1449,7 @@ app.post('/api/canvas-native/exam/:quiz_id', verifyExtensionToken, async (req, r
         const verify_signature = body.verify_signature || false;
         const allow_calculator = body.allow_calculator || false;
         const allow_whiteboard = body.allow_whiteboard || false;
-        const allow_mobile_devices = device_policy === null ? !!body.allow_mobile_devices : legacyMobile.allowMobileDevices;
-        // The Canvas extension does not expose the SEB policy editor yet. When it
-        // omits this field, preserve an existing dashboard-authored policy.
-        const seb_settings = body.seb_settings === undefined
-            ? null
-            : normalizeSebSettings(body.seb_settings);
+        const allow_mobile_devices = body.allow_mobile_devices || false;
 
         const existsResult = await pool.query("SELECT id, exam_code FROM exams WHERE canvas_quiz_url LIKE $1 LIMIT 1", [`%/quizzes/${quiz_id}%`]);
         if (existsResult.rows.length > 0) {
@@ -1527,14 +1470,11 @@ app.post('/api/canvas-native/exam/:quiz_id', verifyExtensionToken, async (req, r
                     allowed_urls = $33, canvas_course_id = $34, require_room_scan = $35, additional_instructions = $36,
                     require_mobile_camera = $37, verify_video = $38, verify_audio = $39, verify_desktop = $40,
                     verify_id = $41, verify_signature = $42, allow_calculator = $43, allow_whiteboard = $44,
-                    allow_mobile_devices = $45, seb_settings = COALESCE($46::jsonb, seb_settings),
-                    device_policy = COALESCE($47, device_policy),
-                    require_screen_capability = COALESCE($48, require_screen_capability),
-                    require_resume_approval = COALESCE($49, require_resume_approval)
-                WHERE id = $50
+                    allow_mobile_devices = $45
+                WHERE id = $46
             `, [
                 body.title || 'Canvas Native Exam', body.canvas_quiz_url, existingCode, body.max_attempts || 1,
-                body.require_camera, body.require_mic, effective_require_screen,
+                body.require_camera, body.require_mic, body.require_screen,
                 body.disable_right_click, body.require_fullscreen, body.require_seb,
                 body.max_violations || 0, body.canvas_quiz_password || '', body.disable_clipboard,
                 body.disable_printing, body.only_one_screen, body.block_downloads, body.prevent_reentry,
@@ -1545,8 +1485,7 @@ app.post('/api/canvas-native/exam/:quiz_id', verifyExtensionToken, async (req, r
                 require_extension, require_companion_app, allowed_apps, blocked_apps, allowed_urls,
                 body.canvas_course_id || 'canvas_native', require_room_scan, additional_instructions, require_mobile_camera || false,
                 verify_video, verify_audio, verify_desktop, verify_id, verify_signature, allow_calculator, allow_whiteboard,
-                allow_mobile_devices, seb_settings === null ? null : JSON.stringify(seb_settings),
-                device_policy, require_screen_capability, require_resume_approval, id
+                allow_mobile_devices, id
             ]);
             res.json({ success: true, id: id });
         } else {
@@ -1563,19 +1502,18 @@ app.post('/api/canvas-native/exam/:quiz_id', verifyExtensionToken, async (req, r
                     require_extension, require_companion_app, allowed_apps, blocked_apps, allowed_urls, 
                     require_room_scan, additional_instructions, require_mobile_camera,
                     verify_video, verify_audio, verify_desktop, verify_id, verify_signature, allow_calculator, allow_whiteboard,
-                    allow_mobile_devices, seb_settings,
-                    device_policy, require_screen_capability, require_resume_approval,
+                    allow_mobile_devices,
                     is_open, created_at
                 ) VALUES (
                     $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18,
                     $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37,
-                    $38, $39, $40, $41, $42, $43, $44, $45, $46::jsonb, $47, $48, $49,
+                    $38, $39, $40, $41, $42, $43, $44, $45,
                     true, CURRENT_TIMESTAMP
                 )
                 RETURNING id
             `, [
                 body.title || 'Canvas Native Exam', body.canvas_course_id || 'canvas_native', body.canvas_quiz_url, body.exam_code, body.max_attempts || 1,
-                body.require_camera, body.require_mic, effective_require_screen,
+                body.require_camera, body.require_mic, body.require_screen,
                 body.disable_right_click, body.require_fullscreen, body.require_seb,
                 body.max_violations || 0, body.canvas_quiz_password || '', body.disable_clipboard,
                 body.disable_printing, body.only_one_screen, body.block_downloads, body.prevent_reentry,
@@ -1586,8 +1524,7 @@ app.post('/api/canvas-native/exam/:quiz_id', verifyExtensionToken, async (req, r
                 require_extension, require_companion_app, allowed_apps, blocked_apps, allowed_urls,
                 require_room_scan, additional_instructions, require_mobile_camera || false,
                 verify_video, verify_audio, verify_desktop, verify_id, verify_signature, allow_calculator, allow_whiteboard,
-                allow_mobile_devices, JSON.stringify(seb_settings || normalizeSebSettings({})),
-                device_policy || 'desktop_only', require_screen_capability === true, require_resume_approval === true
+                allow_mobile_devices
             ]);
             res.json({ success: true, id: result.rows[0].id });
         }
@@ -1614,11 +1551,6 @@ app.patch('/api/exams/:id', requireInstructor, async (req, res) => {
             max_violations, canvas_quiz_password, disable_clipboard, disable_printing,
             only_one_screen, block_downloads, prevent_reentry, require_room_scan, additional_instructions, require_mobile_camera
         } = req.body;
-        const device_policy = normalizeDevicePolicy(req.body.device_policy, 'any_supported');
-        const legacyMobile = deriveLegacyMobileFlags(device_policy);
-        const require_screen_capability = req.body.require_screen_capability === true;
-        const require_resume_approval = req.body.require_resume_approval === true;
-        const effective_require_screen = !!(require_screen || require_screen_capability);
 
         const record_web_traffic = req.body.record_web_traffic || false;
         const disable_new_tabs = req.body.disable_new_tabs || false;
@@ -1630,13 +1562,12 @@ app.patch('/api/exams/:id', requireInstructor, async (req, res) => {
         const advanced_vm_detection = req.body.advanced_vm_detection || false;
         const advanced_hardware_detection = req.body.advanced_hardware_detection || false;
         const allow_apps = req.body.allow_apps || false;
-        const block_mobile = legacyMobile.blockMobile;
+        const block_mobile = req.body.block_mobile || false;
         
         const require_companion_app = req.body.require_companion_app || false;
         const allowed_apps = req.body.allowed_apps || null;
         const blocked_apps = req.body.blocked_apps || null;
         const allowed_urls = req.body.allowed_urls || null;
-        const seb_settings = normalizeSebSettings(req.body.seb_settings);
 
         // Proctorio makeover specific parameters
         const verify_video = req.body.verify_video || false;
@@ -1646,7 +1577,7 @@ app.patch('/api/exams/:id', requireInstructor, async (req, res) => {
         const verify_signature = req.body.verify_signature || false;
         const allow_calculator = req.body.allow_calculator || false;
         const allow_whiteboard = req.body.allow_whiteboard || false;
-        const allow_mobile_devices = legacyMobile.allowMobileDevices;
+        const allow_mobile_devices = req.body.allow_mobile_devices || false;
         const behavior_preset = req.body.behavior_preset || 'Recommended';
         const weight_navigating_away = req.body.weight_navigating_away !== undefined ? parseInt(req.body.weight_navigating_away) : 1;
         const weight_keystrokes = req.body.weight_keystrokes !== undefined ? parseInt(req.body.weight_keystrokes) : 1;
@@ -1687,14 +1618,13 @@ app.patch('/api/exams/:id', requireInstructor, async (req, res) => {
                 allow_calculator = $42, allow_whiteboard = $43, behavior_preset = $44,
                 weight_navigating_away = $45, weight_keystrokes = $46, weight_copy_paste = $47, weight_browser_resize = $48,
                 weight_head_movement = $49, weight_multi_face = $50, weight_leaving_room = $51,
-                allow_mobile_devices = $52, seb_settings = $53::jsonb,
-                device_policy = $54, require_screen_capability = $55, require_resume_approval = $56,
+                allow_mobile_devices = $52,
                 updated_at = NOW()
-            WHERE id = $57 AND (canvas_course_id = $58 OR canvas_course_id = $59)
+            WHERE id = $53 AND (canvas_course_id = $54 OR canvas_course_id = $55)
             RETURNING *
         `, [
             title, canvas_quiz_url, exam_code, max_attempts,
-            require_camera, require_mic, effective_require_screen,
+            require_camera, require_mic, require_screen,
             disable_right_click, require_fullscreen, require_seb,
             max_violations || 0, canvas_quiz_password || '', 
             disable_clipboard || false, disable_printing || false,
@@ -1710,7 +1640,6 @@ app.patch('/api/exams/:id', requireInstructor, async (req, res) => {
             weight_navigating_away, weight_keystrokes, weight_copy_paste, weight_browser_resize,
             weight_head_movement, weight_multi_face, weight_leaving_room,
             allow_mobile_devices,
-            JSON.stringify(seb_settings), device_policy, require_screen_capability, require_resume_approval,
             id, canvasCourseId, alternativeCourseId || ''
         ]);
 
@@ -1739,44 +1668,6 @@ app.patch('/api/exams/:id', requireInstructor, async (req, res) => {
     }
 });
 
-function getRequestDevice(req) {
-    return normalizeDeviceAttestation(req.body && req.body.device_profile, {
-        userAgent: req.get('user-agent') || '',
-        mobileHint: req.get('sec-ch-ua-mobile') || ''
-    });
-}
-
-function describeDevice(device) {
-    const pieces = [device.family, device.os, device.platform].filter(Boolean);
-    if (device.screenWidth && device.screenHeight) pieces.push(`${device.screenWidth}x${device.screenHeight}`);
-    return pieces.join(' / ').slice(0, 500);
-}
-
-async function writeSessionEvent(examSessionId, eventType, eventMessage) {
-    await pool.query(
-        'INSERT INTO proctor_logs (exam_session_id, event_type, event_message) VALUES ($1, $2, $3)',
-        [examSessionId, eventType, eventMessage]
-    );
-}
-
-function sendDevicePolicyBlock(res, result, device) {
-    return res.status(403).json({
-        error: result.message,
-        code: result.code,
-        detected_device_family: device.family,
-        detected_device_os: device.os
-    });
-}
-
-function sendResumeApprovalBlock(res, session, reason) {
-    return res.status(423).json({
-        error: reason || 'Your attempt was interrupted and must be approved by your instructor before it can resume.',
-        code: 'RESUME_APPROVAL_REQUIRED',
-        resume_approval_required: true,
-        session_id: session.id
-    });
-}
-
 // API: Helper to verify student exam access & handle resumption / prevent_reentry
 async function verifyStudentExamAccess(exam, userId, ltiSession) {
     if (!exam.is_open) {
@@ -1792,12 +1683,7 @@ async function verifyStudentExamAccess(exam, userId, ltiSession) {
     let isResuming = false;
     
     if (latestSession) {
-        if (latestSession.resume_approval_required) {
-            // Approval is the stricter, auditable form of re-entry control. Keep
-            // this same attempt eligible so the instructor can release it instead
-            // of consuming a new Canvas attempt after a technical interruption.
-            isResuming = true;
-        } else if (latestSession.status === 'started') {
+        if (latestSession.status === 'started') {
             isResuming = true;
         } else if (latestSession.status === 'unexpected') {
             if (exam.prevent_reentry) {
@@ -1890,9 +1776,6 @@ app.post('/api/exams/verify-code', requireAuth, async (req, res) => {
         if (examResult.rows.length === 0) return res.status(404).json({ error: 'Invalid exam code' });
         
         const exam = examResult.rows[0];
-        const device = getRequestDevice(req);
-        const deviceDecision = evaluateDevicePolicy(exam, device);
-        if (!deviceDecision.allowed) return sendDevicePolicyBlock(res, deviceDecision, device);
         const result = await verifyStudentExamAccess(exam, userId, req.session.lti);
         res.json(result);
     } catch (err) {
@@ -1936,9 +1819,6 @@ app.post('/api/exams/verify-placement', requireAuth, async (req, res) => {
         if (examResult.rows.length === 0) return res.status(404).json({ error: 'Linked exam not found' });
         
         const exam = examResult.rows[0];
-        const device = getRequestDevice(req);
-        const deviceDecision = evaluateDevicePolicy(exam, device);
-        if (!deviceDecision.allowed) return sendDevicePolicyBlock(res, deviceDecision, device);
         const result = await verifyStudentExamAccess(exam, userId, req.session.lti);
         res.json(result);
     } catch (err) {
@@ -2124,114 +2004,11 @@ app.get('/api/session/status', requireAuth, async (req, res) => {
     }
 });
 
-// Lightweight liveness record. This is intentionally HTTP as well as Socket.IO:
-// mobile operating systems and unstable networks can recreate the socket while the
-// exam page itself is still alive, and the server needs an authoritative signal that
-// the same device and recording session returned.
-app.post('/api/session/heartbeat', requireAuth, async (req, res) => {
-    try {
-        const { exam_session_id } = req.body;
-        if (!await assertSessionOwnership(req, res, exam_session_id)) return;
-
-        const result = await pool.query(
-            `SELECT es.*, e.device_policy, e.require_mobile_camera,
-                    e.require_screen_capability, e.require_resume_approval
-             FROM exam_sessions es
-             JOIN exams e ON e.id = es.exam_id
-             WHERE es.id = $1`,
-            [exam_session_id]
-        );
-        if (result.rows.length === 0) return res.status(404).json({ error: 'Session not found' });
-        const session = result.rows[0];
-        const device = getRequestDevice(req);
-        const deviceDecision = evaluateDevicePolicy(session, device, { requireActiveCapture: true });
-        if (!deviceDecision.allowed) return sendDevicePolicyBlock(res, deviceDecision, device);
-
-        const deviceChanged = didDeviceInstanceChange(session.device_instance_id, device.instanceId);
-        if (deviceChanged) {
-            await pool.query(
-                `UPDATE exam_sessions
-                 SET device_instance_id = $1, device_family = $2, device_platform = $3,
-                     device_user_agent = $4, last_seen_at = NOW(),
-                     interruption_count = COALESCE(interruption_count, 0) + 1,
-                     resume_approval_required = CASE WHEN $5 THEN true ELSE resume_approval_required END
-                 WHERE id = $6`,
-                [device.instanceId, device.family, device.platform, device.userAgent, !!session.require_resume_approval, session.id]
-            );
-            await writeSessionEvent(session.id, 'device_changed', `Active attempt moved to a different browser/device profile: ${describeDevice(device)}.`);
-            session.resume_approval_required = !!(session.resume_approval_required || session.require_resume_approval);
-        } else {
-            await pool.query('UPDATE exam_sessions SET last_seen_at = NOW() WHERE id = $1', [session.id]);
-        }
-
-        if (session.resume_approval_required) return sendResumeApprovalBlock(res, session);
-
-        if (session.status === 'unexpected') {
-            cancelPendingFinalization(session.id, 'healthy heartbeat resumed the attempt');
-            await pool.query("UPDATE exam_sessions SET status = 'started', end_time = NULL WHERE id = $1", [session.id]);
-            await writeSessionEvent(session.id, 'interruption_recovered', 'The original exam page reconnected within the recovery window.');
-        }
-
-        res.json({ success: true, status: session.status === 'unexpected' ? 'started' : session.status });
-    } catch (err) {
-        res.status(500).json({ error: err.message });
-    }
-});
-
-app.get('/api/session/:id/resume-status', requireAuth, async (req, res) => {
-    try {
-        if (!await assertSessionOwnership(req, res, req.params.id)) return;
-        const result = await pool.query(
-            'SELECT status, resume_approval_required, resume_approved_at FROM exam_sessions WHERE id = $1',
-            [req.params.id]
-        );
-        if (result.rows.length === 0) return res.status(404).json({ error: 'Session not found' });
-        res.json(result.rows[0]);
-    } catch (err) {
-        res.status(500).json({ error: err.message });
-    }
-});
-
-app.post('/api/sessions/:id/approve-resume', requireInstructor, async (req, res) => {
-    try {
-        const { canvasCourseId, alternativeCourseId } = req.session.lti;
-        const owned = await pool.query(
-            `SELECT es.id, es.exam_id
-             FROM exam_sessions es
-             JOIN exams e ON e.id = es.exam_id
-             WHERE es.id = $1 AND (e.canvas_course_id = $2 OR e.canvas_course_id = $3)`,
-            [req.params.id, canvasCourseId, alternativeCourseId || '']
-        );
-        if (owned.rows.length === 0) return res.status(404).json({ error: 'Session not found' });
-
-        cancelPendingFinalization(Number(req.params.id), 'instructor approved resume');
-        const updated = await pool.query(
-            `UPDATE exam_sessions
-             SET resume_approval_required = false, resume_approved_at = NOW(),
-                 status = CASE WHEN status IN ('unexpected', 'abandoned') THEN 'started' ELSE status END,
-                 end_time = CASE WHEN status IN ('unexpected', 'abandoned') THEN NULL ELSE end_time END,
-                 last_seen_at = NOW()
-             WHERE id = $1
-             RETURNING *`,
-            [req.params.id]
-        );
-        await writeSessionEvent(req.params.id, 'resume_approved', 'Instructor approved the interrupted attempt to resume.');
-        io.to('student_' + req.params.id).emit('resume_approved');
-        io.to('teacher_' + owned.rows[0].exam_id).emit('student_status', {
-            session_id: Number(req.params.id), status: 'approved_to_resume'
-        });
-        res.json({ success: true, session: updated.rows[0] });
-    } catch (err) {
-        res.status(500).json({ error: err.message });
-    }
-});
-
 // API: Start Exam Session (Student)
 app.post('/api/session/start', requireAuth, async (req, res) => {
     try {
         const { exam_id, verify_id_image, verify_signature_image, verify_signature_name } = req.body;
         const { userId, userName } = req.session.lti;
-        const device = getRequestDevice(req);
 
         // Check if there is an active/resumable session
         const latestSessionQuery = await pool.query(
@@ -2240,94 +2017,28 @@ app.post('/api/session/start', requireAuth, async (req, res) => {
         );
         const latestSession = latestSessionQuery.rows[0];
         
-        // Enforce the SEB requirement on the server as well as in student.js.
-        // The previous client-only gate trusted ?seb=true, so adding that query
-        // parameter in Chrome was enough to start a supposedly locked exam.
-        const examResult = await pool.query('SELECT * FROM exams WHERE id = $1', [exam_id]);
+        // Find if exam has prevent_reentry enabled
+        const examResult = await pool.query('SELECT prevent_reentry FROM exams WHERE id = $1', [exam_id]);
         const exam = examResult.rows[0];
-        if (!exam) return res.status(404).json({ error: 'Exam not found' });
-        if (exam.require_seb && !isSebUserAgent(req.get('user-agent'))) {
-            return res.status(403).json({
-                error: 'This exam must be started inside Safe Exam Browser.',
-                code: 'SEB_REQUIRED'
-            });
-        }
-        const deviceDecision = evaluateDevicePolicy(exam, device, { requireActiveCapture: true });
-        if (!deviceDecision.allowed) return sendDevicePolicyBlock(res, deviceDecision, device);
         const preventReentry = exam ? exam.prevent_reentry : false;
 
         let session;
         let next_chunk_index = 0;
 
-        if (latestSession && (
-            latestSession.status === 'started' ||
-            (latestSession.status === 'unexpected' && !preventReentry) ||
-            latestSession.resume_approval_required
-        )) {
+        if (latestSession && (latestSession.status === 'started' || (latestSession.status === 'unexpected' && !preventReentry))) {
             // Resume the existing session
             session = latestSession;
-            const hasFreshInstructorApproval = hasFreshResumeApproval(session);
-
-            // Reaching /session/start for an existing session means the original
-            // page was reloaded, force-closed, or reopened after a reboot. In strict
-            // mode that event itself requires approval, even if the disconnect was
-            // shorter than the socket's 30-second network grace period.
-            if (shouldRequireApprovalForExistingStart(exam, session)) {
-                await pool.query(
-                    `UPDATE exam_sessions
-                     SET resume_approval_required = true,
-                         interruption_count = COALESCE(interruption_count, 0) + 1,
-                         last_seen_at = NOW()
-                     WHERE id = $1`,
-                    [session.id]
-                );
-                await writeSessionEvent(session.id, 'connection_interrupted', 'The existing attempt was reopened or reloaded and requires instructor approval.');
-                session.resume_approval_required = true;
-            }
-
-            const deviceChanged = didDeviceInstanceChange(session.device_instance_id, device.instanceId);
-            if (deviceChanged) {
-                const previousDescription = [session.device_family, session.device_platform].filter(Boolean).join(' / ') || 'previous device';
-                await pool.query(
-                    `UPDATE exam_sessions
-                     SET device_instance_id = $1, device_family = $2, device_platform = $3,
-                         device_user_agent = $4, interruption_count = COALESCE(interruption_count, 0) + 1,
-                         resume_approval_required = CASE WHEN $5 THEN true ELSE resume_approval_required END
-                     WHERE id = $6`,
-                    [device.instanceId, device.family, device.platform, device.userAgent, !!exam.require_resume_approval, session.id]
-                );
-                await writeSessionEvent(
-                    session.id,
-                    'device_changed',
-                    `Attempt resumed from a different browser/device profile (${previousDescription} -> ${describeDevice(device)}).`
-                );
-                session.device_instance_id = device.instanceId;
-                session.device_family = device.family;
-                session.device_platform = device.platform;
-                if (exam.require_resume_approval) session.resume_approval_required = true;
-            }
-
-            if (session.resume_approval_required) {
-                return sendResumeApprovalBlock(res, session);
-            }
-            if (hasFreshInstructorApproval) {
-                await pool.query('UPDATE exam_sessions SET resume_approved_at = NULL WHERE id = $1', [session.id]);
-                session.resume_approved_at = null;
-            }
             // The student is back, so the deferred finalization queued by their
             // beforeunload beacon must not fire — it would assemble a partial video and
             // clear the chunks this resumed recording is about to extend.
             cancelPendingFinalization(session.id, 'student resumed the attempt');
             if (session.status === 'unexpected') {
-                await pool.query("UPDATE exam_sessions SET status = 'started', end_time = NULL, last_seen_at = NOW() WHERE id = $1", [session.id]);
-                await writeSessionEvent(session.id, 'interruption_recovered', 'Student resumed the interrupted attempt within the recovery window.');
+                await pool.query("UPDATE exam_sessions SET status = 'started' WHERE id = $1", [session.id]);
                 session.status = 'started';
-            } else {
-                await pool.query('UPDATE exam_sessions SET last_seen_at = NOW() WHERE id = $1', [session.id]);
             }
 
             // Determine next chunk index
-            const chunkDir = getSessionChunkDir(session.id);
+            const chunkDir = path.join(os.tmpdir(), `chunks-${session.id}`);
             if (fs.existsSync(chunkDir)) {
                 let maxIdx = -1;
                 for (const file of fs.readdirSync(chunkDir)) {
@@ -2344,20 +2055,11 @@ app.post('/api/session/start', requireAuth, async (req, res) => {
             const countQuery = await pool.query('SELECT COUNT(*) as attempts FROM exam_sessions WHERE exam_id = $1 AND student_canvas_id = $2', [exam_id, userId]);
             const currentAttempts = parseInt(countQuery.rows[0].attempts, 10);
             const sessionResult = await pool.query(`
-                INSERT INTO exam_sessions (
-                    exam_id, student_canvas_id, student_name, attempt_number,
-                    verify_id_image, verify_signature_image, verify_signature_name,
-                    device_instance_id, device_family, device_platform, device_user_agent, last_seen_at
-                )
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, NOW()) RETURNING *
-            `, [
-                exam_id, userId, userName, currentAttempts + 1,
-                verify_id_image || null, verify_signature_image || null, verify_signature_name || null,
-                device.instanceId, device.family, device.platform, device.userAgent
-            ]);
+                INSERT INTO exam_sessions (exam_id, student_canvas_id, student_name, attempt_number, verify_id_image, verify_signature_image, verify_signature_name)
+                VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *
+            `, [exam_id, userId, userName, currentAttempts + 1, verify_id_image || null, verify_signature_image || null, verify_signature_name || null]);
             session = sessionResult.rows[0];
             console.log(`[New Session] Student ${userName} starting new session ${session.id}`);
-            await writeSessionEvent(session.id, 'device_verified', `Primary device accepted: ${describeDevice(device)}.`);
         }
 
         if (session && req.session.lti && req.session.lti.sessionToken) {
@@ -2520,128 +2222,6 @@ async function logSessionEvent(exam_session_id, event_type, event_message) {
     }
 }
 
-const activeDriveNormalizations = new Set();
-
-// Repair a previously uploaded raw WebM without touching its camera, secondary
-// camera, evidence, or logs. The original Drive file is intentionally retained as
-// a forensic backup; the session is atomically pointed at the new seekable MP4 only
-// after FFmpeg and Drive upload both succeed.
-async function normalizeExistingSessionToMp4(examSessionId) {
-    const normalizedId = Number(examSessionId);
-    if (!Number.isInteger(normalizedId) || normalizedId <= 0) throw new Error('Invalid session id');
-    if (activeDriveNormalizations.has(normalizedId)) throw new Error('This session is already being normalized');
-    activeDriveNormalizations.add(normalizedId);
-
-    const rawPath = path.join(os.tmpdir(), `normalize-session-${normalizedId}-${Date.now()}.webm`);
-    const mp4Path = path.join(os.tmpdir(), `normalize-session-${normalizedId}-${Date.now()}.mp4`);
-    try {
-        const result = await pool.query(`
-            SELECT es.drive_file_id, es.mime_type, es.student_name, es.attempt_number, e.title
-            FROM exam_sessions es
-            JOIN exams e ON e.id = es.exam_id
-            WHERE es.id = $1
-        `, [normalizedId]);
-        if (result.rows.length === 0) throw new Error('Session not found');
-        const session = result.rows[0];
-        if (!session.drive_file_id) throw new Error('Session has no uploaded primary recording');
-        if (String(session.mime_type || '').toLowerCase().includes('mp4')) {
-            return { sessionId: normalizedId, alreadyMp4: true };
-        }
-
-        const source = await downloadVideoFromDrive(session.drive_file_id);
-        const chunks = [];
-        for await (const chunk of source) chunks.push(chunk);
-        fs.writeFileSync(rawPath, Buffer.concat(chunks));
-        if (fs.statSync(rawPath).size === 0) throw new Error('Downloaded recording was empty');
-
-        const duration = await transcodeSegmentToMp4(rawPath, mp4Path, 15 * 60 * 1000);
-        if (duration <= 0 || !fs.existsSync(mp4Path) || fs.statSync(mp4Path).size === 0) {
-            throw new Error('FFmpeg produced no valid MP4 output');
-        }
-
-        const safeStudent = String(session.student_name || 'student').replace(/[^a-z0-9]/gi, '_');
-        const safeExam = String(session.title || 'exam').replace(/[^a-z0-9]/gi, '_');
-        const fileName = `${safeStudent}_${safeExam}_Session_${normalizedId}_Attempt_${session.attempt_number || 1}_Normalized.mp4`;
-        const parentFolderId = await getFolderId();
-        const newDriveFileId = await uploadVideoToDrive(mp4Path, fileName, 'video/mp4', parentFolderId);
-
-        await pool.query(
-            'UPDATE exam_sessions SET drive_file_id = $1, mime_type = $2 WHERE id = $3',
-            [newDriveFileId, 'video/mp4', normalizedId]
-        );
-        await logSessionEvent(normalizedId, 'recording_normalized',
-            `Primary recording normalized from WebM to seekable MP4 (${Math.round(duration)}s). ` +
-            'The original Drive file was retained as a backup.');
-        return { sessionId: normalizedId, duration, driveFileId: newDriveFileId, mimeType: 'video/mp4' };
-    } finally {
-        activeDriveNormalizations.delete(normalizedId);
-        for (const tempPath of [rawPath, mp4Path]) {
-            try { if (fs.existsSync(tempPath)) fs.unlinkSync(tempPath); } catch (e) {}
-        }
-    }
-}
-
-async function assembleAuxiliaryCameraRecording(examSessionId, mimeType, fileStem, folderId) {
-    const cameraDir = getSessionChunkDir(examSessionId, 'camera');
-    if (!fs.existsSync(cameraDir)) return null;
-    const ordered = readOrderedChunks(cameraDir);
-    if (ordered.length === 0) return null;
-
-    const sourceMime = mimeType || 'video/webm';
-    const rawExt = sourceMime.includes('webm') ? 'webm' : 'mp4';
-    const segments = groupChunksIntoSegments(cameraDir, ordered);
-    const headerSegment = segments.find(segment => segment.hasOwnHeader);
-    const initSegment = headerSegment
-        ? extractInitSegment(path.join(cameraDir, headerSegment.files[0]))
-        : null;
-    const rawPaths = [];
-    const mp4Paths = [];
-    let finalPath = null;
-
-    try {
-        for (let i = 0; i < segments.length; i++) {
-            const rawPath = path.join(os.tmpdir(), `session-${examSessionId}-camera-seg${i}-raw.${rawExt}`);
-            if (writeSegmentFile(cameraDir, segments[i], rawPath, initSegment)) rawPaths.push(rawPath);
-        }
-        if (rawPaths.length === 0) throw new Error('no decodable camera segments');
-
-        for (let i = 0; i < rawPaths.length; i++) {
-            const mp4Path = path.join(os.tmpdir(), `session-${examSessionId}-camera-seg${i}.mp4`);
-            try {
-                const duration = await transcodeSegmentToMp4(rawPaths[i], mp4Path);
-                if (duration <= 0 || !fs.existsSync(mp4Path) || fs.statSync(mp4Path).size === 0) {
-                    throw new Error('produced no decodable output');
-                }
-                mp4Paths.push(mp4Path);
-            } catch (err) {
-                console.error(`[Assemble] Camera segment ${i + 1} failed: ${err.message}`);
-                try { if (fs.existsSync(mp4Path)) fs.unlinkSync(mp4Path); } catch (e) {}
-            }
-        }
-        if (mp4Paths.length === 0) throw new Error('no camera segment could be normalized');
-
-        finalPath = path.join(os.tmpdir(), `session-${examSessionId}-camera.mp4`);
-        if (mp4Paths.length === 1) {
-            fs.renameSync(mp4Paths[0], finalPath);
-            mp4Paths.length = 0;
-        } else {
-            await concatMp4Segments(mp4Paths, finalPath, os.tmpdir());
-        }
-        const driveFileId = await uploadVideoToDrive(finalPath, `${fileStem}_Camera.mp4`, 'video/mp4', folderId);
-        console.log(`[Assemble] Uploaded independent camera recording. File ID: ${driveFileId}`);
-        return { driveFileId, mimeType: 'video/mp4' };
-    } catch (err) {
-        console.error(`[Assemble] Independent camera recording failed: ${err.message}`);
-        await logSessionEvent(examSessionId, 'system_error',
-            `The independent webcam recording could not be produced (${err.message}). Screen evidence may still be available.`);
-        return null;
-    } finally {
-        [...rawPaths, ...mp4Paths, finalPath].filter(Boolean).forEach(tempPath => {
-            try { if (fs.existsSync(tempPath)) fs.unlinkSync(tempPath); } catch (e) {}
-        });
-    }
-}
-
 function cancelPendingFinalization(exam_session_id, reason) {
     const timer = pendingFinalizations.get(exam_session_id);
     if (timer) {
@@ -2667,7 +2247,7 @@ function scheduleUnexpectedFinalization(exam_session_id, total_chunks) {
             }
 
             // Chunks still arriving means the recording is alive; give it longer.
-            const chunkDir = getSessionChunkDir(exam_session_id);
+            const chunkDir = path.join(os.tmpdir(), `chunks-${exam_session_id}`);
             if (fs.existsSync(chunkDir)) {
                 const newest = fs.readdirSync(chunkDir)
                     .map(f => {
@@ -2697,16 +2277,13 @@ function scheduleUnexpectedFinalization(exam_session_id, total_chunks) {
 // Helper to assemble and upload video chunks in the background
 async function assembleAndUploadSessionVideo(exam_session_id, total_chunks) {
     if (activeAssemblies.has(exam_session_id)) {
-        const existingHint = pendingAssemblyHints.get(exam_session_id);
-        const nextHint = Math.max(Number(existingHint) || 0, Number(total_chunks) || 0);
-        pendingAssemblyHints.set(exam_session_id, nextHint || total_chunks);
-        console.log(`[Assemble] Assembly already in progress for session ${exam_session_id}. Queued a follow-up reconciliation.`);
+        console.log(`[Assemble] Assembly already in progress for session ${exam_session_id}. Aborting duplicate request.`);
         return;
     }
     activeAssemblies.add(exam_session_id);
 
     try {
-        const chunkDir = getSessionChunkDir(exam_session_id);
+        const chunkDir = path.join(os.tmpdir(), `chunks-${exam_session_id}`);
 
         // Wait for the expected chunks to land on disk.
         //
@@ -2760,7 +2337,7 @@ async function assembleAndUploadSessionVideo(exam_session_id, total_chunks) {
 
         // Get student/exam info for nice filename and mime type
         const sessionInfo = await pool.query(`
-            SELECT es.student_name, es.attempt_number, es.started_at, es.recording_started_at, es.recording_stopped_at, es.end_time, es.mime_type, es.camera_mime_type, es.mobile_mime_type, e.title, e.require_mobile_camera
+            SELECT es.student_name, es.attempt_number, es.started_at, es.recording_started_at, es.end_time, es.mime_type, es.mobile_mime_type, e.title, e.require_mobile_camera
             FROM exam_sessions es
             JOIN exams e ON es.exam_id = e.id
             WHERE es.id = $1
@@ -2800,9 +2377,7 @@ async function assembleAndUploadSessionVideo(exam_session_id, total_chunks) {
             setupLeadInSec = (s.recording_started_at && s.started_at)
                 ? Math.max(0, (new Date(s.recording_started_at).getTime() - new Date(s.started_at).getTime()) / 1000)
                 : 0;
-            sessionEndMs = s.recording_stopped_at
-                ? new Date(s.recording_stopped_at).getTime()
-                : (s.end_time ? new Date(s.end_time).getTime() : Date.now());
+            sessionEndMs = s.end_time ? new Date(s.end_time).getTime() : Date.now();
             mimeTypeFromDb = s.mime_type || 'video/webm';
         }
 
@@ -2888,12 +2463,7 @@ async function assembleAndUploadSessionVideo(exam_session_id, total_chunks) {
         // this exists to prevent, and taking only the first segment instead would
         // discard the rest of the attempt outright.
         const mustTranscode = segmentRawPaths.length > 1;
-        // Completed instructor recordings must be seekable MP4. Raw WebM from
-        // MediaRecorder often has no finite duration, which freezes review controls
-        // and prevents timeline alerts from mapping to the video. The environment
-        // flag is retained for forcing normalization of unusual non-WebM inputs, but
-        // WebM is now always normalized.
-        const wantTranscode = isWebm || process.env.TRANSCODE_TO_MP4 === 'true';
+        const wantTranscode = process.env.TRANSCODE_TO_MP4 === 'true';
 
         if (mustTranscode || (isWebm && wantTranscode)) {
             if (mustTranscode && !wantTranscode) {
@@ -3026,13 +2596,6 @@ async function assembleAndUploadSessionVideo(exam_session_id, total_chunks) {
         const driveFileId = await uploadVideoToDrive(finalTempFile, driveFileName, finalMimeType, attemptFolderId);
         console.log(`Uploaded to Google Drive. File ID: ${driveFileId}`);
 
-        const cameraResult = await assembleAuxiliaryCameraRecording(
-            exam_session_id,
-            sessionInfo.rows[0] && sessionInfo.rows[0].camera_mime_type,
-            `${studentName}_${examTitle}_Session_${exam_session_id}_Attempt_${attempt}`,
-            attemptFolderId
-        );
-
         // Check if there is an environment room scan video on disk and upload it
         let roomScanDriveFileId = null;
         const roomScan = findRoomScanOnDisk(exam_session_id);
@@ -3069,7 +2632,7 @@ async function assembleAndUploadSessionVideo(exam_session_id, total_chunks) {
             // gap or header handling, and derived its container from the *desktop*
             // mime type — so a phone recording MP4 inside a WebM session produced a
             // file labelled .webm that nothing could play.
-            const mobileChunkDir = getSessionChunkDir(exam_session_id, 'mobile');
+            const mobileChunkDir = path.join(os.tmpdir(), `chunks-mobile-${exam_session_id}`);
             if (fs.existsSync(mobileChunkDir)) {
                 console.log(`[Assemble] Assembling mobile video for session ${exam_session_id}...`);
                 const mobileMime = (sessionInfo.rows[0].mobile_mime_type) || mimeTypeFromDb || 'video/webm';
@@ -3113,7 +2676,7 @@ async function assembleAndUploadSessionVideo(exam_session_id, total_chunks) {
                         console.error(`[Assemble] No decodable mobile segments for session ${exam_session_id}.`);
                         await logSessionEvent(exam_session_id, 'system_error',
                             'The secondary camera recording could not be decoded and no video was produced for it.');
-                    } else if (mobileRawPaths.length > 1 || mobileIsWebm || process.env.TRANSCODE_TO_MP4 === 'true') {
+                    } else if (mobileRawPaths.length > 1 || process.env.TRANSCODE_TO_MP4 === 'true') {
                         const mp4MobileOut = path.join(os.tmpdir(), `session-${exam_session_id}-mobile.mp4`);
                         const mobileMp4s = [];
                         try {
@@ -3166,16 +2729,22 @@ async function assembleAndUploadSessionVideo(exam_session_id, total_chunks) {
                         try { if (fs.existsSync(tempMobileOutFile)) fs.unlinkSync(tempMobileOutFile); } catch(e){}
                     }
 
-                    console.log(`[Assemble] Retaining ${mobileOrdered.length} secondary-camera source chunk(s) for late recovery in ${mobileChunkDir}.`);
+                    // Delete only the chunks consumed, matching the primary path.
+                    try {
+                        for (const entry of mobileOrdered) {
+                            const fp = path.join(mobileChunkDir, entry.file);
+                            try { if (fs.existsSync(fp)) fs.unlinkSync(fp); } catch (e) {}
+                        }
+                        if (fs.existsSync(mobileChunkDir) && fs.readdirSync(mobileChunkDir).length === 0) {
+                            fs.rmdirSync(mobileChunkDir);
+                        }
+                    } catch(e){}
                 }
             }
         }
 
         // Update database with Google Drive file ID and format
-        await pool.query(
-            'UPDATE exam_sessions SET drive_file_id = $1, mime_type = $2, mobile_drive_file_id = $3, room_scan_drive_file_id = $4, camera_drive_file_id = $5, camera_mime_type = COALESCE($6, camera_mime_type) WHERE id = $7',
-            [driveFileId, finalMimeType, mobileDriveFileId, roomScanDriveFileId, cameraResult && cameraResult.driveFileId, cameraResult && cameraResult.mimeType, exam_session_id]
-        );
+        await pool.query('UPDATE exam_sessions SET drive_file_id = $1, mime_type = $2, mobile_drive_file_id = $3, room_scan_drive_file_id = $4 WHERE id = $5', [driveFileId, finalMimeType, mobileDriveFileId, roomScanDriveFileId, exam_session_id]);
 
         // Upload Security logs to Google Drive as a Google Doc
         try {
@@ -3292,10 +2861,29 @@ async function assembleAndUploadSessionVideo(exam_session_id, total_chunks) {
         } catch (cleanupErr) {
             console.error(`Failed to clean up temp out file for session ${exam_session_id}:`, cleanupErr.message);
         }
-        // Keep the received chunks for the configured retention window. If a laptop
-        // reconnects with a late final chunk, the complete recording can be rebuilt
-        // instead of replacing it with an undecodable tail that has no header.
-        console.log(`[Assemble] Retaining ${files.length} source chunk(s) for late recovery in ${chunkDir}.`);
+        // Delete only the chunks this run actually consumed.
+        //
+        // This used to `rmSync` the whole directory. Assembly takes minutes — folder
+        // creation, transcode, two Drive uploads — and a student who reloaded and
+        // resumed is appending new chunks to that same directory the entire time.
+        // Wiping it recursively at the end therefore deleted live footage, including
+        // the header chunk the resumed run needed, which is how a long attempt ended
+        // up as an unplayable or near-empty video.
+        try {
+            for (const file of files) {
+                const filePath = path.join(chunkDir, file);
+                try { if (fs.existsSync(filePath)) fs.unlinkSync(filePath); } catch (e) {}
+            }
+            const remaining = fs.existsSync(chunkDir) ? fs.readdirSync(chunkDir) : [];
+            if (remaining.length === 0) {
+                try { fs.rmdirSync(chunkDir); } catch (e) {}
+            } else {
+                console.log(`[Assemble] Kept ${remaining.length} chunk(s) in ${chunkDir} that arrived after assembly began.`);
+            }
+        } catch (cleanupErr) {
+            console.error(`Failed to clean up chunk directory for session ${exam_session_id}:`, cleanupErr.message);
+        }
+        console.log(`Cleaned up temp files for session ${exam_session_id}`);
 
     } catch (err) {
         console.error(`Failed to assemble and upload video for session ${exam_session_id}:`, err);
@@ -3310,37 +2898,22 @@ async function assembleAndUploadSessionVideo(exam_session_id, total_chunks) {
     } finally {
         activeAssemblies.delete(exam_session_id);
         mobileUploadStatus.delete(exam_session_id);
-        if (pendingAssemblyHints.has(exam_session_id)) {
-            const nextHint = pendingAssemblyHints.get(exam_session_id);
-            pendingAssemblyHints.delete(exam_session_id);
-            setTimeout(() => assembleAndUploadSessionVideo(exam_session_id, nextHint), 0);
-        }
     }
 }
 
 // API: End Exam Session
 app.post('/api/session/end', requireAuth, async (req, res) => {
     try {
-        const { exam_session_id, status, total_chunks, exit_type, recording_duration_ms } = req.body;
+        const { exam_session_id, status, total_chunks, exit_type } = req.body;
         if (!await assertSessionOwnership(req, res, exam_session_id)) return;
         if (exit_type === 'unexpected') {
             console.log(`[End Session] Unexpected exit for session ${exam_session_id}`);
-            const interruption = await pool.query(
-                `UPDATE exam_sessions es
-                 SET status = 'unexpected', end_time = COALESCE(end_time, NOW()),
-                     last_seen_at = NOW(), interruption_count = COALESCE(interruption_count, 0) + 1,
-                     resume_approval_required = CASE WHEN e.require_resume_approval THEN true ELSE es.resume_approval_required END
-                 FROM exams e
-                 WHERE es.id = $1 AND e.id = es.exam_id
-                 RETURNING es.exam_id, es.resume_approval_required`,
-                [exam_session_id]
-            );
-            await writeSessionEvent(exam_session_id, 'connection_interrupted', 'The exam page closed, reloaded, or lost its active session before submission.');
-
-            if (interruption.rows.length > 0) {
-                io.to('teacher_' + interruption.rows[0].exam_id).emit('student_status', {
-                    session_id: exam_session_id,
-                    status: interruption.rows[0].resume_approval_required ? 'approval_required' : 'unexpected'
+            await pool.query("UPDATE exam_sessions SET status = 'unexpected', end_time = COALESCE(end_time, NOW()) WHERE id = $1", [exam_session_id]);
+            
+            const examIdQuery = await pool.query('SELECT exam_id FROM exam_sessions WHERE id=$1', [exam_session_id]);
+            if (examIdQuery.rows.length > 0) {
+                io.to('teacher_' + examIdQuery.rows[0].exam_id).emit('student_status', { 
+                    session_id: exam_session_id, status: 'unexpected' 
                 });
             }
             // Assemble whatever chunks made it to disk — mobile browsers often die via
@@ -3368,24 +2941,9 @@ app.post('/api/session/end', requireAuth, async (req, res) => {
         // Stamp end_time on the clean path too. It was only ever set on the
         // unexpected-exit path, so a normally submitted attempt had a NULL end
         // time and anything measuring attempt length had to guess.
-        const durationMs = Number(recording_duration_ms);
-        const safeDurationMs = Number.isFinite(durationMs) && durationMs >= 0 && durationMs <= 24 * 60 * 60 * 1000
-            ? Math.round(durationMs)
-            : null;
         await pool.query(
-            `UPDATE exam_sessions
-             SET status = $1,
-                 end_time = COALESCE(end_time, NOW()),
-                 recording_stopped_at = COALESCE(
-                     recording_stopped_at,
-                     CASE
-                         WHEN recording_started_at IS NOT NULL AND $3::bigint IS NOT NULL
-                         THEN recording_started_at + ($3::bigint * INTERVAL '1 millisecond')
-                         ELSE NOW()
-                     END
-                 )
-             WHERE id = $2`,
-            [finalStatus, exam_session_id, safeDurationMs]
+            'UPDATE exam_sessions SET status=$1, end_time = COALESCE(end_time, NOW()) WHERE id=$2',
+            [finalStatus, exam_session_id]
         );
         
         const examIdQuery = await pool.query('SELECT exam_id FROM exam_sessions WHERE id=$1', [exam_session_id]);
@@ -3467,7 +3025,10 @@ app.post('/api/session/upload-mobile-chunk', async (req, res) => {
         
         console.log(`[Upload Mobile Chunk] Received mobile chunk #${chunk_index} for session ${exam_session_id}`);
         
-        const chunkDir = ensureSessionChunkDir(exam_session_id, 'mobile');
+        const chunkDir = path.join(os.tmpdir(), `chunks-mobile-${exam_session_id}`);
+        if (!fs.existsSync(chunkDir)) {
+            fs.mkdirSync(chunkDir, { recursive: true });
+        }
         
         const chunkPath = path.join(chunkDir, `chunk-${String(chunk_index).padStart(5, '0')}.dat`);
         const pureB64 = base64_video.replace(/^data:[^,]+,/, '').replace(/\s/g, '');
@@ -3513,12 +3074,6 @@ app.post('/api/session/mobile-upload-complete', async (req, res) => {
             const exam_session_id = ltiResult.rows[0].exam_session_id;
             console.log(`[Mobile Complete] Mobile upload completed for session ${exam_session_id}. Total chunks: ${total_chunks}`);
             mobileUploadStatus.set(exam_session_id, { total: total_chunks, finished: true });
-            const statusResult = await pool.query('SELECT status FROM exam_sessions WHERE id = $1', [exam_session_id]);
-            const status = statusResult.rows[0] ? statusResult.rows[0].status : null;
-            if (status && status !== 'started' && status !== 'unexpected') {
-                console.log(`[Mobile Complete] Session ${exam_session_id} is already ${status}; rebuilding to include recovered phone chunks.`);
-                assembleAndUploadSessionVideo(exam_session_id);
-            }
         }
         res.json({ success: true });
     } catch(err) {
@@ -3530,7 +3085,6 @@ app.post('/api/session/mobile-upload-complete', async (req, res) => {
 // API: Upload Video Chunk directly via JSON payload to Bypass Form Boundaries
 app.post('/api/session/upload-chunk', requireAuth, async (req, res) => {
     const { chunk_index, exam_session_id, base64_video } = req.body;
-    const recordingKind = req.body.recording_kind === 'camera' ? 'camera' : 'primary';
     try {
         if (!await assertSessionOwnership(req, res, exam_session_id)) return;
         if (!base64_video) throw new Error("Video payload was empty");
@@ -3539,7 +3093,11 @@ app.post('/api/session/upload-chunk', requireAuth, async (req, res) => {
         if (!Number.isInteger(index) || index < 0) throw new Error(`Invalid chunk index: ${chunk_index}`);
 
         // Write chunk data to local temporary directory instead of DB
-        const chunkDir = ensureSessionChunkDir(exam_session_id, recordingKind);
+        const chunkDir = path.join(os.tmpdir(), `chunks-${exam_session_id}`);
+        if (!fs.existsSync(chunkDir)) {
+            fs.mkdirSync(chunkDir, { recursive: true });
+            console.log(`[Upload Chunk] Created temporary chunk directory: ${chunkDir}`);
+        }
 
         const chunkPath = path.join(chunkDir, `chunk-${String(index).padStart(5, '0')}.dat`);
         const pureB64 = base64_video.replace(/^data:[^,]+,/, '').replace(/\s/g, '');
@@ -3557,26 +3115,11 @@ app.post('/api/session/upload-chunk', requireAuth, async (req, res) => {
         const stagingPath = `${chunkPath}.part`;
         fs.writeFileSync(stagingPath, pureB64, 'base64');
         fs.renameSync(stagingPath, chunkPath);
-        console.log(`[Upload Chunk] Saved ${recordingKind} chunk #${index} for session ${exam_session_id} (${fs.statSync(chunkPath).size} bytes)`);
+        console.log(`[Upload Chunk] Saved chunk #${index} for session ${exam_session_id} (${fs.statSync(chunkPath).size} bytes)`);
 
         res.json({ success: true });
     } catch (err) {
         console.error('Upload Error', err);
-        res.status(500).json({ error: err.message });
-    }
-});
-
-// API: Reconcile what the browser believes it uploaded with what is durably on disk.
-// The client keeps its IndexedDB copy until this endpoint confirms every index.
-app.post('/api/session/chunk-receipt', requireAuth, async (req, res) => {
-    try {
-        const { exam_session_id, total_chunks } = req.body;
-        const recordingKind = req.body.recording_kind === 'camera' ? 'camera' : 'primary';
-        if (!await assertSessionOwnership(req, res, exam_session_id)) return;
-        const receipt = buildChunkReceipt(getSessionChunkDir(exam_session_id, recordingKind), total_chunks);
-        res.json(receipt);
-    } catch (err) {
-        console.error('[Chunk Receipt] Error:', err.message);
         res.status(500).json({ error: err.message });
     }
 });
@@ -3651,42 +3194,11 @@ app.post('/api/session/recording-started', requireAuth, async (req, res) => {
 app.patch('/api/session/:id/format', requireAuth, async (req, res) => {
     try {
         const { id } = req.params;
-        const { mime_type, camera_mime_type, primary_recording_kind } = req.body;
+        const { mime_type } = req.body;
         if (!await assertSessionOwnership(req, res, id)) return;
-        const recordingKind = ['screen', 'camera', 'composite'].includes(primary_recording_kind)
-            ? primary_recording_kind
-            : 'composite';
-        await pool.query(
-            'UPDATE exam_sessions SET mime_type = $1, camera_mime_type = $2, primary_recording_kind = $3 WHERE id = $4',
-            [mime_type || 'video/webm', camera_mime_type || null, recordingKind, id]
-        );
+        await pool.query('UPDATE exam_sessions SET mime_type = $1 WHERE id = $2', [mime_type || 'video/webm', id]);
         res.json({ success: true });
     } catch (err) {
-        res.status(500).json({ error: err.message });
-    }
-});
-
-// Loopback-only maintenance used during deployment to repair the newest legacy
-// WebM attempt. It is deliberately unavailable through nginx/the public internet.
-app.post('/api/internal/normalize-latest-webm', async (req, res) => {
-    const remoteAddress = req.socket && req.socket.remoteAddress;
-    if (!['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(remoteAddress)) {
-        return res.status(403).json({ error: 'Loopback access required' });
-    }
-    try {
-        const latest = await pool.query(`
-            SELECT id
-            FROM exam_sessions
-            WHERE drive_file_id IS NOT NULL
-              AND LOWER(COALESCE(mime_type, '')) LIKE '%webm%'
-            ORDER BY COALESCE(recording_stopped_at, end_time, started_at) DESC
-            LIMIT 1
-        `);
-        if (latest.rows.length === 0) return res.json({ success: true, message: 'No WebM session requires normalization' });
-        const result = await normalizeExistingSessionToMp4(latest.rows[0].id);
-        res.json({ success: true, ...result });
-    } catch (err) {
-        console.error('[Normalize] Latest WebM repair failed:', err.message);
         res.status(500).json({ error: err.message });
     }
 });
@@ -3710,7 +3222,7 @@ app.get('/api/session/video-playback/:session_id', requireInstructorOrExtensionT
             masterBuffer = Buffer.concat(chunks);
         } else {
             // Prefer live filesystem chunks (current upload path writes here), then legacy DB.
-            const chunkDir = getSessionChunkDir(session_id);
+            const chunkDir = path.join(os.tmpdir(), `chunks-${session_id}`);
             if (fs.existsSync(chunkDir)) {
                 // Live monitoring fallback: order by chunk index and stop at the first
                 // hole, since a WebM stream is unreadable past a missing chunk anyway.
@@ -3778,47 +3290,6 @@ app.get('/api/session/video-playback/:session_id', requireInstructorOrExtensionT
         }
     } catch (err) {
         console.error('Playback Error', err);
-        res.status(500).json({ error: err.message });
-    }
-});
-
-// API: Get independently recorded primary camera video for playback.
-app.get('/api/session/camera-video-playback/:session_id', requireInstructorOrExtensionToken, async (req, res) => {
-    try {
-        const { session_id } = req.params;
-        const sessionInfo = (await pool.query(
-            'SELECT camera_mime_type, camera_drive_file_id FROM exam_sessions WHERE id = $1',
-            [session_id]
-        )).rows[0];
-        if (!sessionInfo || !sessionInfo.camera_drive_file_id) {
-            return res.status(404).json({ error: 'No independent camera video found for this session' });
-        }
-
-        const driveStream = await downloadVideoFromDrive(sessionInfo.camera_drive_file_id);
-        const chunks = [];
-        for await (const chunk of driveStream) chunks.push(chunk);
-        const masterBuffer = Buffer.concat(chunks);
-        const cleanMime = (sessionInfo.camera_mime_type || 'video/mp4').split(';')[0];
-        const range = req.headers.range;
-        if (range) {
-            const parts = range.replace(/bytes=/, '').split('-');
-            const start = parseInt(parts[0], 10);
-            const end = parts[1] ? parseInt(parts[1], 10) : masterBuffer.length - 1;
-            const chunkSize = end - start + 1;
-            res.writeHead(206, {
-                'Content-Range': `bytes ${start}-${end}/${masterBuffer.length}`,
-                'Accept-Ranges': 'bytes',
-                'Content-Length': chunkSize,
-                'Content-Type': cleanMime
-            });
-            return res.end(masterBuffer.slice(start, end + 1));
-        }
-        res.setHeader('Content-Type', cleanMime);
-        res.setHeader('Content-Length', masterBuffer.length);
-        res.setHeader('Accept-Ranges', 'bytes');
-        res.send(masterBuffer);
-    } catch (err) {
-        console.error('Camera Playback Error', err);
         res.status(500).json({ error: err.message });
     }
 });
@@ -3911,15 +3382,7 @@ app.get('/api/exams/:exam_id/reports', requireInstructor, async (req, res) => {
         // recording_started_at is needed by the report view: the video timeline starts
         // when the recorder started, not when the attempt did, and without it every
         // "click to seek" flag lands late by the setup lead-in.
-        const sessions = await pool.query(
-            `SELECT id, exam_id, student_canvas_id, student_name, status, started_at,
-                    recording_started_at, end_time, attempt_number, video_archived,
-                    drive_file_id, mime_type, camera_drive_file_id, camera_mime_type,
-                    primary_recording_kind, mobile_drive_file_id, device_family, device_platform,
-                    last_seen_at, interruption_count, resume_approval_required, resume_approved_at
-             FROM exam_sessions WHERE exam_id = $1`,
-            [exam_id]
-        );
+        const sessions = await pool.query('SELECT id, exam_id, student_canvas_id, student_name, status, started_at, recording_started_at, end_time, attempt_number, video_archived, drive_file_id, mobile_drive_file_id FROM exam_sessions WHERE exam_id = $1', [exam_id]);
         const logs = await pool.query(`
             SELECT pl.* FROM proctor_logs pl 
             JOIN exam_sessions es ON pl.exam_session_id = es.id 
@@ -4001,6 +3464,18 @@ app.delete('/api/session/:session_id/annotations/:annotation_id', requireInstruc
     }
 });
 
+// Helper to set/update Boolean key in plist XML string
+function setPlistBooleanKey(plistStr, keyName, value) {
+    const regex = new RegExp(`(<key>${keyName}</key>\\s*)(<true\\/>|<false\\/>)`);
+    const valTag = value ? '<true/>' : '<false/>';
+    if (regex.test(plistStr)) {
+        return plistStr.replace(regex, `$1${valTag}`);
+    } else {
+        // Append right before the closing dict tag
+        return plistStr.replace(/(<\/dict>\s*<\/plist>\s*$)/, `\t<key>${keyName}</key>\n\t${valTag}\n$1`);
+    }
+}
+
 // API: Generate Dynamic SEB Config
 app.get('/api/seb/config/:token/:filename?', async (req, res) => {
     const { token } = req.params;
@@ -4017,6 +3492,7 @@ app.get('/api/seb/config/:token/:filename?', async (req, res) => {
         if (exam_code) startUrl += `&exam_code=${encodeURIComponent(exam_code)}`;
         if (placement_id) startUrl += `&placement_id=${encodeURIComponent(placement_id)}`;
         if (exam_id) startUrl += `&exam_id=${encodeURIComponent(exam_id)}`;
+        startUrl = startUrl.replace(/&/g, '&amp;');
 
         // Fetch exam configuration to customize the SEB file settings
         let exam = null;
@@ -4034,19 +3510,85 @@ app.get('/api/seb/config/:token/:filename?', async (req, res) => {
             if (examResult.rows.length > 0) exam = examResult.rows[0];
         }
 
+        let sebConfig = '';
         const templatePath = path.join(__dirname, 'public', 'config.seb');
-        const template = fs.existsSync(templatePath) ? fs.readFileSync(templatePath, 'utf8') : '';
-        const sebConfig = buildSebConfig({
-            template,
-            startUrl,
-            quitUrl: `${baseUrl}/api/seb/quit`,
-            baseUrl,
-            exam: exam || {}
-        });
+
+        if (fs.existsSync(templatePath)) {
+            // Use User-provided template
+            sebConfig = fs.readFileSync(templatePath, 'utf8');
+            // Dynamically inject the startURL with the token
+            // We look for the startURL key and replace the following <string> value
+            const startUrlRegex = /(<key>startURL<\/key>\s*<string>)([^<]*)(<\/string>)/;
+            if (startUrlRegex.test(sebConfig)) {
+                sebConfig = sebConfig.replace(startUrlRegex, `$1${startUrl}$3`);
+            } else {
+                console.log('Template exists but startURL key not found or misformatted. Using fallback.');
+            }
+
+            // Inject or update quitURL
+            const quitUrlStr = `${baseUrl}/api/seb/quit`;
+            const quitUrlRegex = /(<key>quitURL<\/key>\s*<string>)([^<]*)(<\/string>)/;
+            if (quitUrlRegex.test(sebConfig)) {
+                sebConfig = sebConfig.replace(quitUrlRegex, `$1${quitUrlStr}$3`);
+            } else {
+                // Safely append to root dict right before the closing tags
+                sebConfig = sebConfig.replace(/(<\/dict>\s*<\/plist>\s*$)/, `\t<key>quitURL</key>\n\t<string>${quitUrlStr}</string>\n$1`);
+            }
+
+            // Inject or update quitURLConfirm
+            const quitUrlConfirmRegex = /(<key>quitURLConfirm<\/key>\s*)(<true\/>|<false\/>)/;
+            if (quitUrlConfirmRegex.test(sebConfig)) {
+                sebConfig = sebConfig.replace(quitUrlConfirmRegex, `$1<false/>`);
+            } else {
+                // Safely append to root dict right before the closing tags
+                sebConfig = sebConfig.replace(/(<\/dict>\s*<\/plist>\s*$)/, `\t<key>quitURLConfirm</key>\n\t<false/>\n$1`);
+            }
+        }
+
+        if (!sebConfig) {
+            // Sane Default Fallback (as previously implemented)
+            sebConfig = `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>URLFilterEnable</key>
+	<false/>
+	<key>allowDisplayMirroring</key>
+	<true/>
+	<key>browserWindowAllowNewTab</key>
+	<false/>
+	<key>browserWindowAllowNewWindow</key>
+	<false/>
+	<key>browserWindowShowAddressBar</key>
+	<false/>
+	<key>browserWindowShowNavigationButtons</key>
+	<false/>
+	<key>newBrowserWindowByLinkPolicy</key>
+	<integer>0</integer>
+	<key>prohibitMultitasking</key>
+	<true/>
+	<key>showTaskBar</key>
+	<false/>
+	<key>startURL</key>
+	<string>${startUrl}</string>
+	<key>quitURL</key>
+	<string>${baseUrl}/api/seb/quit</string>
+	<key>quitURLConfirm</key>
+	<false/>
+</dict>
+</plist>`;
+        }
+
+        // Apply exam constraints to the configuration dynamically
+        if (exam) {
+            // If only_one_screen is enabled, block display mirroring and secondary displays
+            sebConfig = setPlistBooleanKey(sebConfig, 'allowDisplayMirroring', !exam.only_one_screen);
+            sebConfig = setPlistBooleanKey(sebConfig, 'allowSecondaryDisplays', !exam.only_one_screen);
+            // If block_downloads is enabled, block downloads
+            sebConfig = setPlistBooleanKey(sebConfig, 'allowDownloads', !exam.block_downloads);
+        }
 
         res.setHeader('Content-Type', 'application/seb');
-        res.setHeader('Cache-Control', 'no-store, private');
-        res.setHeader('X-Content-Type-Options', 'nosniff');
         res.send(sebConfig);
     } catch (err) {
         res.status(500).send(err.message);
@@ -4324,15 +3866,6 @@ io.on('connection', (socket) => {
             console.warn(`[Socket] Refused join_student for session ${data && data.exam_session_id}.`);
             return;
         }
-        const sessionState = await pool.query(
-            'SELECT status, resume_approval_required FROM exam_sessions WHERE id = $1',
-            [data.exam_session_id]
-        );
-        if (sessionState.rows.length === 0) return;
-        if (sessionState.rows[0].resume_approval_required) {
-            socket.emit('resume_approval_required', { session_id: data.exam_session_id });
-            return;
-        }
         // Bind the verified session to the socket so later events need not trust
         // anything the client sends.
         socket.pgAuth.examSessionId = data.exam_session_id;
@@ -4346,14 +3879,6 @@ io.on('connection', (socket) => {
             clearTimeout(activeDisconnectTimers.get(data.exam_session_id));
             activeDisconnectTimers.delete(data.exam_session_id);
             console.log(`Student reconnected to session ${data.exam_session_id}, cancelled auto-save`);
-        }
-        if (sessionState.rows[0].status === 'unexpected') {
-            cancelPendingFinalization(data.exam_session_id, 'student socket reconnected');
-            await pool.query(
-                "UPDATE exam_sessions SET status = 'started', end_time = NULL, last_seen_at = NOW() WHERE id = $1",
-                [data.exam_session_id]
-            );
-            await writeSessionEvent(data.exam_session_id, 'interruption_recovered', 'Student socket reconnected within the recovery window.');
         }
     });
 
@@ -4443,54 +3968,23 @@ io.on('connection', (socket) => {
                 status: 'offline' 
             });
 
-            // Wait 30 seconds before declaring an interruption. The attempt is not
-            // finalized here; it then receives the longer recovery window above.
+            // Start a 30-second grace period timer to finalize the session if they don't reconnect
             const timer = setTimeout(async () => {
                 activeDisconnectTimers.delete(exam_session_id);
                 try {
-                    const sessionQuery = await pool.query(
-                        `SELECT es.status, e.require_resume_approval
-                         FROM exam_sessions es JOIN exams e ON e.id = es.exam_id
-                         WHERE es.id = $1`,
-                        [exam_session_id]
-                    );
+                    const sessionQuery = await pool.query('SELECT status FROM exam_sessions WHERE id = $1', [exam_session_id]);
                     if (sessionQuery.rows.length > 0 && (sessionQuery.rows[0].status === 'started' || sessionQuery.rows[0].status === 'unexpected')) {
                         // Check if the student completed the exam before disconnect
                         const endedQuery = await pool.query(
                             "SELECT id FROM proctor_logs WHERE exam_session_id = $1 AND event_type = 'exam_ended' LIMIT 1",
                             [exam_session_id]
                         );
-                        if (endedQuery.rows.length > 0) {
-                            await pool.query(
-                                "UPDATE exam_sessions SET status = 'completed', end_time = COALESCE(end_time, NOW()) WHERE id = $1",
-                                [exam_session_id]
-                            );
-                            assembleAndUploadSessionVideo(exam_session_id);
-                            return;
-                        }
-
-                        const wasStarted = sessionQuery.rows[0].status === 'started';
-                        const needsApproval = !!sessionQuery.rows[0].require_resume_approval;
+                        const finalStatus = endedQuery.rows.length > 0 ? 'completed' : 'abandoned';
+                        console.log(`Session ${exam_session_id} disconnected. Setting status to: ${finalStatus}. Auto-finalizing...`);
                         await pool.query(
-                            `UPDATE exam_sessions
-                             SET status = 'unexpected', end_time = COALESCE(end_time, NOW()), last_seen_at = NOW(),
-                                 interruption_count = COALESCE(interruption_count, 0) + $1,
-                                 resume_approval_required = CASE WHEN $2 THEN true ELSE resume_approval_required END
-                             WHERE id = $3`,
-                            [wasStarted ? 1 : 0, needsApproval, exam_session_id]
+                            "UPDATE exam_sessions SET status = $1, end_time = COALESCE(end_time, NOW()) WHERE id = $2",
+                            [finalStatus, exam_session_id]
                         );
-                        if (wasStarted) {
-                            await writeSessionEvent(
-                                exam_session_id,
-                                'connection_interrupted',
-                                'The student connection remained offline for more than 30 seconds. The attempt is being held for recovery.'
-                            );
-                        }
-                        io.to('teacher_' + exam_id).emit('student_status', {
-                            session_id: exam_session_id,
-                            name: student_name,
-                            status: needsApproval ? 'approval_required' : 'interrupted'
-                        });
                         // This is the path a phone exam usually takes: the OS kills the
                         // tab, the socket drops, and no clean end call ever arrives. The
                         // client is gone, so there is no chunk-count hint to wait on —
@@ -4498,13 +3992,13 @@ io.on('connection', (socket) => {
                         // for in-flight uploads instead of grabbing a partial set.
                         const onDisk = (() => {
                             try {
-                                const dir = getSessionChunkDir(exam_session_id);
+                                const dir = path.join(os.tmpdir(), `chunks-${exam_session_id}`);
                                 if (!fs.existsSync(dir)) return undefined;
                                 const idx = readOrderedChunks(dir);
                                 return idx.length > 0 ? idx[idx.length - 1].index : undefined;
                             } catch (e) { return undefined; }
                         })();
-                        scheduleUnexpectedFinalization(exam_session_id, onDisk);
+                        assembleAndUploadSessionVideo(exam_session_id, onDisk);
                     }
                 } catch (e) {
                     console.error(`Error auto-finalizing session ${exam_session_id}:`, e);
@@ -4813,3 +4307,5 @@ app.get('/api/session/view-signature/:session_id', requireInstructorOrExtensionT
         res.status(500).json({ error: err.message });
     }
 });
+
+

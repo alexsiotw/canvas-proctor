@@ -3,8 +3,7 @@ let liveStudents = {};
 let currentLiveExamId = null;
 let currentFullscreenSessionId = null;
 let currentSessionsList = [];
-let currentWorkspaceView = 'live'; // live | attempts
-let liveViewFilter = 'all'; // all | online | attention
+let liveViewFilter = 'all'; // all | online | flagged
 let liveViewLayout = 'grid'; // grid | large
 let socket = io();
 
@@ -236,8 +235,7 @@ const NON_BEHAVIOURAL_EVENT_TYPES = [
     'exam_ended', 'exam_started', 'screen_share_resolved', 'page_hidden',
     // Recoveries. The loss is the violation and is scored below; counting the
     // reconnection too would double-count a single interruption.
-    'camera_restored', 'mic_restored', 'mobile_camera_restored',
-    'device_verified', 'connection_interrupted', 'interruption_recovered', 'resume_approved'
+    'camera_restored', 'mic_restored', 'mobile_camera_restored'
 ];
 
 // Normalise event types before matching.
@@ -261,7 +259,6 @@ function getEventWeightCategory(type) {
     // Extension-reported lockdown violations.
     if (norm === 'tab_blocked' || norm === 'incognito_blocked') return 'away';
     if (norm === 'multi_monitor_detected' || norm === 'prohibited_process') return 'device';
-    if (norm === 'device_changed') return 'device';
 
     // Monitoring cut off mid-exam. Weighted as heavily as the thing each device was
     // there to detect: losing the camera hides the student, losing the mic hides the
@@ -680,8 +677,18 @@ async function loadExams() {
     if (targetQuizId && exams.length > 0) {
         const linkedExam = exams.find(ex => ex.canvas_quiz_url && ex.canvas_quiz_url.includes('/quizzes/' + targetQuizId));
         if (linkedExam) {
-            const requestedView = urlParams.get('view');
-            loadExamDashboard(linkedExam.id, requestedView === 'attempts' ? 'attempts' : 'live');
+            loadExamDashboard(linkedExam.id);
+            if (urlParams.get('view') === 'live') {
+                setTimeout(() => {
+                    const grid = document.getElementById('live-grid');
+                    if (grid) grid.scrollIntoView({ behavior: 'smooth' });
+                }, 500);
+            } else {
+                setTimeout(() => {
+                    const reports = document.getElementById('report-content');
+                    if (reports) reports.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                }, 500);
+            }
         }
     }
 }
@@ -744,12 +751,12 @@ function renderExams() {
         
         if (linkedExam) {
             // Enabled state (Dashboard, Settings, Disable buttons)
-            titleHtml = `<div class="pg-quiz-title"><a href="javascript:void(0)" onclick="loadExamDashboard(${linkedExam.id})">${escapeHtml(q.title)}</a><span class="pg-enabled-badge">Enabled</span></div>`;
+            titleHtml = `<a href="javascript:void(0)" onclick="loadExamDashboard(${linkedExam.id})" style="color: var(--accent); font-weight: 700; text-decoration:none; transition:var(--transition); font-size: 14px; font-family: var(--font-sans);">${escapeHtml(q.title)}</a>`;
             actionsHtml = `
                 <div style="display:flex; gap:6px; justify-content:flex-end;">
-                    <button class="btn btn-primary btn-sm" onclick="loadExamDashboard(${linkedExam.id})">Open workspace</button>
-                    <button class="btn btn-secondary btn-sm" onclick="showCreateExamModal(${linkedExam.id})">Settings</button>
-                    <button class="btn btn-danger-outline btn-sm" onclick="deleteExam(${linkedExam.id})">Disable</button>
+                    <button class="btn btn-slate btn-sm" onclick="loadExamDashboard(${linkedExam.id})" style="font-weight:700;">Dashboard</button>
+                    <button class="btn btn-slate btn-sm" onclick="showCreateExamModal(${linkedExam.id})" style="font-weight:700;">Settings</button>
+                    <button class="btn btn-danger btn-sm" onclick="deleteExam(${linkedExam.id})" style="font-weight:700;">Disable</button>
                 </div>
             `;
         } else {
@@ -757,6 +764,7 @@ function renderExams() {
             titleHtml = `<span style="color: var(--text-primary); font-weight: 500; font-size: 14px; font-family: var(--font-sans);">${escapeHtml(q.title)}</span>`;
             actionsHtml = `
                 <div style="display:flex; justify-content:flex-end; align-items:center; gap: 10px;">
+                    <span style="color: #ea580c; font-size:16px;">➔</span>
                     <button class="btn btn-primary btn-sm" onclick="enableQuizProctoring(${JSON.stringify(String(q.title || '')).replace(/"/g, '&quot;')}, ${JSON.stringify(String(q.quiz_url || '')).replace(/"/g, '&quot;')})" style="font-weight:700; padding: 6px 18px;">Enable</button>
                 </div>
             `;
@@ -791,7 +799,7 @@ function renderExams() {
             </div>
 
             <!-- The Quizzes Table -->
-            <div class="table-wrapper pg-quiz-table" style="border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden;">
+            <div class="table-wrapper" style="border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden;">
                 <table style="width: 100%; border-collapse: collapse;">
                     <thead>
                         <tr style="border-bottom: 2px solid var(--border); background: rgba(0, 0, 0, 0.01);">
@@ -811,202 +819,128 @@ function renderExams() {
 }
 
 // THE NEW EXAM DASHBOARD (Master-Detail View)
-function loadExamDashboard(examId, initialView = 'live') {
+function loadExamDashboard(examId) {
     const exam = exams.find(e => e.id == examId);
     if (!exam) return;
-
-    currentWorkspaceView = ['live', 'attempts'].includes(initialView) ? initialView : 'live';
+    
     currentLiveExamId = examId;
     liveStudents = {};
     socket.emit('join_teacher', examId);
     
     const content = document.getElementById('content');
     content.innerHTML = `
-        <div class="pg-workspace-heading" id="workspace-heading" tabindex="-1">
-            <button class="btn btn-secondary pg-back-button" onclick="closeExamDashboard()">← Back to exams</button>
-            <div class="pg-workspace-title-row">
-                <div>
-                    <div class="pg-workspace-kicker">Exam workspace</div>
-                    <h1 class="page-title">${escapeHtml(exam.title)}</h1>
+        <div class="page-header" style="display:flex; justify-content:space-between; align-items:center; margin-bottom: 15px;">
+            <div>
+                <button class="btn btn-secondary" style="margin-bottom: 12px;" onclick="closeExamDashboard()">← Back to Exams</button>
+                <div style="display:flex; align-items:center; gap: 15px;">
+                    <h1 class="page-title" style="font-size: 24px; font-weight: 800; letter-spacing: -0.5px;">${escapeHtml(exam.title)} Workspace</h1>
+                    <button class="btn" id="status-toggle-btn" 
+                        style="padding: 6px 16px; font-size: 12px; border-radius: 20px; font-weight: 700; border: none; cursor: pointer; transition: var(--transition);
+                        ${exam.is_open ? 'background:var(--success); color:white;' : 'background:var(--danger); color:white;'}"
+                        onclick="toggleExamStatus(${exam.id})">
+                        ${exam.is_open ? '🔓 Exam is OPEN' : '🔒 Exam is CLOSED'}
+                    </button>
                 </div>
-                <button class="pg-exam-status ${exam.is_open ? 'is-open' : 'is-closed'}" id="status-toggle-btn" onclick="toggleExamStatus(${exam.id})" aria-label="Toggle exam availability">
-                    <span class="pg-status-dot" aria-hidden="true"></span>${exam.is_open ? 'Open for students' : 'Closed to students'}
-                </button>
-            </div>
-            <div class="pg-workspace-meta">
-                <span>Access code <strong class="pg-access-code">${escapeHtml(exam.exam_code)}</strong></span>
-                <span aria-hidden="true">·</span>
-                <a href="/student.html?practice=1" target="_blank" rel="noopener">Practice system check</a>
-                <span class="pg-muted-detail">Share this ungraded check before exam day.</span>
+                <p class="page-subtitle">Access code: <strong style="color:var(--accent); font-family:monospace;">${exam.exam_code}</strong>
+                    · <a href="/student.html?practice=1" target="_blank" style="color:var(--accent); font-weight:600;">Open practice system check</a>
+                    <span style="color:var(--text-muted); font-size:12px;"> (share with students · not graded)</span>
+                </p>
             </div>
         </div>
 
-        <div class="pg-workspace-nav-shell">
-            <div class="pg-workspace-tabs" role="tablist" aria-label="Exam workspace views">
-                <button type="button" id="workspace-tab-live" class="pg-workspace-tab ${currentWorkspaceView === 'live' ? 'active' : ''}" role="tab" aria-selected="${currentWorkspaceView === 'live'}" aria-controls="workspace-live-panel" onclick="setWorkspaceView('live')">
-                    <span class="pg-tab-dot pg-tab-dot-live" aria-hidden="true"></span>Live
-                </button>
-                <button type="button" id="workspace-tab-attempts" class="pg-workspace-tab ${currentWorkspaceView === 'attempts' ? 'active' : ''}" role="tab" aria-selected="${currentWorkspaceView === 'attempts'}" aria-controls="workspace-attempts-panel" onclick="setWorkspaceView('attempts')">Attempts</button>
-            </div>
-            <div class="pg-workspace-actions">
-                <button type="button" class="btn btn-secondary btn-sm" onclick="showCreateExamModal(${exam.id})">Settings</button>
-                <button type="button" class="btn btn-secondary btn-sm" onclick="showAccommodationsPanel(${exam.id})">Accommodations</button>
+        <!-- ProctorGuard Navigation Tabbar -->
+        <div style="background: #ffffff; border: 1px solid var(--border); border-radius: var(--radius-lg); margin-bottom: 25px; padding: 0 16px;">
+            <div style="display: flex; gap: 20px; align-items: center; height: 50px; font-size: 14px;">
+                <div class="proctor-tab active" style="font-weight: 700; color: var(--accent); border-bottom: 3px solid var(--accent); height: 100%; display: flex; align-items: center; padding: 0 4px; cursor: default;">
+                    Review Center
+                </div>
+                <div class="proctor-tab" onclick="showCreateExamModal(${exam.id})" style="font-weight: 500; color: var(--text-secondary); height: 100%; display: flex; align-items: center; padding: 0 4px; cursor: pointer;" onmouseenter="this.style.color='var(--text-primary)'" onmouseleave="this.style.color='var(--text-secondary)'">
+                    Settings
+                </div>
+                <div class="proctor-tab" onclick="showAccommodationsPanel(${exam.id})" style="font-weight: 500; color: var(--text-secondary); height: 100%; display: flex; align-items: center; padding: 0 4px; cursor: pointer;" onmouseenter="this.style.color='var(--text-primary)'" onmouseleave="this.style.color='var(--text-secondary)'">
+                    Accommodations
+                </div>
+                <div class="proctor-tab" onclick="exportExamReportsCsv(${exam.id})" style="font-weight: 500; color: var(--text-secondary); height: 100%; display: flex; align-items: center; padding: 0 4px; cursor: pointer;" onmouseenter="this.style.color='var(--text-primary)'" onmouseleave="this.style.color='var(--text-secondary)'">
+                    Export CSV
+                </div>
             </div>
         </div>
 
-        <div class="metrics-row pg-workspace-metrics">
+        <!-- Metrics Dashboard Row -->
+        <div class="metrics-row" style="margin-top:20px;">
             <div class="card stat-card info">
                 <div class="stat-value" id="stat-total-attempts">--</div>
-                <div class="stat-label">Attempt records</div>
+                <div class="stat-label">Total Attempts</div>
             </div>
             <div class="card stat-card success">
                 <div class="stat-value" id="stat-active-sessions">0</div>
-                <div class="stat-label">Live now</div>
+                <div class="stat-label">Active Students</div>
             </div>
             <div class="card stat-card danger">
                 <div class="stat-value" id="stat-flagged-violations">0</div>
-                <div class="stat-label">Recorded flags</div>
+                <div class="stat-label">Flagged Warnings</div>
             </div>
             <div class="card stat-card warning">
                 <div class="stat-value" id="stat-integrity-rate">100%</div>
-                <div class="stat-label">Clean attempts</div>
+                <div class="stat-label">Integrity Rate</div>
             </div>
         </div>
         
-        <div class="pg-workspace-panels">
+        <div style="display: flex; flex-direction: column; gap: 30px; margin-top: 10px;">
             <!-- Live Monitoring Block -->
-            <section id="workspace-live-panel" class="card pg-workspace-panel" role="tabpanel" aria-labelledby="workspace-tab-live" ${currentWorkspaceView === 'live' ? '' : 'hidden'}>
-                <div class="pg-panel-heading">
-                    <div>
-                        <h2>Live monitoring</h2>
-                        <p>Watch active feeds and handle students who need attention.</p>
-                    </div>
-                    <div class="pg-live-toolbar">
-                        <div class="pg-segmented" aria-label="Filter live students">
-                            <button type="button" id="live-filter-all" class="pg-segment-btn" onclick="setLiveViewFilter('all')">All</button>
-                            <button type="button" id="live-filter-online" class="pg-segment-btn" onclick="setLiveViewFilter('online')">Online</button>
-                            <button type="button" id="live-filter-attention" class="pg-segment-btn" onclick="setLiveViewFilter('attention')">Needs attention</button>
+            <div class="card" style="padding: 24px;">
+                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom: 20px; border-bottom: 1px solid var(--border); padding-bottom: 12px; flex-wrap: wrap; gap: 12px;">
+                    <h2 style="font-size: 18px; font-weight: 700; margin: 0;">Live Monitoring Feed</h2>
+                    <div style="display:flex; align-items:center; gap:10px; flex-wrap: wrap;">
+                        <div class="live-filter-group" style="display:flex; gap:4px; background:#f1f5f9; padding:3px; border-radius:8px;">
+                            <button type="button" class="btn btn-sm live-filter-btn ${liveViewFilter==='all'?'btn-primary':'btn-secondary'}" data-filter="all" onclick="setLiveViewFilter('all')" style="padding:4px 10px; font-size:12px;">All</button>
+                            <button type="button" class="btn btn-sm live-filter-btn ${liveViewFilter==='online'?'btn-primary':'btn-secondary'}" data-filter="online" onclick="setLiveViewFilter('online')" style="padding:4px 10px; font-size:12px;">Online</button>
+                            <button type="button" class="btn btn-sm live-filter-btn ${liveViewFilter==='flagged'?'btn-primary':'btn-secondary'}" data-filter="flagged" onclick="setLiveViewFilter('flagged')" style="padding:4px 10px; font-size:12px;">Flagged first</button>
                         </div>
-                        <div class="pg-segmented" aria-label="Live feed size">
-                            <button type="button" id="live-layout-grid" class="pg-segment-btn" onclick="setLiveViewLayout('grid')" title="Compact grid">Grid</button>
-                            <button type="button" id="live-layout-large" class="pg-segment-btn" onclick="setLiveViewLayout('large')" title="Larger tiles">Large</button>
+                        <div class="live-filter-group" style="display:flex; gap:4px; background:#f1f5f9; padding:3px; border-radius:8px;">
+                            <button type="button" class="btn btn-sm ${liveViewLayout==='grid'?'btn-primary':'btn-secondary'}" onclick="setLiveViewLayout('grid')" style="padding:4px 10px; font-size:12px;" title="Compact grid">Grid</button>
+                            <button type="button" class="btn btn-sm ${liveViewLayout==='large'?'btn-primary':'btn-secondary'}" onclick="setLiveViewLayout('large')" style="padding:4px 10px; font-size:12px;" title="Larger tiles">Large</button>
                         </div>
-                        <button class="btn btn-warning-action btn-sm" onclick="sendBroadcastAnnouncement(${exam.id})">Broadcast alert</button>
+                        <button class="btn btn-warning-action btn-sm" onclick="sendBroadcastAnnouncement(${exam.id})">
+                            Broadcast Alert
+                        </button>
+                        <span style="font-size:12px; color:var(--text-secondary);">Click feed to expand</span>
                     </div>
                 </div>
                 <div id="live-grid" class="session-grid ${liveViewLayout==='large' ? 'live-grid-large' : ''}"></div>
-            </section>
+            </div>
             
             <!-- Reports Block -->
-            <section id="workspace-attempts-panel" class="card pg-workspace-panel" role="tabpanel" aria-labelledby="workspace-tab-attempts" ${currentWorkspaceView === 'attempts' ? '' : 'hidden'}>
-                <div class="pg-panel-heading">
-                    <div>
-                        <h2>Attempts & recordings</h2>
-                        <p id="submissions-ratio-badge">Loading submission progress…</p>
+            <div class="card" style="padding: 24px;">
+                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom: 20px; border-bottom: 1px solid var(--border); padding-bottom: 12px;">
+                    <div style="display:flex; flex-direction:column; gap:4px;">
+                        <h2 style="font-size: 18px; font-weight: 700; margin: 0;">Post-Exam Reports & Video Vault</h2>
+                        <div id="submissions-ratio-badge" style="font-size: 13px; font-weight: 700; color: var(--warning); margin-top: 2px;">Submissions: loading...</div>
                     </div>
-                    <div class="pg-panel-actions">
-                        <button class="btn btn-secondary btn-sm" onclick="window.open('/api/exams/drive-folder', '_blank')">Open Drive vault</button>
-                        <button class="btn btn-secondary btn-sm" onclick="fetchReportData(${exam.id})">Refresh</button>
-                        <button class="btn btn-primary btn-sm" onclick="exportExamReportsCsv(${exam.id})">Export CSV</button>
+                    <div style="display:flex; gap: 10px;">
+                        <button class="btn btn-primary" style="font-size:12px; padding: 8px 16px;" onclick="window.open('/api/exams/drive-folder', '_blank')">📁 Open Drive Vault</button>
+                        <button class="btn btn-secondary" style="font-size:12px; padding: 8px 16px;" onclick="fetchReportData(${exam.id})">Refresh Reports</button>
                     </div>
                 </div>
                 
                 <!-- Reports Search & Filters -->
-                <div class="filter-search-container pg-report-filters">
-                    <label class="sr-only" for="report-search-input">Search attempts by student</label>
-                    <input type="search" id="report-search-input" class="filter-input" placeholder="Search by student name…" />
-                    <label class="sr-only" for="report-risk-select">Filter by integrity status</label>
+                <div class="filter-search-container" style="margin-bottom: 20px; display: flex; gap: 12px;">
+                    <input type="text" id="report-search-input" class="filter-input" placeholder="Search student by name..." />
                     <select id="report-risk-select" class="filter-select">
-                        <option value="all">All integrity statuses</option>
-                        <option value="low">Low risk · clean</option>
-                        <option value="moderate">Moderate risk</option>
-                        <option value="high">High risk</option>
+                        <option value="all">All Integrity Statuses</option>
+                        <option value="low">🟢 Low Risk (Clean)</option>
+                        <option value="moderate">🟡 Moderate Risk</option>
+                        <option value="high">🔴 High Risk</option>
                     </select>
                 </div>
                 
                 <div id="report-content"><div class="spinner"></div></div>
-            </section>
+            </div>
         </div>
     `;
     
-    syncWorkspaceView();
-    syncLiveToolbarState();
     updateLiveGrid();
     fetchReportData(examId);
-    scrollWorkspaceToTop();
-}
-
-function scrollWorkspaceToTop() {
-    // Replacing #content preserves the document's old scroll position. If the quiz
-    // table was long, opening a workspace therefore appeared at its bottom. Reset
-    // every possible scroll owner, then move focus to the new view without causing
-    // another browser-driven jump.
-    requestAnimationFrame(() => {
-        const content = document.getElementById('content');
-        const scroller = document.scrollingElement || document.documentElement;
-        if (content) content.scrollTop = 0;
-        if (scroller) scroller.scrollTo({ top: 0, left: 0, behavior: 'auto' });
-        window.scrollTo({ top: 0, left: 0, behavior: 'auto' });
-        const heading = document.getElementById('workspace-heading');
-        if (heading) heading.focus({ preventScroll: true });
-    });
-}
-
-function setWorkspaceView(view) {
-    if (!['live', 'attempts'].includes(view)) return;
-    currentWorkspaceView = view;
-    syncWorkspaceView();
-}
-
-function syncWorkspaceView() {
-    ['live', 'attempts'].forEach(view => {
-        const selected = currentWorkspaceView === view;
-        const tab = document.getElementById(`workspace-tab-${view}`);
-        const panel = document.getElementById(`workspace-${view}-panel`);
-        if (tab) {
-            tab.classList.toggle('active', selected);
-            tab.setAttribute('aria-selected', String(selected));
-            tab.tabIndex = selected ? 0 : -1;
-        }
-        if (panel) panel.hidden = !selected;
-    });
-}
-
-function enhanceSettingsAccessibility(root) {
-    if (!root) return;
-    root.querySelectorAll('.proctorio-card').forEach(card => {
-        if (card.classList.contains('pg-ext-only')) {
-            card.setAttribute('aria-disabled', 'true');
-            return;
-        }
-        const checkbox = card.querySelector('input[type="checkbox"]');
-        card.tabIndex = 0;
-        card.setAttribute('role', checkbox ? 'checkbox' : 'button');
-        if (checkbox) card.setAttribute('aria-checked', String(checkbox.checked));
-        if (!card.dataset.keyboardBound) {
-            card.dataset.keyboardBound = 'true';
-            card.addEventListener('keydown', event => {
-                if (event.key !== 'Enter' && event.key !== ' ') return;
-                event.preventDefault();
-                card.click();
-            });
-        }
-    });
-
-    root.querySelectorAll('.proctorio-section-header').forEach(header => {
-        const section = header.closest('.proctorio-section');
-        header.tabIndex = 0;
-        header.setAttribute('role', 'button');
-        header.setAttribute('aria-expanded', String(!(section && section.classList.contains('collapsed'))));
-        if (!header.dataset.keyboardBound) {
-            header.dataset.keyboardBound = 'true';
-            header.addEventListener('keydown', event => {
-                if (event.key !== 'Enter' && event.key !== ' ') return;
-                event.preventDefault();
-                header.click();
-            });
-        }
-    });
 }
 
 function closeExamDashboard() {
@@ -1016,7 +950,6 @@ function closeExamDashboard() {
 
 // LIVE VIEW LOGIC
 function getShortFlagLabel(type) {
-    if (!type) return 'Attention needed';
     if (type === 'audio_violation') return '🗣️ Speaking';
     if (type === 'mic_muted') return '🔇 Mic Muted';
     if (type === 'tab_blur' || type === 'window_blur') return '🔒 Focus Lost';
@@ -1028,47 +961,17 @@ function getShortFlagLabel(type) {
 }
 
 function setLiveViewFilter(filter) {
-    if (!['all', 'online', 'attention'].includes(filter)) return;
     liveViewFilter = filter;
-    syncLiveToolbarState();
     updateLiveGrid();
 }
 
 function setLiveViewLayout(layout) {
-    if (!['grid', 'large'].includes(layout)) return;
     liveViewLayout = layout;
     const grid = document.getElementById('live-grid');
     if (grid) {
         grid.classList.toggle('live-grid-large', layout === 'large');
     }
-    syncLiveToolbarState();
     updateLiveGrid();
-}
-
-function syncLiveToolbarState() {
-    ['all', 'online', 'attention'].forEach(filter => {
-        const button = document.getElementById(`live-filter-${filter}`);
-        if (!button) return;
-        const active = liveViewFilter === filter;
-        button.classList.toggle('active', active);
-        button.setAttribute('aria-pressed', String(active));
-    });
-    ['grid', 'large'].forEach(layout => {
-        const button = document.getElementById(`live-layout-${layout}`);
-        if (!button) return;
-        const active = liveViewLayout === layout;
-        button.classList.toggle('active', active);
-        button.setAttribute('aria-pressed', String(active));
-    });
-}
-
-function getLiveStatusMeta(session) {
-    const status = String(session && session.status || 'offline').toLowerCase();
-    if (status === 'approval_required') return { label: 'Awaiting approval', tone: 'attention', priority: 4 };
-    if (status === 'unexpected' || status === 'interrupted') return { label: 'Interrupted', tone: 'attention', priority: 3 };
-    if (status === 'online') return { label: 'Live', tone: 'online', priority: 2 };
-    if (status === 'started') return { label: 'Connected', tone: 'online', priority: 2 };
-    return { label: 'Offline', tone: 'offline', priority: 0 };
 }
 
 function updateLiveGrid() {
@@ -1098,31 +1001,27 @@ function updateLiveGrid() {
     // Filter
     if (liveViewFilter === 'online') {
         sessionIds = sessionIds.filter(id => liveStudents[id].status === 'online');
-    } else if (liveViewFilter === 'attention') {
-        sessionIds = sessionIds.filter(id => {
-            const student = liveStudents[id];
-            const status = String(student.status || '').toLowerCase();
-            return !!student.hasFlags || ['approval_required', 'unexpected', 'interrupted'].includes(status);
-        });
+    } else if (liveViewFilter === 'flagged') {
+        sessionIds = sessionIds.filter(id => liveStudents[id].hasFlags || liveStudents[id].status === 'online');
     }
 
-    // Put required instructor actions first, then flags, then live students.
+    // Sort: flagged first, then online, then by name
     sessionIds.sort((a, b) => {
         const sa = liveStudents[a], sb = liveStudents[b];
-        const statusDelta = getLiveStatusMeta(sb).priority - getLiveStatusMeta(sa).priority;
-        if (statusDelta !== 0) return statusDelta;
         const fa = sa.hasFlags ? 1 : 0, fb = sb.hasFlags ? 1 : 0;
         if (fa !== fb) return fb - fa;
+        const oa = sa.status === 'online' ? 1 : 0, ob = sb.status === 'online' ? 1 : 0;
+        if (oa !== ob) return ob - oa;
         return (sa.name || '').localeCompare(sb.name || '');
     });
     
     if (sessionIds.length === 0) {
         const emptyLabel = Object.keys(liveStudents).length === 0
-            ? 'No students are connected yet. This view will update automatically.'
+            ? 'Live queue is empty. Waiting for students to authenticate...'
             : 'No students match this filter.';
-        grid.innerHTML = `<div id="empty-grid-msg" class="pg-empty-state"><strong>${liveViewFilter === 'attention' ? 'Nothing needs attention' : 'Live queue is clear'}</strong><span>${emptyLabel}</span></div>`;
+        grid.innerHTML = `<div id="empty-grid-msg" style="color: var(--text-muted); font-size: 14px; grid-column:1/-1; padding:20px 0; text-align:center;">${emptyLabel}</div>`;
         const activeMetric = document.getElementById('stat-active-sessions');
-        if (activeMetric) activeMetric.innerText = Object.keys(liveStudents).filter(id => ['online', 'started'].includes(liveStudents[id].status)).length;
+        if (activeMetric) activeMetric.innerText = Object.keys(liveStudents).filter(id => liveStudents[id].status === 'online').length;
         return;
     }
 
@@ -1142,42 +1041,33 @@ function updateLiveGrid() {
 
     sessionIds.forEach(sessionId => {
         const s = liveStudents[sessionId];
-        const statusMeta = getLiveStatusMeta(s);
-        const isOnline = ['online', 'started'].includes(String(s.status || '').toLowerCase());
+        const statusColor = s.status === 'online' ? 'var(--success)' : 'var(--text-muted)';
         const safeName = (s.name || 'Student').replace(/'/g, "\\'");
         
         let content = '';
         if(s.screenshot) {
-            content = `<img src="${s.screenshot}" class="pg-live-image" style="height:${imgH}px;" alt="Live view for ${escapeHtml(s.name || 'student')}" onclick="openFullscreenImg(this.src, ${sessionId})" />`;
+            content = `<img src="${s.screenshot}" style="width:100%; height:${imgH}px; object-fit:cover; border-radius: var(--radius-sm); cursor: pointer;" onclick="openFullscreenImg(this.src, ${sessionId})" />`;
         } else {
-            content = `<div class="pg-no-signal" style="height:${imgH}px;"><span aria-hidden="true">—</span>No live image</div>`;
+            content = `<div style="width:100%; height:${imgH}px; background:rgba(0,0,0,0.3); border-radius: var(--radius-sm); display:flex; align-items:center; justify-content:center; color:var(--text-muted); border:1px dashed var(--border);">No Signal</div>`;
         }
 
-        const warningBtn = isOnline ? `
-            <button class="btn btn-warning-action btn-xs pg-live-action" onclick="openAlertComposer(${sessionId}, '${safeName}')">
-                Send alert
+        const warningBtn = s.status === 'online' ? `
+            <button class="btn btn-warning-action btn-xs" style="margin-top:10px; width:100%; justify-content:center;" onclick="openAlertComposer(${sessionId}, '${safeName}')">
+                Send Alert
             </button>
         ` : '';
-        const approvalBtn = s.status === 'approval_required' ? `
-            <button class="btn btn-primary btn-xs pg-live-action" onclick="approveSessionResume(${sessionId}, ${currentLiveExamId})">
-                Approve resume
-            </button>
-        ` : '';
-        const liveActionButtons = warningBtn + approvalBtn;
 
         const hasFlags = s.hasFlags || false;
-        const ringClass = statusMeta.tone === 'attention' || hasFlags
-            ? 'live-ring-flagged'
-            : (statusMeta.tone === 'online' ? 'live-ring-online' : 'live-ring-offline');
+        const ringClass = s.status === 'online' ? (hasFlags ? 'live-ring-flagged' : 'live-ring-online') : 'live-ring-offline';
 
-        let cardStyle = "padding: 16px; transition: all 0.3s;";
-        if (hasFlags) {
-            cardStyle += " animation: live-pulse-flag 1.5s infinite;";
+        let cardStyle = "padding: 16px; background: rgba(30, 41, 59, 0.2); transition: all 0.3s;";
+        if (s.status === 'online' && hasFlags) {
+            cardStyle += " border: 1.5px solid #ef4444; box-shadow: 0 0 10px rgba(239, 68, 68, 0.3); animation: live-pulse-flag 1.5s infinite;";
         }
 
-        const flagText = s.lastFlagType ? `
-            <div class="pg-live-alert">
-                <strong>Latest flag</strong><span>${getShortFlagLabel(s.lastFlagType)}</span>
+        const flagText = (s.status === 'online' && s.lastFlagType) ? `
+            <div style="margin-top: 8px; font-size: 11px; padding: 6px 8px; border-radius: 4px; background: rgba(239, 68, 68, 0.15); border: 1px solid rgba(239, 68, 68, 0.3); color: #ef4444; display: flex; align-items: center; gap: 4px;">
+                <strong>Alert:</strong> ${getShortFlagLabel(s.lastFlagType)}
             </div>
         ` : '';
 
@@ -1188,13 +1078,13 @@ function updateLiveGrid() {
             card.className = `card student-live-card ${ringClass}`;
             card.setAttribute('style', cardStyle);
             card.innerHTML = `
-                <div class="pg-live-card-header">
-                    <strong>${escapeHtml(s.name || 'Student')}</strong>
-                    <span class="pg-live-status pg-live-status-${statusMeta.tone}"><span aria-hidden="true"></span>${statusMeta.label}</span>
+                <div style="display:flex; justify-content:space-between; margin-bottom:10px; align-items:center;">
+                    <strong style="font-size: 14px; font-weight:600;">${s.name || 'Testing...'}</strong>
+                    <span class="status-dot" style="width: 8px; height: 8px; background: ${statusColor}; border-radius: 50%; display:inline-block; box-shadow: 0 0 6px ${statusColor};"></span>
                 </div>
                 <div class="card-screenshot-container">${content}</div>
                 <div class="card-flag-container">${flagText}</div>
-                <div class="card-button-container">${liveActionButtons}</div>
+                <div class="card-button-container">${warningBtn}</div>
             `;
             grid.appendChild(card);
         } else {
@@ -1204,10 +1094,10 @@ function updateLiveGrid() {
             const nameEl = card.querySelector('strong');
             if (nameEl && s.name) nameEl.textContent = s.name;
 
-            const statusBadge = card.querySelector('.pg-live-status');
-            if (statusBadge) {
-                statusBadge.className = `pg-live-status pg-live-status-${statusMeta.tone}`;
-                statusBadge.innerHTML = `<span aria-hidden="true"></span>${statusMeta.label}`;
+            const dot = card.querySelector('.status-dot');
+            if (dot) {
+                dot.style.background = statusColor;
+                dot.style.boxShadow = `0 0 6px ${statusColor}`;
             }
             
             const screenshotContainer = card.querySelector('.card-screenshot-container');
@@ -1232,15 +1122,15 @@ function updateLiveGrid() {
             }
             
             const buttonContainer = card.querySelector('.card-button-container');
-            if (buttonContainer && buttonContainer.innerHTML !== liveActionButtons) {
-                buttonContainer.innerHTML = liveActionButtons;
+            if (buttonContainer && buttonContainer.innerHTML !== warningBtn) {
+                buttonContainer.innerHTML = warningBtn;
             }
         }
         // Keep DOM order: re-append in sorted order
         grid.appendChild(card);
     });
 
-    const activeVal = Object.keys(liveStudents).filter(id => ['online', 'started'].includes(liveStudents[id].status)).length;
+    const activeVal = Object.keys(liveStudents).filter(id => liveStudents[id].status === 'online').length;
     const activeMetric = document.getElementById('stat-active-sessions');
     if (activeMetric) activeMetric.innerText = activeVal;
 }
@@ -1425,20 +1315,16 @@ function filterReports(examId) {
 
         const annCount = s.annotations ? s.annotations.length : 0;
         const statusLabel = s.status === 'completed' ? 'Completed' : (s.status || '—');
-        const displayStatusLabel = s.resume_approval_required ? 'Approval required' : statusLabel;
-        const approvalAction = s.resume_approval_required
-            ? `<button class="btn btn-primary btn-sm" style="display:block; margin:6px auto 0; padding:4px 8px; font-size:10px; white-space:nowrap;" onclick="event.stopPropagation(); approveSessionResume(${s.id}, ${examId})">Approve resume</button>`
-            : '';
         
         tbodyHtml += `
             <tr class="${rowSeverityClass}" style="border-bottom: 1px solid var(--border);">
-                <td class="pg-report-action-cell">
-                    <button type="button" class="pg-link-button" onclick="viewStudentReport(${s.id}, ${examId})">Open</button>
+                <td style="padding: 12px 16px; cursor: pointer; text-align: center;" onclick="viewStudentReport(${s.id}, ${examId})" title="Open report">
+                    <span style="color: var(--accent); font-weight:700;">View</span>
                 </td>
                 <td style="padding: 12px 16px; font-weight: 700; color: var(--text-primary);">${escapeHtml(s.student_name || s.student_canvas_id)}</td>
                 <td style="padding: 12px 16px; color: var(--text-secondary);">${submissionDate}</td>
                 <td style="padding: 12px 16px; text-align: center; font-weight: 600;">${s.attempt_number || 1}</td>
-                <td style="padding: 12px 16px; text-align: center; color: ${s.resume_approval_required ? 'var(--danger)' : 'var(--text-secondary)'}; font-size:12px; font-weight:${s.resume_approval_required ? '700' : '400'};">${displayStatusLabel}${approvalAction}</td>
+                <td style="padding: 12px 16px; text-align: center; color: var(--text-secondary); font-size:12px;">${statusLabel}</td>
                 <td style="padding: 12px 16px; text-align: center; font-weight: 600; color: ${annCount > 0 ? 'var(--accent)' : 'var(--text-muted)'};">${annCount}</td>
                 <td style="padding: 12px 16px; text-align: center; font-weight: 600; color: ${riskInfo.totalWarnings > 0 ? 'var(--danger)' : 'var(--text-muted)'};">${riskInfo.totalWarnings}</td>
                 <td style="padding: 12px 16px;" title="Risk score: ${riskInfo.score} — ${riskInfo.tier} risk">
@@ -1450,11 +1336,7 @@ function filterReports(examId) {
     });
 
     if (filtered.length === 0) {
-        const emptyTitle = currentSessionsList.length === 0 ? 'No attempts yet' : 'No attempts match these filters';
-        const emptyDetail = currentSessionsList.length === 0
-            ? 'Student recordings and integrity results will appear here after an attempt begins.'
-            : 'Try a different student name or integrity status.';
-        tbodyHtml = `<tr><td colspan="9"><div class="pg-table-empty"><strong>${emptyTitle}</strong><span>${emptyDetail}</span></div></td></tr>`;
+        tbodyHtml = '<tr><td colspan="9" style="text-align:center; padding: 30px; color:var(--text-muted);">No student reports match your filters.</td></tr>';
     }
 
     tableBody.innerHTML = tbodyHtml;
@@ -1501,35 +1383,52 @@ async function fetchReportData(examId) {
         const submittedCount = sessions.filter(s => s.status === 'completed').length;
         const ratioBadge = document.getElementById('submissions-ratio-badge');
         if (ratioBadge) {
-            const totalStudents = enrolledCount || submittedCount;
-            ratioBadge.innerText = totalStudents
-                ? `${submittedCount} of ${totalStudents} students submitted`
-                : 'No enrolled-student count is available yet.';
+            ratioBadge.innerText = `Submissions: ${submittedCount} of ${enrolledCount || submittedCount} enrolled completed`;
         }
 
         tableContainer.innerHTML = `
-            <div class="pg-attempts-shell">
-                <div class="pg-attempts-summary">
-                    <strong>Attempt records</strong>
-                    <span>${totalAttemptsVal} ${totalAttemptsVal === 1 ? 'attempt' : 'attempts'}</span>
+            <div style="margin-top: 15px; margin-bottom: 25px;">
+                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom: 15px; flex-wrap:wrap; gap:10px;">
+                    <h2 style="font-size: 22px; font-weight: 800; color: var(--text-primary); margin: 0;">Exam Results</h2>
+                    <button class="btn btn-secondary btn-sm" onclick="exportExamReportsCsv(${examId})">Export CSV</button>
                 </div>
-                <div class="table-wrapper pg-attempts-table">
-                    <table>
-                        <thead>
-                            <tr>
-                                <th class="pg-th-action">Report</th>
-                                <th>Student</th>
-                                <th>Started</th>
-                                <th class="pg-th-compact">Try</th>
-                                <th>Status</th>
-                                <th class="pg-th-compact">Notes</th>
-                                <th class="pg-th-compact">Flags</th>
-                                <th>Trust</th>
-                                <th>Signals</th>
-                            </tr>
-                        </thead>
-                        <tbody id="report-table-body"></tbody>
-                    </table>
+                
+                <div style="background: #ffffff; border: 1px solid var(--border); border-radius: var(--radius-lg); margin-bottom: 30px; box-shadow: var(--shadow);">
+                    <div style="display: flex; justify-content: space-between; align-items: center; padding: 16px 20px; border-bottom: 1px solid var(--border);">
+                        <div>
+                            <strong style="font-size: 15px; color: var(--text-primary);">Attempts</strong>
+                            <span style="font-size: 12px; color: var(--text-muted); margin-left: 8px;">${totalAttemptsVal} total</span>
+                        </div>
+                    </div>
+                    
+                    <div class="table-wrapper" style="overflow-x: auto;">
+                        <table style="width: 100%; border-collapse: collapse; text-align: left; font-size: 13px;">
+                            <thead>
+                                <tr style="border-bottom: 2px solid var(--border); background: #f8fafc; font-weight: 700; color: var(--text-secondary);">
+                                    <th style="padding: 12px 16px; width: 60px; text-align: center;">Report</th>
+                                    <th style="padding: 12px 16px;">Name</th>
+                                    <th style="padding: 12px 16px;">Started</th>
+                                    <th style="padding: 12px 16px; text-align: center; width: 70px;" title="Attempt #">${attemptIcon}</th>
+                                    <th style="padding: 12px 16px; text-align: center; width: 90px;">Status</th>
+                                    <th style="padding: 12px 16px; text-align: center; width: 70px;" title="Annotations">${annotationsIcon}</th>
+                                    <th style="padding: 12px 16px; text-align: center; width: 70px;" title="Flags">${abnormalitiesIcon}</th>
+                                    <th style="padding: 12px 16px; text-align: center; width: 95px;" title="Trust score">${trustScoreIcon}</th>
+                                    <th style="padding: 12px 16px; width: 150px;" title="Alert types">${alertsIcon}</th>
+                                </tr>
+                            </thead>
+                            <tbody id="report-table-body">
+                                <!-- Loaded dynamically -->
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <div style="display:none;">
+                    <div style="padding: 40px; text-align: center; color: var(--text-muted); font-size: 13px;">
+                        <div style="font-size: 24px; margin-bottom: 10px;">🗑️</div>
+                        <strong style="color: var(--text-primary); font-size: 14px;">No Deleted attempts</strong><br>
+                        <span style="font-size: 12px; margin-top: 4px; display:inline-block;">Check back later to see if there are any changes</span>
+                    </div>
                 </div>
             </div>
         `;
@@ -1558,48 +1457,17 @@ async function fetchReportData(examId) {
 
 let activeLogFilterSeverity = 'all';
 let activeLogFilterSearch = '';
-let activeReportEventKey = '';
-
-function getReviewEventPriority(eventType) {
-    const type = String(eventType || '').toLowerCase();
-
-    // Resolutions and ordinary telemetry explain the attempt, but should never
-    // compete visually with conduct that needs an instructor's attention.
-    if (type.includes('resolved') || type.includes('restored') || type.includes('connected') ||
-        type.includes('heartbeat') || type.includes('platform') || type.includes('started') ||
-        type.includes('stopped') || type.includes('submitted') || type.includes('verified')) {
-        return 'notice';
-    }
-
-    if (type.startsWith('ai_') || [
-        'phone_detected', 'multiple_faces', 'no_face', 'tab_blur', 'window_blur',
-        'fullscreen_exit', 'screen_share_stopped', 'screen_share_lost', 'mic_muted',
-        'booted', 'error', 'fail'
-    ].some(value => type.includes(value))) {
-        return 'high';
-    }
-
-    if ([
-        'audio_violation', 'audio_threshold', 'gaze_off_screen', 'transcript',
-        'voice', 'speaking', 'focus', 'interruption', 'network', 'offline'
-    ].some(value => type.includes(value))) {
-        return 'medium';
-    }
-
-    return isFlagEvent(eventType) ? 'medium' : 'notice';
-}
 
 function viewStudentReport(sessionId, examId) {
     const exam = exams.find(e => e.id == examId);
     const session = currentSessionsList.find(s => s.id == sessionId);
     if (!session) return;
     
-    const logs = Array.isArray(session.logs) ? session.logs : [];
-    // Open on the events that need action. Lower-priority context remains one click
-    // away, but no longer looks equivalent to a phone or focus-loss violation.
+    // Setup filter states
     activeLogFilterSeverity = 'all';
     activeLogFilterSearch = '';
-    activeReportEventKey = '';
+
+    const logs = Array.isArray(session.logs) ? session.logs : [];
     const riskInfo = computeSessionRisk(session, exam);
     const riskScore = riskInfo.score;
     const riskTier = riskInfo.tier;
@@ -1612,76 +1480,24 @@ function viewStudentReport(sessionId, examId) {
     // Native player enables timeline seek; Drive link offered as fallback
     const showVideo = (session.status === 'completed' || session.status === 'abandoned') && !session.video_archived;
     let videoContainerHtml = '';
-    let secondaryVideoHtml = '';
     if (showVideo) {
-        const primaryUrl = `/api/session/video-playback/${session.id}`;
-        const recordingKind = session.primary_recording_kind || 'composite';
-        // A dedicated camera file proves this is a split-source attempt even if an
-        // older server briefly left the kind metadata at its legacy default.
-        const isLegacyComposite = recordingKind === 'composite' && !session.camera_drive_file_id;
-        const hasIndependentCamera = !!session.camera_drive_file_id;
-        const hasScreen = recordingKind === 'screen' || isLegacyComposite;
-        const hasCamera = hasIndependentCamera || recordingKind === 'camera' || isLegacyComposite;
-        const hasSecondary = !!session.mobile_drive_file_id;
-        const driveLink = session.drive_file_id
-            ? `<a href="https://drive.google.com/file/d/${session.drive_file_id}/view" target="_blank" rel="noopener noreferrer">Open screen file in Drive</a>`
-            : '';
-        const cameraSrc = hasIndependentCamera ? `/api/session/camera-video-playback/${session.id}` : primaryUrl;
-        const cameraCropClass = isLegacyComposite && !hasIndependentCamera ? ' is-legacy-camera-crop' : '';
-        const screenCropClass = isLegacyComposite ? ' is-legacy-screen-crop' : '';
-        const cameraPanel = hasCamera ? `
-            <section class="pg-review-source-panel pg-review-camera-panel" aria-label="Primary camera recording">
-                <div class="pg-review-source-heading"><span>Primary camera</span>${isLegacyComposite && !hasIndependentCamera ? '<em>Recovered from legacy combined recording</em>' : ''}</div>
-                <div class="pg-review-source-frame${cameraCropClass}">
-                    <video id="report-camera-player" data-report-sync="attempt" src="${cameraSrc}" ${isLegacyComposite && !hasIndependentCamera ? '' : 'controls'} playsinline ${hasScreen ? 'muted' : ''}></video>
-                </div>
-            </section>` : '';
-        const screenPanel = hasScreen ? `
-            <section class="pg-review-source-panel pg-review-screen-panel" aria-label="Screen recording">
-                <div class="pg-review-source-heading"><span>Screen share</span>${driveLink}</div>
-                <div class="pg-review-source-frame${screenCropClass}">
-                    <video id="report-video-player" data-report-sync="attempt" data-report-master="true" src="${primaryUrl}" controls playsinline></video>
-                </div>
-            </section>` : '';
-        const secondaryPanel = hasSecondary ? `
-            <section class="pg-review-source-panel pg-review-secondary-panel" aria-label="Secondary camera recording">
-                <div class="pg-review-source-heading"><span>Secondary camera</span><em>Mobile room view</em></div>
-                <div class="pg-review-source-frame">
-                    <video id="report-mobile-player" data-report-sync="attempt" src="/api/session/mobile-video-playback/${session.id}" controls playsinline muted></video>
-                </div>
-            </section>` : '';
-        videoContainerHtml = `
-            <section class="pg-review-player-shell ${hasScreen ? 'has-screen' : ''} ${hasSecondary ? 'has-secondary' : ''}" aria-label="Attempt recording workstation">
-                <div class="pg-review-media-label">
-                    <span>Attempt media</span>
-                    <span class="pg-review-seek-hint">Select an event to synchronize every recording</span>
-                </div>
-                <div class="pg-review-media-stage">
-                    ${cameraPanel}
-                    <div class="pg-review-lower-stage ${hasSecondary ? 'has-secondary' : ''}">${screenPanel}${secondaryPanel}</div>
-                </div>
-                <div class="pg-review-scrubber" aria-label="Recording integrity timeline">
-                    <div id="report-flag-strip" class="pg-review-flag-strip"><span id="report-playhead" class="pg-review-playhead" aria-hidden="true"></span></div>
-                    <div id="report-flag-axis" class="pg-review-flag-axis"></div>
-                </div>
-            </section>`;
-    } else if (showVideo) {
         const primaryHtml = `<video id="report-video-player" src="/api/session/video-playback/${session.id}" controls style="width:100%; height:100%; object-fit:contain; background:#000;"></video>`;
         const driveLink = session.drive_file_id
             ? `<a href="https://drive.google.com/file/d/${session.drive_file_id}/view" target="_blank" style="font-size:11px; color:#1e40af; margin-left:8px;">Open in Drive</a>`
             : '';
 
         if (session.mobile_drive_file_id || true) {
+            let mobileBlock = '';
             if (session.mobile_drive_file_id) {
-                secondaryVideoHtml = `
-                    <div class="pg-review-secondary-inline" aria-label="Secondary camera recording">
-                        <div class="pg-review-evidence-label">Secondary mobile room view</div>
+                mobileBlock = `
+                    <div style="width: 300px; flex-shrink: 0;">
+                        <div style="font-size: 11px; font-weight: 600; color: #8b83a3; margin-bottom: 6px; text-transform: uppercase; letter-spacing: 0.05em; white-space: nowrap;">Secondary Mobile Room View</div>
                         <!-- Streamed through our own endpoint rather than embedded as a
                              Drive preview iframe. Same native controls as the primary
                              recording, it inherits the page's styling, and it supports
                              range requests so scrubbing works — the Drive embed gave a
                              foreign-looking player with none of that. -->
-                        <div class="pg-review-secondary-frame">
+                        <div style="background: #000; border-radius: 8px; overflow: hidden; aspect-ratio: 4/3; border: 1px solid #e2dff0;">
                             <video id="report-mobile-player" src="/api/session/mobile-video-playback/${session.id}" controls
                                    style="width:100%; height:100%; object-fit:contain; background:#000;"></video>
                         </div>
@@ -1698,19 +1514,20 @@ function viewStudentReport(sessionId, examId) {
             // 4/3 on the secondary matches what the phone actually records (the mobile
             // constraints ask for 640x480), so it no longer letterboxes inside a 16/9 box.
             videoContainerHtml = `
-                <section class="pg-review-player-shell ${secondaryVideoHtml ? 'has-secondary' : ''}" aria-label="Attempt recording">
-                    <div class="pg-review-media-label">
+                <div style="width: 100%; margin-bottom: 18px;">
+                    <div style="font-size: 11px; font-weight: 600; color: #8b83a3; margin-bottom: 6px; text-transform: uppercase; letter-spacing: 0.05em; display: flex; align-items: center; gap: 6px; flex-wrap: nowrap; white-space: nowrap;">
                         <span>Webcam / Screen Recording</span>
                         ${driveLink}
-                        <span class="pg-review-seek-hint">Select a flag to jump to that moment</span>
+                        <span style="font-weight:400; text-transform:none; color:#8b83a3;">&mdash; click a block below to seek</span>
                     </div>
-                    <div class="pg-review-video-frame">${primaryHtml}</div>
-                    <div class="pg-review-scrubber" aria-label="Recording integrity timeline">
-                        <div id="report-flag-strip" class="pg-review-flag-strip"><span id="report-playhead" class="pg-review-playhead" aria-hidden="true"></span></div>
-                        <div id="report-flag-axis" class="pg-review-flag-axis"></div>
-                    </div>
-                    ${secondaryVideoHtml}
-                </section>`;
+                    <div style="background: #000; border-radius: 8px; overflow: hidden; aspect-ratio: 16/9; border: 1px solid #e2dff0;">${primaryHtml}</div>
+                    <div id="report-flag-strip" style="display:flex; gap:1px; height:18px; margin-top:8px; border-radius:3px; overflow:hidden; background:#e2dff0; cursor:pointer;"></div>
+                    <div id="report-flag-axis" style="display:flex; justify-content:space-between; margin-top:4px; font-size:10px; color:#8b83a3; font-variant-numeric:tabular-nums;"></div>
+                </div>
+                <div id="report-secondary-row" style="display: flex; gap: 16px; align-items: flex-start; flex-wrap: wrap; width: 100%;">
+                    ${mobileBlock}
+                    <div id="report-evidence-col" style="flex: 1; min-width: 260px;"></div>
+                </div>`;
         }
     } else {
         videoContainerHtml = `
@@ -1720,82 +1537,8 @@ function viewStudentReport(sessionId, examId) {
             </div>`;
     }
 
-    // HonorLock-style synchronized review: camera on the left, screen on the right.
-    // Legacy attempts used a single 1600x720 canvas (1280px screen + 320px camera),
-    // so that file is intentionally rendered twice through two crop viewports. New
-    // attempts use their truly independent source files. A secondary camera divides
-    // the left column into equal primary/secondary panes instead of pushing media
-    // below the fold.
-    if (showVideo) {
-        const primaryUrl = `/api/session/video-playback/${session.id}`;
-        const recordingKind = session.primary_recording_kind || 'composite';
-        const hasIndependentCamera = !!session.camera_drive_file_id;
-        const hasSecondary = !!session.mobile_drive_file_id;
-        const isLegacyComposite = recordingKind === 'composite' && !hasIndependentCamera;
-        const hasScreen = recordingKind === 'screen' || isLegacyComposite;
-        const hasPrimaryCamera = hasIndependentCamera || recordingKind === 'camera' || isLegacyComposite;
-        const cameraUrl = hasIndependentCamera ? `/api/session/camera-video-playback/${session.id}` : primaryUrl;
-        const cameraPane = hasPrimaryCamera ? `
-            <section class="pg-review-feed pg-review-camera-feed" aria-label="Primary camera recording">
-                <div class="pg-review-feed-label"><strong>Camera</strong>${isLegacyComposite ? '<span>Legacy recording · synchronized crop</span>' : '<span>Primary webcam</span>'}</div>
-                <div class="pg-review-feed-frame ${isLegacyComposite ? 'is-legacy-camera-crop' : ''}">
-                    <video id="report-camera-player" data-report-sync="attempt" src="${cameraUrl}" playsinline muted></video>
-                </div>
-            </section>` : `
-            <section class="pg-review-feed pg-review-feed-empty" aria-label="No primary camera recording">
-                <div class="pg-review-feed-label"><strong>Camera</strong><span>Not recorded</span></div>
-                <div class="pg-review-no-media">No camera recording</div>
-            </section>`;
-        const secondaryPane = hasSecondary ? `
-            <section class="pg-review-feed pg-review-secondary-feed" aria-label="Secondary camera recording">
-                <div class="pg-review-feed-label"><strong>Secondary camera</strong><span>Room view</span></div>
-                <div class="pg-review-feed-frame">
-                    <video id="report-mobile-player" data-report-sync="attempt" src="/api/session/mobile-video-playback/${session.id}" playsinline muted></video>
-                </div>
-            </section>` : '';
-        const screenPane = hasScreen ? `
-            <section class="pg-review-feed pg-review-screen-feed" aria-label="Screen share recording">
-                <div class="pg-review-feed-label"><strong>Screen share</strong>${session.drive_file_id ? `<a href="https://drive.google.com/file/d/${session.drive_file_id}/view" target="_blank" rel="noopener noreferrer">Open original</a>` : '<span>Exam display</span>'}</div>
-                <div class="pg-review-feed-frame ${isLegacyComposite ? 'is-legacy-screen-crop' : ''}">
-                    <video id="report-video-player" data-report-sync="attempt" data-report-master="true" src="${primaryUrl}" playsinline></video>
-                </div>
-            </section>` : `
-            <section class="pg-review-feed pg-review-screen-feed pg-review-feed-empty" aria-label="No screen recording">
-                <div class="pg-review-feed-label"><strong>Screen share</strong><span>Not recorded</span></div>
-                <div class="pg-review-no-media">No screen-share recording</div>
-            </section>`;
-        videoContainerHtml = `
-            <section class="pg-review-workstation pg-review-split-workstation ${hasSecondary ? 'has-secondary' : ''}" aria-label="Attempt recording workstation">
-                <div class="pg-review-split-stage">
-                    <div class="pg-review-camera-column ${hasSecondary ? 'has-secondary' : ''}">${cameraPane}${secondaryPane}</div>
-                    ${screenPane}
-                </div>
-                <div class="pg-review-player-controls" aria-label="Synchronized recording controls">
-                    <button type="button" id="report-play-toggle" class="pg-review-control-button" onclick="toggleReportPlayback()" aria-label="Play recordings">▶</button>
-                    <span id="report-current-time" class="pg-review-control-time">0:00</span>
-                    <input id="report-seek-range" class="pg-review-seek-range" type="range" min="0" max="1000" value="0" aria-label="Recording position" oninput="seekReportPlayback(this.value)">
-                    <span id="report-duration" class="pg-review-control-time">0:00</span>
-                    <button type="button" id="report-mute-toggle" class="pg-review-control-button" onclick="toggleReportMute()" aria-label="Mute recording">🔊</button>
-                </div>
-                <div class="pg-review-scrubber" aria-label="Recording integrity timeline">
-                    <div id="report-flag-strip" class="pg-review-flag-strip"><span id="report-playhead" class="pg-review-playhead" aria-hidden="true"></span></div>
-                    <div id="report-flag-axis" class="pg-review-flag-axis"></div>
-                </div>
-            </section>`;
-    }
-
     // Extra panels (room scan, snapshots, ID verification, signature)
     let extraPanelsHtml = '';
-    const deviceLabel = [session.device_family, session.device_platform].filter(Boolean).join(' / ') || 'Not recorded';
-    const interruptionCount = Number(session.interruption_count || 0);
-    extraPanelsHtml += `
-        <div style="background:${session.resume_approval_required ? 'rgba(239,68,68,.08)' : 'rgba(91,63,168,.07)'}; border:1px solid ${session.resume_approval_required ? 'rgba(239,68,68,.3)' : 'rgba(91,63,168,.2)'}; border-radius:8px; padding:14px 16px; margin-bottom:15px; display:flex; justify-content:space-between; align-items:center; gap:14px;">
-            <div>
-                <h5 style="margin:0; font-size:13px; font-weight:700; color:${session.resume_approval_required ? '#b91c1c' : '#5b3fa8'};">Device continuity</h5>
-                <p style="margin:4px 0 0; font-size:11px; color:#8b83a3; line-height:1.5;">${escapeHtml(deviceLabel)} &middot; ${interruptionCount} recorded interruption${interruptionCount === 1 ? '' : 's'}${session.last_seen_at ? ` &middot; last seen ${new Date(session.last_seen_at).toLocaleString()}` : ''}</p>
-            </div>
-            ${session.resume_approval_required ? `<button class="btn btn-primary btn-sm" onclick="approveSessionResume(${session.id}, ${exam.id})" style="white-space:nowrap;">Approve resume</button>` : ''}
-        </div>`;
     const roomScanLog = logs.find(l => l.event_type === 'room_scan_video');
     if (roomScanLog) {
         extraPanelsHtml += `
@@ -1848,64 +1591,76 @@ function viewStudentReport(sessionId, examId) {
             </div>`;
     }
 
-    const reviewLogs = logs.filter(log => log.event_type !== 'room_scan_video');
-    const highCount = reviewLogs.filter(log => getReviewEventPriority(log.event_type) === 'high').length;
-    const mediumCount = reviewLogs.filter(log => getReviewEventPriority(log.event_type) === 'medium').length;
-    const noticeCount = reviewLogs.length - highCount - mediumCount;
-    const flagCount = highCount + mediumCount;
-    const attemptStarted = new Date(session.recording_started_at || session.started_at);
-    const attemptEnded = new Date(session.recording_stopped_at || session.end_time || session.ended_at || Date.now());
-    const durationSeconds = Number.isFinite(attemptStarted.getTime()) && Number.isFinite(attemptEnded.getTime())
-        ? Math.max(0, Math.round((attemptEnded.getTime() - attemptStarted.getTime()) / 1000))
-        : 0;
-    const durationLabel = `${Math.floor(durationSeconds / 60)}m ${String(durationSeconds % 60).padStart(2, '0')}s`;
-    const displayDate = Number.isFinite(attemptStarted.getTime()) ? attemptStarted.toLocaleDateString() : 'Attempt';
-    const displayTime = Number.isFinite(attemptStarted.getTime())
-        ? attemptStarted.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-        : '';
+    // Metrics stats
+    const gazeCount = logs.filter(l => l.event_type.startsWith('AI_GAZE')).length;
+    const deviceCount = logs.filter(l => l.event_type.startsWith('AI_DEVICE')).length;
+    const voiceCount = logs.filter(l => l.event_type === 'audio_violation').length;
+    const focusCount = logs.filter(l => ['tab_blur', 'window_blur', 'fullscreen_exit'].includes(l.event_type)).length;
 
     const modalContentHtml = `
-        <div class="pg-report-header pg-review-summarybar">
-            <div class="pg-review-stat"><strong>${displayDate}</strong><span>${displayTime}</span></div>
-            <div class="pg-review-stat"><strong>${durationLabel}</strong><span>Duration</span></div>
-            <div class="pg-review-stat is-alert"><strong>${highCount}</strong><span>High priority</span></div>
-            <div class="pg-review-stat is-warning"><strong>${mediumCount}</strong><span>Medium</span></div>
-            <span class="pg-review-risk-pill" style="background:${riskBadgeBg}; color:${riskBadgeColor}; border-color:${riskBadgeBorder};">${riskScore}% ${riskTier}</span>
-            <div class="pg-review-attempt-label">${escapeHtml(session.student_name || session.student_canvas_id)} &middot; Attempt ${session.attempt_number || 1}</div>
-            <button class="modal-close" onclick="closeModal()" aria-label="Close report">&times;</button>
+        <div style="background: #f7f6fb; border-bottom: 1px solid #e2dff0; padding: 16px 24px; display: flex; justify-content: space-between; align-items: center; border-radius: 12px 12px 0 0;">
+            <div style="display: flex; align-items: center; gap: 15px;">
+                <h2 style="margin: 0; font-size: 18px; font-weight: 600; color: #5b3fa8; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;">Proctored Exam Report: ${escapeHtml(session.student_name || session.student_canvas_id)}</h2>
+                <span style="padding: 4px 10px; border-radius: 6px; font-size: 12px; font-weight: bold; background: ${riskBadgeBg}; color: ${riskBadgeColor}; border: 1px solid ${riskBadgeBorder}; text-transform: uppercase; letter-spacing: 0.05em;">
+                    Risk: ${riskTier} (${riskScore})
+                </span>
+            </div>
+            <div style="display: flex; align-items: center; gap: 12px;">
+                <span style="font-size: 12px; color: #8b83a3; font-family: monospace;">Exam: ${escapeHtml(exam.title)} | Attempt ${session.attempt_number || 1} | ${new Date(session.started_at).toLocaleString()}</span>
+                <button class="modal-close" onclick="closeModal()" style="background: transparent; border: none; color: #8b83a3; font-size: 28px; cursor: pointer; line-height: 1;">&times;</button>
+            </div>
         </div>
-        <div class="pg-report-body">
-            <!-- The recording never leaves view while the event list scrolls. -->
-            <div class="pg-report-media-pane">
+        <div style="display: flex; flex: 1; overflow: hidden; background: #ffffff;">
+            <!-- Left Pane: Media & Downloads -->
+            <div style="flex: 1 1 auto; min-width: 0; padding: 24px; background: #f7f6fb; display: flex; flex-direction: column; overflow-y: auto; border-right: 1px solid #e2dff0;">
                 ${videoContainerHtml}
+                <div id="report-extra-panels">${extraPanelsHtml}</div>
             </div>
 
-            <!-- Compact event inspector, modeled after desktop proctor-review tools. -->
-            <aside class="pg-report-timeline-pane">
+            <!-- Right Pane: Timeline & Filters & Annotations -->
+            <div style="flex: 0 0 420px; display: flex; flex-direction: column; background: #f7f6fb; overflow: hidden;">
                 <!-- Tabbar -->
-                <div class="pg-review-tabs" role="tablist" aria-label="Attempt review panels">
-                    <button id="tab-timeline-btn" class="pg-review-tab is-active" role="tab" aria-selected="true" onclick="switchReportTab('timeline')">Events</button>
-                    <button id="tab-annotations-btn" class="pg-review-tab" role="tab" aria-selected="false" onclick="switchReportTab('annotations')">Notes (${session.annotations ? session.annotations.length : 0})</button>
-                    <button id="tab-evidence-btn" class="pg-review-tab" role="tab" aria-selected="false" onclick="switchReportTab('evidence')">Evidence</button>
+                <div style="display: flex; background: #ffffff; border-bottom: 1px solid #e2dff0;">
+                    <button id="tab-timeline-btn" onclick="switchReportTab('timeline')" style="flex: 1; padding: 12px; border: none; background: transparent; color: #5b3fa8; border-bottom: 2px solid #5b3fa8; font-weight: 700; font-size: 13px; cursor: pointer; outline: none;">Timeline</button>
+                    <button id="tab-annotations-btn" onclick="switchReportTab('annotations')" style="flex: 1; padding: 12px; border: none; background: transparent; color: #8b83a3; border-bottom: 2px solid transparent; font-weight: 500; font-size: 13px; cursor: pointer; outline: none;">Annotations (${session.annotations ? session.annotations.length : 0})</button>
                 </div>
                 
                 <!-- Timeline Section Container -->
                 <div id="report-timeline-container" style="display: flex; flex-direction: column; flex: 1; overflow: hidden;">
-                    <div class="pg-review-event-header">
-                        <div class="pg-review-summary" aria-label="Flag summary">
-                            <div><strong>${highCount}</strong><span>High priority</span></div>
-                            <div><strong id="report-flag-duration">--:--</strong><span>Flagged time</span></div>
+                    <div style="padding: 16px; border-bottom: 1px solid #e2dff0;">
+                        <h4 style="margin: 0 0 10px 0; font-size: 13px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; color: #8b83a3;">Proctoring Log Timeline</h4>
+
+                        <!-- Metrics -->
+                        <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; margin-bottom: 12px;">
+                            <div style="background: rgba(59, 130, 246, 0.08); border: 1px solid rgba(59, 130, 246, 0.15); padding: 6px 4px; border-radius: 6px; text-align: center;">
+                                <div style="font-size: 13px; font-weight: 700; color: #241d38;">${gazeCount}</div>
+                                <div style="font-size: 8px; color: #8b83a3; text-transform: uppercase;">Gaze</div>
+                            </div>
+                            <div style="background: rgba(245, 158, 11, 0.08); border: 1px solid rgba(245, 158, 11, 0.15); padding: 6px 4px; border-radius: 6px; text-align: center;">
+                                <div style="font-size: 13px; font-weight: 700; color: #241d38;">${deviceCount}</div>
+                                <div style="font-size: 8px; color: #8b83a3; text-transform: uppercase;">Devices</div>
+                            </div>
+                            <div style="background: rgba(239, 68, 68, 0.08); border: 1px solid rgba(239, 68, 68, 0.15); padding: 6px 4px; border-radius: 6px; text-align: center;">
+                                <div style="font-size: 13px; font-weight: 700; color: #241d38;">${voiceCount}</div>
+                                <div style="font-size: 8px; color: #8b83a3; text-transform: uppercase;">Speaking</div>
+                            </div>
+                            <div style="background: rgba(16, 185, 129, 0.08); border: 1px solid rgba(16, 185, 129, 0.15); padding: 6px 4px; border-radius: 6px; text-align: center;">
+                                <div style="font-size: 13px; font-weight: 700; color: #241d38;">${focusCount}</div>
+                                <div style="font-size: 8px; color: #8b83a3; text-transform: uppercase;">Tab Leaves</div>
+                            </div>
                         </div>
-                        <div class="pg-review-filter-row" role="group" aria-label="Show review events">
-                            <button type="button" id="report-filter-high" class="pg-review-filter is-high ${activeLogFilterSeverity === 'high' ? 'is-active' : ''}" onclick="setReportLogFilter('high')">High (${highCount})</button>
-                            <button type="button" id="report-filter-medium" class="pg-review-filter is-medium ${activeLogFilterSeverity === 'medium' ? 'is-active' : ''}" onclick="setReportLogFilter('medium')">Medium (${mediumCount})</button>
-                            <button type="button" id="report-filter-notice" class="pg-review-filter is-notice ${activeLogFilterSeverity === 'notice' ? 'is-active' : ''}" onclick="setReportLogFilter('notice')">Notice (${noticeCount})</button>
-                            <button type="button" id="report-filter-all" class="pg-review-filter ${activeLogFilterSeverity === 'all' ? 'is-active' : ''}" onclick="setReportLogFilter('all')">All (${reviewLogs.length})</button>
+
+                        <!-- Search & Filter -->
+                        <div style="display: flex; gap: 8px;">
+                            <input type="text" id="log-search-input" placeholder="Search events..." style="flex: 1; padding: 8px 12px; background: #ffffff; border: 1px solid #e2dff0; border-radius: 6px; color: #241d38; font-size: 13px; box-sizing: border-box; outline: none;" />
+                            <select id="log-severity-select" style="padding: 8px 12px; background: #ffffff; border: 1px solid #e2dff0; border-radius: 6px; color: #241d38; font-size: 13px; cursor: pointer;">
+                                <option value="all">All Events</option>
+                                <option value="flag">Warnings / Flags</option>
+                                <option value="info">Info Logs</option>
+                            </select>
                         </div>
-                        <label class="sr-only" for="log-search-input">Search review events</label>
-                        <input type="search" id="log-search-input" class="pg-review-search" placeholder="Search events…" />
                     </div>
-                    <div id="modal-timeline-list" class="pg-review-event-list" role="list">
+                    <div id="modal-timeline-list" style="flex: 1; overflow-y: auto; padding: 12px;">
                         <!-- Rendered dynamically -->
                     </div>
                 </div>
@@ -1923,12 +1678,9 @@ function viewStudentReport(sessionId, examId) {
                         <!-- Rendered dynamically -->
                     </div>
                 </div>
-                <div id="report-evidence-container" class="pg-review-evidence-pane" role="tabpanel">
-                    ${extraPanelsHtml || '<div class="pg-review-empty">No additional evidence was captured for this attempt.</div>'}
-                </div>
-            </aside>
+            </div>
         </div>
-        <div class="pg-report-footer" style="background: #f7f6fb; border-top: 1px solid #e2dff0; padding: 12px 24px; display: flex; justify-content: space-between; align-items: center; border-radius: 0 0 12px 12px;">
+        <div style="background: #f7f6fb; border-top: 1px solid #e2dff0; padding: 12px 24px; display: flex; justify-content: space-between; align-items: center; border-radius: 0 0 12px 12px;">
             <div style="display:flex; gap: 8px; flex-wrap:wrap;">
                 <button class="btn btn-secondary btn-sm" onclick="exportSessionReport(${session.id}, ${exam.id})" style="background: rgba(59, 130, 246, 0.15); color: #60a5fa; border: 1px solid #e2dff0;">Export Report</button>
                 <button class="btn btn-secondary btn-sm" onclick="grantExtraAttempt(${exam.id}, ${JSON.stringify(String(session.student_canvas_id || '')).replace(/"/g, '&quot;')})" style="background: rgba(100, 116, 139, 0.15); color: #8b83a3; border: 1px solid #e2dff0;">+1 Override Pass</button>
@@ -1940,117 +1692,58 @@ function viewStudentReport(sessionId, examId) {
     
     const modalOverlay = document.getElementById('modal-overlay');
     const modalContainer = document.getElementById('modal-content');
-    modalContainer.classList.remove('pg-settings-modal');
-    modalContainer.classList.add('pg-report-modal');
     // This is an evidence-review surface, not a dialog — it should use the display it
     // has. 1200px was capping the primary recording to roughly half the pane once the
     // secondary camera appeared, which made screen text in the recording unreadable.
-    modalContainer.style.maxWidth = 'none';
-    modalContainer.style.width = '100vw';
+    modalContainer.style.maxWidth = '1800px';
+    modalContainer.style.width = '97%';
     modalContainer.style.padding = '0';
     modalContainer.style.background = '#ffffff';
     modalContainer.style.border = '1px solid #e2dff0';
-    modalContainer.style.borderRadius = '0';
+    modalContainer.style.borderRadius = '12px';
     modalContainer.style.display = 'flex';
     modalContainer.style.flexDirection = 'column';
-    modalContainer.style.height = '100dvh';
+    modalContainer.style.height = '92vh';
     modalContainer.style.overflow = 'hidden';
     modalContainer.innerHTML = modalContentHtml;
-    modalOverlay.classList.add('active', 'pg-review-open');
-    document.body.classList.add('pg-review-lock');
-    document.documentElement.classList.add('pg-review-lock');
-    // Opening an attempt must always start on the video at the viewport top. The
-    // dashboard can retain its own scroll position, but that must never carry into
-    // the fixed review workstation.
-    window.scrollTo({ top: 0, left: 0, behavior: 'auto' });
-    document.documentElement.scrollTop = 0;
-    document.body.scrollTop = 0;
-    modalOverlay.scrollTop = 0;
-    modalContainer.scrollTop = 0;
-
-    // A legacy file contains two differently shaped sources inside one canvas.
-    // Size each crop window against the space actually available so neither the
-    // 16:9 screen nor the 4:3 camera can be stretched or clipped by a tall panel.
-    if (window.activeReviewCropObserver) window.activeReviewCropObserver.disconnect();
-    const fitLegacyCropFrames = () => {
-        document.querySelectorAll('.pg-review-feed-frame.is-legacy-screen-crop, .pg-review-feed-frame.is-legacy-camera-crop').forEach(frame => {
-            const feed = frame.closest('.pg-review-feed');
-            if (!feed) return;
-            const ratio = frame.classList.contains('is-legacy-screen-crop') ? (16 / 9) : (4 / 3);
-            const maxWidth = Math.max(1, feed.clientWidth);
-            // Source labels overlay the footage in 4.6.2, so their height does not
-            // reduce the crop viewport. Subtracting it created the final thin black
-            // gutter even after the stage itself had the correct combined ratio.
-            const maxHeight = Math.max(1, feed.clientHeight);
-            const width = Math.min(maxWidth, maxHeight * ratio);
-            frame.style.width = `${Math.floor(width)}px`;
-            frame.style.height = `${Math.floor(width / ratio)}px`;
-            frame.style.justifySelf = 'center';
-            frame.style.alignSelf = 'center';
-        });
-    };
-    fitLegacyCropFrames();
-    window.activeReviewCropObserver = new ResizeObserver(fitLegacyCropFrames);
-    const reviewStage = document.querySelector('.pg-review-split-stage');
-    if (reviewStage) window.activeReviewCropObserver.observe(reviewStage);
+    modalOverlay.classList.add('active');
 
     // Register active session-level timeline controllers
     window.switchReportTab = function(tabName) {
-        if (!['timeline', 'annotations', 'evidence'].includes(tabName)) return;
-        const panels = {
-            timeline: document.getElementById('report-timeline-container'),
-            annotations: document.getElementById('report-annotations-container'),
-            evidence: document.getElementById('report-evidence-container')
-        };
-        const buttons = {
-            timeline: document.getElementById('tab-timeline-btn'),
-            annotations: document.getElementById('tab-annotations-btn'),
-            evidence: document.getElementById('tab-evidence-btn')
-        };
-        Object.keys(panels).forEach(name => {
-            const selected = name === tabName;
-            if (panels[name]) panels[name].style.display = selected ? 'flex' : 'none';
-            if (buttons[name]) {
-                buttons[name].classList.toggle('is-active', selected);
-                buttons[name].setAttribute('aria-selected', String(selected));
-            }
-        });
-        if (tabName === 'annotations') renderAnnotations(session.id);
-    };
-
-    window.seekVideo = function(seconds) {
-        const videos = Array.from(document.querySelectorAll('[data-report-sync="attempt"]'));
-        if (videos.length > 0) {
-            videos.forEach(video => {
-                try { video.currentTime = seconds; } catch (e) {}
-                video.play().catch(() => {});
-            });
+        const timelineBtn = document.getElementById('tab-timeline-btn');
+        const annotationsBtn = document.getElementById('tab-annotations-btn');
+        const timelineContainer = document.getElementById('report-timeline-container');
+        const annotationsContainer = document.getElementById('report-annotations-container');
+        
+        if (tabName === 'timeline') {
+            timelineBtn.style.color = '#5b3fa8';
+            timelineBtn.style.borderBottom = '2px solid #5b3fa8';
+            timelineBtn.style.fontWeight = '700';
+            annotationsBtn.style.color = '#8b83a3';
+            annotationsBtn.style.borderBottom = '2px solid transparent';
+            annotationsBtn.style.fontWeight = '500';
+            timelineContainer.style.display = 'flex';
+            annotationsContainer.style.display = 'none';
         } else {
-            showToast("Attempt recordings are not active or are still loading.", "info");
+            timelineBtn.style.color = '#8b83a3';
+            timelineBtn.style.borderBottom = '2px solid transparent';
+            timelineBtn.style.fontWeight = '500';
+            annotationsBtn.style.color = '#5b3fa8';
+            annotationsBtn.style.borderBottom = '2px solid #5b3fa8';
+            annotationsBtn.style.fontWeight = '700';
+            timelineContainer.style.display = 'none';
+            annotationsContainer.style.display = 'flex';
+            renderAnnotations(session.id);
         }
     };
 
-    window.setReportSource = function(source) {
-        const views = Array.from(document.querySelectorAll('[data-report-source]'));
-        const buttons = Array.from(document.querySelectorAll('[data-report-source-button]'));
-        const master = document.getElementById('report-video-player');
-        const activeView = views.find(view => view.dataset.reportSource === source);
-        if (!activeView) return;
-
-        const activeVideo = activeView.querySelector('video');
-        const sourceTime = master && Number.isFinite(master.currentTime) ? master.currentTime : 0;
-        views.forEach(view => {
-            const selected = view === activeView;
-            view.hidden = !selected;
-            view.classList.toggle('is-active', selected);
-        });
-        buttons.forEach(button => {
-            const selected = button.dataset.reportSourceButton === source;
-            button.classList.toggle('is-active', selected);
-            button.setAttribute('aria-selected', String(selected));
-        });
-        if (activeVideo && activeVideo !== master) {
-            try { activeVideo.currentTime = sourceTime; } catch (e) {}
+    window.seekVideo = function(seconds) {
+        const video = document.getElementById('report-video-player');
+        if (video) {
+            video.currentTime = seconds;
+            video.play().catch(() => {});
+        } else {
+            showToast("Primary video player not active or loading.", "info");
         }
     };
 
@@ -2069,7 +1762,7 @@ function viewStudentReport(sessionId, examId) {
             if (sessionInList) {
                 sessionInList.annotations = annotations;
                 const annTabBtn = document.getElementById('tab-annotations-btn');
-                if (annTabBtn) annTabBtn.innerText = `Notes (${annotations.length})`;
+                if (annTabBtn) annTabBtn.innerText = `Annotations (${annotations.length})`;
             }
             
             if (annotations.length === 0) {
@@ -2108,7 +1801,7 @@ function viewStudentReport(sessionId, examId) {
             return;
         }
         
-        const video = document.querySelector('[data-report-master="true"]') || document.getElementById('report-camera-player');
+        const video = document.getElementById('report-video-player');
         const timestamp_seconds = video ? Math.floor(video.currentTime) : 0;
         
         try {
@@ -2150,12 +1843,7 @@ function viewStudentReport(sessionId, examId) {
 
     // Render logs timeline
     const renderLogsTimeline = () => {
-        const timelineLogs = (Array.isArray(session.logs) ? session.logs : [])
-            .filter(log => log.event_type !== 'room_scan_video')
-            .map((log, index) => ({
-                log,
-                key: String(log.id || `${log.event_timestamp || 'event'}-${index}`)
-            }));
+        const timelineLogs = Array.isArray(session.logs) ? session.logs : [];
         const container = document.getElementById('modal-timeline-list');
         if (!container) return;
 
@@ -2163,18 +1851,36 @@ function viewStudentReport(sessionId, examId) {
 
         if (activeLogFilterSearch) {
             const query = activeLogFilterSearch.toLowerCase();
-            filteredLogs = filteredLogs.filter(({ log }) =>
-                String(log.event_message || '').toLowerCase().includes(query) ||
-                String(log.event_type || '').toLowerCase().includes(query)
+            filteredLogs = filteredLogs.filter(l => 
+                l.event_message.toLowerCase().includes(query) || 
+                l.event_type.toLowerCase().includes(query)
             );
         }
 
-        if (activeLogFilterSeverity !== 'all') {
-            filteredLogs = filteredLogs.filter(({ log }) => getReviewEventPriority(log.event_type) === activeLogFilterSeverity);
+        if (activeLogFilterSeverity === 'flag') {
+            filteredLogs = filteredLogs.filter(l => 
+                ['tab_blur', 'window_blur', 'fullscreen_exit', 'audio_violation', 'error', 'fail'].includes(l.event_type) || 
+                l.event_type.startsWith('AI_')
+            );
+        } else if (activeLogFilterSeverity === 'info') {
+            filteredLogs = filteredLogs.filter(l => 
+                !['tab_blur', 'window_blur', 'fullscreen_exit', 'audio_violation', 'error', 'fail'].includes(l.event_type) && 
+                !l.event_type.startsWith('AI_')
+            );
         }
 
         let logsHtml = '';
-        filteredLogs.forEach(({ log: l, key }) => {
+        filteredLogs.forEach(l => {
+            if (l.event_type === 'room_scan_video') return;
+
+            const isAI = l.event_type.startsWith('AI_');
+            const isDanger = ['tab_blur', 'window_blur', 'fullscreen_exit', 'audio_violation', 'mic_muted', 'booted', 'error', 'fail', 'phone_detected', 'multiple_faces'].includes(l.event_type) || isAI;
+            const isWarning = ['audio_threshold_exceeded', 'gaze_off_screen'].includes(l.event_type) || l.event_type.includes('transcript') || l.event_type.includes('voice') || l.event_type.includes('speaking') || l.event_type.includes('blur') || l.event_type.includes('focus');
+
+            let borderColor = '#5b3fa8';
+            let bgColor = 'rgba(59, 130, 246, 0.05)';
+            if (isDanger) { borderColor = '#ef4444'; bgColor = 'rgba(239, 68, 68, 0.05)'; }
+            else if (isWarning) { borderColor = '#f59e0b'; bgColor = 'rgba(245, 158, 11, 0.05)'; }
 
             // Calculate video offset.
             //
@@ -2190,37 +1896,21 @@ function viewStudentReport(sessionId, examId) {
             const sec = offsetSec % 60;
             const timeStr = min + ':' + sec.toString().padStart(2, '0');
 
-            const priority = getReviewEventPriority(l.event_type);
-            const eventLabel = String(l.event_type || 'event').replace(/_/g, ' ').replace(/\b\w/g, char => char.toUpperCase());
             logsHtml += `
-                <button type="button" role="listitem"
-                        class="pg-review-event-row priority-${priority} ${activeReportEventKey === key ? 'is-selected' : ''}"
-                        data-event-key="${escapeHtml(key)}" data-seek="${offsetSec}"
-                        aria-label="Jump to ${timeStr}: ${escapeHtml(eventLabel)}">
-                    <span class="pg-review-event-time">${timeStr}</span>
-                    <span class="pg-review-priority-badge">${priority === 'high' ? 'High' : (priority === 'medium' ? 'Medium' : 'Notice')}</span>
-                    <span class="pg-review-event-copy">
-                        <strong>${escapeHtml(eventLabel)}</strong>
-                        <small>${escapeHtml(String(l.event_message || 'Recorded event'))}</small>
-                    </span>
-                    <span class="pg-review-event-jump" aria-hidden="true">›</span>
-                </button>`;
+                <div style="padding: 10px 12px; margin-bottom: 8px; border-radius: 8px; background: ${bgColor}; border-left: 4px solid ${borderColor}; cursor: pointer; transition: transform 0.15s, background 0.15s;"
+                     onclick="seekVideo(${offsetSec})"
+                     onmouseenter="this.style.transform='translateX(4px)'; this.style.background='#faf8ff';"
+                     onmouseleave="this.style.transform='translateX(0)'; this.style.background='${bgColor}';">
+                    <div style="font-size: 11px; color: #8b83a3; margin-bottom: 4px;">[${timeStr}] - ${escapeHtml(String(l.event_type || '').replace(/_/g, ' ').toUpperCase())}</div>
+                    <div style="font-size: 12px; line-height: 1.4; color: #241d38; word-break: break-word;">${escapeHtml(l.event_message)}</div>
+                </div>
+            `;
         });
 
-        if (filteredLogs.length === 0) {
-            logsHtml = `<div class="pg-review-empty">No matching events found.</div>`;
+        if (filteredLogs.filter(l => l.event_type !== 'room_scan_video').length === 0) {
+            logsHtml = `<div style="text-align:center; padding:20px; color:#8b83a3; font-size:13px;">No matching events found.</div>`;
         }
         container.innerHTML = logsHtml;
-        container.onclick = event => {
-            const row = event.target.closest('.pg-review-event-row');
-            if (!row) return;
-            activeReportEventKey = row.dataset.eventKey || '';
-            container.querySelectorAll('.pg-review-event-row').forEach(candidate => {
-                candidate.classList.toggle('is-selected', candidate === row);
-                candidate.setAttribute('aria-current', candidate === row ? 'true' : 'false');
-            });
-            seekVideo(Number(row.dataset.seek || 0));
-        };
     };
 
     // Initial log timeline draw
@@ -2232,37 +1922,16 @@ function viewStudentReport(sessionId, examId) {
     // relocating them afterwards keeps that ordering intact. When there is no
     // secondary camera the column is full width, and when there is no video at all the
     // target does not exist and the panels simply stay where they are.
+    const evidenceCol = document.getElementById('report-evidence-col');
+    const extraPanels = document.getElementById('report-extra-panels');
+    if (evidenceCol && extraPanels && extraPanels.children.length > 0) {
+        while (extraPanels.firstChild) evidenceCol.appendChild(extraPanels.firstChild);
+        extraPanels.remove();
+    }
+
     // Paint flag markers on scrubber once video metadata loads
-    const reportVideo = document.querySelector('[data-report-master="true"]') || document.getElementById('report-camera-player');
+    const reportVideo = document.getElementById('report-video-player');
     if (reportVideo) {
-        // Raw MediaRecorder WebM can report Infinity/0 until it is normalized. The
-        // monitored recording window is still known, so use it for review controls
-        // and event mapping instead of leaving the strip falsely all-green.
-        const effectiveReportDuration = () => {
-            const mediaDuration = Number(reportVideo.duration);
-            return Number.isFinite(mediaDuration) && mediaDuration > 0
-                ? mediaDuration
-                : Math.max(1, durationSeconds || 0);
-        };
-        const synchronizedVideos = Array.from(document.querySelectorAll('[data-report-sync="attempt"]'));
-        let syncingReportPlayers = false;
-        const syncPlayersToMaster = (shouldPlay = false) => {
-            if (syncingReportPlayers) return;
-            syncingReportPlayers = true;
-            synchronizedVideos.forEach(video => {
-                if (video === reportVideo) return;
-                if (Math.abs((video.currentTime || 0) - reportVideo.currentTime) > 0.45) {
-                    try { video.currentTime = reportVideo.currentTime; } catch (e) {}
-                }
-                if (shouldPlay && !reportVideo.paused) video.play().catch(() => {});
-                if (reportVideo.paused && !video.paused) video.pause();
-            });
-            syncingReportPlayers = false;
-        };
-        reportVideo.addEventListener('play', () => syncPlayersToMaster(true));
-        reportVideo.addEventListener('pause', () => syncPlayersToMaster(false));
-        reportVideo.addEventListener('seeking', () => syncPlayersToMaster(false));
-        reportVideo.addEventListener('timeupdate', () => syncPlayersToMaster(true));
         // Segmented severity strip across the whole recording, matching the extension
         // panel: every block is green for a clean stretch or red for one containing a
         // flag. The previous version drew a few 3px ticks on an otherwise empty bar,
@@ -2271,40 +1940,31 @@ function viewStudentReport(sessionId, examId) {
         const paintMarkers = () => {
             const strip = document.getElementById('report-flag-strip');
             const axis = document.getElementById('report-flag-axis');
-            if (!strip) return;
+            if (!strip || !reportVideo.duration || !isFinite(reportVideo.duration)) return;
 
-            const duration = effectiveReportDuration();
+            const duration = reportVideo.duration;
             // Anchored to recording start, like the timeline markers — measuring from
             // started_at shifted every block by the setup lead-in.
             const epochMs = new Date(session.recording_started_at || session.started_at).getTime();
 
             const SEGMENTS = 64;
             const buckets = Array.from({ length: SEGMENTS }, () => []);
-            logs.forEach(l => {
+            logs.filter(l => isFlagEvent(l.event_type)).forEach(l => {
                 const offset = (new Date(l.event_timestamp).getTime() - epochMs) / 1000;
                 if (offset < 0 || offset > duration) return;
                 const idx = Math.min(SEGMENTS - 1, Math.floor((offset / duration) * SEGMENTS));
-                buckets[idx].push({
-                    label: (l.event_type || '').replace(/_/g, ' '),
-                    priority: getReviewEventPriority(l.event_type)
-                });
+                buckets[idx].push((l.event_type || '').replace(/_/g, ' '));
             });
 
             const segSec = duration / SEGMENTS;
-            const highBucketCount = buckets.filter(hits => hits.some(hit => hit.priority === 'high')).length;
             strip.innerHTML = buckets.map((hits, i) => {
                 const at = Math.floor(i * segSec);
-                const priority = hits.some(hit => hit.priority === 'high')
-                    ? 'high'
-                    : (hits.some(hit => hit.priority === 'medium') ? 'medium' : 'notice');
-                const title = hits.length
-                    ? `${formatClock(at)} — ${hits.map(hit => hit.label).join(', ')}`
-                    : `${formatClock(at)} — no events`;
-                return `<span class="pg-review-timeline-segment priority-${priority}" title="${escapeHtml(title)}" data-seek="${at}"></span>`;
-            }).join('') + '<span id="report-playhead" class="pg-review-playhead" aria-hidden="true"></span>';
-
-            const flaggedDuration = document.getElementById('report-flag-duration');
-            if (flaggedDuration) flaggedDuration.textContent = formatClock(Math.ceil(highBucketCount * segSec));
+                const flagged = hits.length > 0;
+                const title = flagged
+                    ? `${formatClock(at)} — ${hits.join(', ')}`
+                    : `${formatClock(at)} — no flags`;
+                return `<div title="${escapeHtml(title)}" data-seek="${at}" style="flex:1; background:${flagged ? '#d32130' : '#17845a'};"></div>`;
+            }).join('');
 
             // One delegated handler rather than an inline onclick per block.
             strip.onclick = (e) => {
@@ -2318,61 +1978,13 @@ function viewStudentReport(sessionId, examId) {
                     .join('');
             }
         };
-        const updatePlayhead = () => {
-            const playhead = document.getElementById('report-playhead');
-            const duration = effectiveReportDuration();
-            if (!playhead || !duration) return;
-            const progress = Math.max(0, Math.min(1, reportVideo.currentTime / duration));
-            playhead.style.left = `${progress * 100}%`;
-            const seekRange = document.getElementById('report-seek-range');
-            const currentTime = document.getElementById('report-current-time');
-            if (seekRange) seekRange.value = String(Math.round(progress * 1000));
-            if (currentTime) currentTime.textContent = formatClock(Math.floor(reportVideo.currentTime));
-        };
-        const updatePlaybackButton = () => {
-            const button = document.getElementById('report-play-toggle');
-            if (!button) return;
-            button.textContent = reportVideo.paused ? '▶' : '❚❚';
-            button.setAttribute('aria-label', reportVideo.paused ? 'Play recordings' : 'Pause recordings');
-        };
-        reportVideo.addEventListener('loadedmetadata', () => {
-            paintMarkers();
-            const duration = document.getElementById('report-duration');
-            if (duration) duration.textContent = formatClock(Math.floor(effectiveReportDuration()));
-            updatePlayhead();
-        });
-        reportVideo.addEventListener('timeupdate', updatePlayhead);
-        reportVideo.addEventListener('seeking', updatePlayhead);
-        reportVideo.addEventListener('play', updatePlaybackButton);
-        reportVideo.addEventListener('pause', updatePlaybackButton);
-        reportVideo.addEventListener('ended', updatePlaybackButton);
-        window.toggleReportPlayback = function() {
-            if (reportVideo.paused) reportVideo.play().catch(() => {});
-            else reportVideo.pause();
-        };
-        window.seekReportPlayback = function(value) {
-            const duration = effectiveReportDuration();
-            if (!duration) return;
-            seekVideo((Number(value) / 1000) * duration);
-        };
-        window.toggleReportMute = function() {
-            reportVideo.muted = !reportVideo.muted;
-            const button = document.getElementById('report-mute-toggle');
-            if (button) {
-                button.textContent = reportVideo.muted ? '🔇' : '🔊';
-                button.setAttribute('aria-label', reportVideo.muted ? 'Unmute recording' : 'Mute recording');
-            }
-        };
-        // Paint immediately from session timestamps; loadedmetadata will repaint
-        // with the exact MP4 duration once available.
-        paintMarkers();
-        const initialDuration = document.getElementById('report-duration');
-        if (initialDuration) initialDuration.textContent = formatClock(Math.floor(effectiveReportDuration()));
-        updatePlayhead();
+        reportVideo.addEventListener('loadedmetadata', paintMarkers);
+        if (reportVideo.readyState >= 1) paintMarkers();
     }
 
     // Bind log filter inputs
     const searchInput = document.getElementById('log-search-input');
+    const severitySelect = document.getElementById('log-severity-select');
 
     if (searchInput) {
         searchInput.addEventListener('input', (e) => {
@@ -2381,45 +1993,12 @@ function viewStudentReport(sessionId, examId) {
         });
     }
 
-    window.setReportLogFilter = function(filter) {
-        if (!['all', 'high', 'medium', 'notice'].includes(filter)) return;
-        activeLogFilterSeverity = filter;
-        ['all', 'high', 'medium', 'notice'].forEach(name => {
-            const button = document.getElementById(`report-filter-${name}`);
-            if (!button) return;
-            const selected = name === filter;
-            button.classList.toggle('is-active', selected);
-            button.setAttribute('aria-pressed', String(selected));
+    if (severitySelect) {
+        severitySelect.addEventListener('change', (e) => {
+            activeLogFilterSeverity = e.target.value;
+            renderLogsTimeline();
         });
-        renderLogsTimeline();
-    };
-
-    // The review overlay is a fixed workstation, so wheel gestures belong to the
-    // active inspector rather than the page behind it. Listen in the capture phase:
-    // native video controls can consume a bubbling wheel event before the modal sees
-    // it. Normalize line/page deltas too; otherwise some Windows mice advance the
-    // event list by only three pixels per notch and appear to be broken.
-    if (window.activeReviewWheelHandler) {
-        modalOverlay.removeEventListener('wheel', window.activeReviewWheelHandler, true);
     }
-    window.activeReviewWheelHandler = event => {
-        if (Math.abs(event.deltaY) <= Math.abs(event.deltaX)) return;
-        const candidates = [
-            document.getElementById('modal-timeline-list'),
-            document.getElementById('modal-annotations-list'),
-            document.getElementById('report-evidence-container')
-        ];
-        const target = candidates.find(element => element && element.offsetParent !== null && element.scrollHeight > element.clientHeight);
-        if (!target) return;
-        const deltaUnit = event.deltaMode === WheelEvent.DOM_DELTA_LINE
-            ? 34
-            : (event.deltaMode === WheelEvent.DOM_DELTA_PAGE ? Math.max(1, target.clientHeight) : 1);
-        const scrollAmount = event.deltaY * deltaUnit;
-        if (!Number.isFinite(scrollAmount) || scrollAmount === 0) return;
-        event.preventDefault();
-        target.scrollTop += scrollAmount;
-    };
-    modalOverlay.addEventListener('wheel', window.activeReviewWheelHandler, { capture: true, passive: false });
 }
 
 function exportExamReportsCsv(examId) {
@@ -2583,151 +2162,12 @@ async function deleteStudentAttempt(sessionId, examId) {
     }
 }
 
-function getSebSettingsForExam(exam) {
-    let raw = exam && exam.seb_settings ? exam.seb_settings : {};
-    if (typeof raw === 'string') {
-        try { raw = JSON.parse(raw); } catch (_) { raw = {}; }
-    }
-    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) raw = {};
-
-    const list = value => Array.isArray(value)
-        ? value.map(item => String(item || '').trim()).filter(Boolean)
-        : String(value || '').split(/\r?\n/).map(item => item.trim()).filter(Boolean);
-
-    return {
-        url_filter_mode: ['off', 'allowlist', 'blocklist'].includes(raw.url_filter_mode) ? raw.url_filter_mode : 'off',
-        allowed_urls: list(raw.allowed_urls),
-        blocked_urls: list(raw.blocked_urls),
-        filter_embedded_content: raw.filter_embedded_content === true,
-        allow_uploads: raw.allow_uploads === true,
-        clipboard_mode: ['blocked', 'isolated', 'system'].includes(raw.clipboard_mode) ? raw.clipboard_mode : 'isolated',
-        popup_policy: ['block', 'same_window', 'new_window'].includes(raw.popup_policy) ? raw.popup_policy : 'block',
-        allow_navigation: raw.allow_navigation === true,
-        allow_reload: raw.allow_reload !== false,
-        allow_spellcheck: raw.allow_spellcheck === true,
-        allow_find: raw.allow_find !== false,
-        allow_zoom: raw.allow_zoom !== false,
-        show_taskbar: raw.show_taskbar === true,
-        show_wifi_control: raw.show_wifi_control === true,
-        allow_virtual_machine: raw.allow_virtual_machine === true,
-        allow_screen_capture: raw.allow_screen_capture === true,
-        permitted_apps: Array.isArray(raw.permitted_apps) ? raw.permitted_apps : []
-    };
-}
-
-function renderSebPermittedAppRow(app = {}) {
-    const platform = app.platform === 'macos' ? 'macos' : 'windows';
-    const args = Array.isArray(app.arguments) ? app.arguments.join('\n') : (app.arguments || '');
-    return `
-        <div class="seb-app-row">
-            <div class="seb-app-row-header">
-                <strong>Permitted application</strong>
-                <button type="button" class="btn btn-secondary btn-sm" onclick="removeSebPermittedApp(this)">Remove</button>
-            </div>
-            <div class="seb-app-fields">
-                <label><span>Name</span><input class="form-input" data-seb-app="title" value="${escapeHtml(app.title || '')}" placeholder="Microsoft Excel"></label>
-                <label><span>Platform</span><select class="form-input" data-seb-app="platform"><option value="windows" ${platform === 'windows' ? 'selected' : ''}>Windows</option><option value="macos" ${platform === 'macos' ? 'selected' : ''}>macOS</option></select></label>
-                <label><span>Executable</span><input class="form-input" data-seb-app="executable" value="${escapeHtml(app.executable || '')}" placeholder="EXCEL.EXE"></label>
-                <label><span>Executable path (optional)</span><input class="form-input" data-seb-app="path" value="${escapeHtml(app.path || '')}" placeholder="C:\\Program Files\\Microsoft Office"></label>
-                <label><span>macOS bundle identifier (optional)</span><input class="form-input" data-seb-app="identifier" value="${escapeHtml(app.identifier || '')}" placeholder="com.microsoft.Excel"></label>
-                <label><span>Original executable name (optional)</span><input class="form-input" data-seb-app="original_name" value="${escapeHtml(app.original_name || '')}" placeholder="EXCEL.EXE"></label>
-                <label class="seb-app-arguments"><span>Launch arguments (one per line)</span><textarea class="form-input" data-seb-app="arguments" rows="2" placeholder="--safe-mode">${escapeHtml(args)}</textarea></label>
-            </div>
-            <div class="seb-app-checks">
-                <label><input type="checkbox" data-seb-app="auto_start" ${app.auto_start ? 'checked' : ''}> Start automatically</label>
-                <label><input type="checkbox" data-seb-app="allow_running" ${app.allow_running ? 'checked' : ''}> May already be running</label>
-                <label><input type="checkbox" data-seb-app="allow_user_choose" ${app.allow_user_choose ? 'checked' : ''}> Let student locate app</label>
-                <label><input type="checkbox" data-seb-app="show_in_taskbar" ${app.show_in_taskbar !== false ? 'checked' : ''}> Show in SEB taskbar</label>
-            </div>
-        </div>`;
-}
-
-function addSebPermittedApp() {
-    const list = document.getElementById('seb-permitted-apps');
-    if (!list) return;
-    if (list.querySelectorAll('.seb-app-row').length >= 25) {
-        showToast('SEB supports up to 25 apps in this editor.', 'warning');
-        return;
-    }
-    const empty = list.querySelector('.seb-empty-apps');
-    if (empty) empty.remove();
-    list.insertAdjacentHTML('beforeend', renderSebPermittedAppRow());
-}
-
-function removeSebPermittedApp(button) {
-    const row = button && button.closest('.seb-app-row');
-    if (row) row.remove();
-    const list = document.getElementById('seb-permitted-apps');
-    if (list && !list.querySelector('.seb-app-row')) {
-        list.innerHTML = '<div class="seb-empty-apps">No additional applications are permitted.</div>';
-    }
-}
-
-function collectSebPermittedApps() {
-    return Array.from(document.querySelectorAll('#seb-permitted-apps .seb-app-row')).map(row => {
-        const field = name => row.querySelector(`[data-seb-app="${name}"]`);
-        const argumentsField = field('arguments');
-        return {
-            title: field('title').value.trim(),
-            platform: field('platform').value,
-            executable: field('executable').value.trim(),
-            path: field('path').value.trim(),
-            identifier: field('identifier').value.trim(),
-            original_name: field('original_name').value.trim(),
-            arguments: argumentsField.value.split(/\r?\n/).map(value => value.trim()).filter(Boolean),
-            auto_start: field('auto_start').checked,
-            allow_running: field('allow_running').checked,
-            allow_user_choose: field('allow_user_choose').checked,
-            show_in_taskbar: field('show_in_taskbar').checked
-        };
-    }).filter(app => app.executable);
-}
-
-function toggleSebUrlFilterFields() {
-    const mode = document.getElementById('seb-url-filter-mode');
-    const allowed = document.getElementById('seb-allowed-urls-group');
-    const blocked = document.getElementById('seb-blocked-urls-group');
-    const embedded = document.getElementById('seb-filter-content-group');
-    if (!mode) return;
-    if (allowed) allowed.style.display = mode.value === 'allowlist' ? 'block' : 'none';
-    if (blocked) blocked.style.display = mode.value === 'blocklist' ? 'block' : 'none';
-    if (embedded) embedded.style.display = mode.value === 'off' ? 'none' : 'block';
-}
-
-function collectSebSettings() {
-    const checked = id => !!(document.getElementById(id) && document.getElementById(id).checked);
-    const value = id => document.getElementById(id) ? document.getElementById(id).value : '';
-    const lines = id => value(id).split(/\r?\n/).map(item => item.trim()).filter(Boolean);
-
-    return {
-        url_filter_mode: value('seb-url-filter-mode') || 'off',
-        allowed_urls: lines('seb-allowed-urls'),
-        blocked_urls: lines('seb-blocked-urls'),
-        filter_embedded_content: checked('seb-filter-embedded'),
-        allow_uploads: checked('seb-allow-uploads'),
-        clipboard_mode: value('seb-clipboard-mode') || 'isolated',
-        popup_policy: value('seb-popup-policy') || 'block',
-        allow_navigation: checked('seb-allow-navigation'),
-        allow_reload: checked('seb-allow-reload'),
-        allow_spellcheck: checked('seb-allow-spellcheck'),
-        allow_find: checked('seb-allow-find'),
-        allow_zoom: checked('seb-allow-zoom'),
-        show_taskbar: checked('seb-show-taskbar'),
-        show_wifi_control: checked('seb-show-wifi'),
-        allow_virtual_machine: checked('seb-allow-vm'),
-        allow_screen_capture: checked('seb-allow-capture'),
-        permitted_apps: collectSebPermittedApps()
-    };
-}
-
 function showCreateExamModal(examId = null) {
     const exam = examId ? exams.find(e => e.id == examId) : null;
     const defaultCode = exam ? exam.exam_code : Math.random().toString(36).substring(2, 8).toUpperCase();
     
     // Set wider modal size for spacious card layout
     const modalContainer = document.getElementById('modal-content');
-    modalContainer.classList.add('pg-report-modal');
-    modalContainer.classList.add('pg-settings-modal');
     modalContainer.style.maxWidth = '900px';
     modalContainer.style.width = '95%';
 
@@ -2748,22 +2188,13 @@ function showCreateExamModal(examId = null) {
     const weightHeadMovement = exam && exam.weight_head_movement !== undefined ? exam.weight_head_movement : 2;
     const weightMultiFace = exam && exam.weight_multi_face !== undefined ? exam.weight_multi_face : 3;
     const weightLeavingRoom = exam && exam.weight_leaving_room !== undefined ? exam.weight_leaving_room : 3;
-    const sebSettings = getSebSettingsForExam(exam);
-    const devicePolicy = exam && exam.device_policy
-        ? exam.device_policy
-        : (exam && exam.block_mobile ? 'desktop_only' : (exam ? 'any_supported' : 'desktop_only'));
-    const requireScreenCapability = !!(exam && exam.require_screen_capability);
-    const requireResumeApproval = !!(exam && exam.require_resume_approval);
-    const sebAppsHtml = sebSettings.permitted_apps.length
-        ? sebSettings.permitted_apps.map(renderSebPermittedAppRow).join('')
-        : '<div class="seb-empty-apps">No additional applications are permitted.</div>';
 
     const html = `
-        <div class="modal-header pg-settings-header">
+        <div class="modal-header">
             <h2 class="modal-title" style="font-family: var(--font-sans); font-size:20px; font-weight:700;">${exam ? 'Edit Exam Settings' : 'Enable Proctoring'}</h2>
             <button class="modal-close" onclick="closeModal()">×</button>
         </div>
-        <div class="pg-settings-scroll">
+        <div style="max-height: 70vh; overflow-y: auto; padding-right: 8px;">
             <div class="form-group">
                 <label class="form-label">Exam Title</label>
                 <input type="text" id="exam-title" class="form-input" placeholder="e.g. Midterm Physics" value="${exam ? escapeHtml(exam.title) : ''}">
@@ -2778,15 +2209,14 @@ function showCreateExamModal(examId = null) {
                     <input type="number" id="max-attempts" class="form-input" value="${exam ? exam.max_attempts : 1}" min="1">
                 </div>
                 <div style="flex:1;">
-                    <label class="form-label">End after focus violations</label>
+                    <label class="form-label">Boot Limit (Tab Leaves)</label>
                     <input type="number" id="max-violations" class="form-input" value="${exam ? exam.max_violations : 0}" min="0">
-                    <div style="font-size:9px; color:var(--text-muted); margin-top:2px;">0 = never end automatically</div>
+                    <div style="font-size:9px; color:var(--text-muted); margin-top:2px;">0 = Unlimited (no boot)</div>
                 </div>
             </div>
             <div class="form-group">
                 <label class="form-label">LMS Quiz URL</label>
-                <input type="text" id="exam-url" class="form-input ${exam ? 'pg-readonly-input' : ''}" placeholder="https://canvas.instructure.com/courses/1/quizzes/1" value="${exam ? escapeHtml(exam.canvas_quiz_url) : ''}" ${exam ? 'readonly aria-readonly="true"' : ''}>
-                ${exam ? '<div class="form-hint">Linked to Canvas. Re-enable proctoring from the quiz list to change this URL.</div>' : ''}
+                <input type="text" id="exam-url" class="form-input" placeholder="https://canvas.instructure.com/courses/1/quizzes/1" value="${exam ? escapeHtml(exam.canvas_quiz_url) : ''}">
             </div>
             <div class="form-group">
                 <label class="form-label">Canvas Quiz Password / Access Code (Optional)</label>
@@ -2795,17 +2225,16 @@ function showCreateExamModal(examId = null) {
             </div>
 
             <!-- Quick exam presets -->
-            <div class="form-group pg-quick-presets">
+            <div class="form-group" style="background:#f8fafc; border:1px solid var(--border); border-radius:8px; padding:14px;">
                 <label class="form-label" style="margin-bottom:8px;">Quick preset (optional)</label>
                 <p style="font-size:11px; color:var(--text-muted); margin:0 0 10px 0;">Applies a recommended set of recording, lockdown, and behavior options. You can still customize below.</p>
-                <div class="pg-preset-grid">
-                    <button type="button" class="btn btn-secondary btn-sm pg-exam-preset-btn" data-preset="standard" onclick="applyExamPreset('standard')">Standard</button>
-                    <button type="button" class="btn btn-secondary btn-sm pg-exam-preset-btn" data-preset="strict" onclick="applyExamPreset('strict')">Strict</button>
-                    <button type="button" class="btn btn-secondary btn-sm pg-exam-preset-btn" data-preset="open" onclick="applyExamPreset('open')">Open book</button>
-                    <button type="button" class="btn btn-secondary btn-sm pg-exam-preset-btn" data-preset="seb" onclick="applyExamPreset('seb')">SEB only</button>
-                    <button type="button" class="btn btn-secondary btn-sm pg-exam-preset-btn" data-preset="companion" onclick="applyExamPreset('companion')">Companion</button>
+                <div style="display:grid; grid-template-columns:repeat(auto-fill,minmax(110px,1fr)); gap:8px;">
+                    <button type="button" class="btn btn-secondary btn-sm" onclick="applyExamPreset('standard')">Standard</button>
+                    <button type="button" class="btn btn-secondary btn-sm" onclick="applyExamPreset('strict')">Strict</button>
+                    <button type="button" class="btn btn-secondary btn-sm" onclick="applyExamPreset('open')">Open book</button>
+                    <button type="button" class="btn btn-secondary btn-sm" onclick="applyExamPreset('seb')">SEB only</button>
+                    <button type="button" class="btn btn-secondary btn-sm" onclick="applyExamPreset('companion')">Companion</button>
                 </div>
-                <div id="preset-summary" class="pg-preset-summary" aria-live="polite">Choose a preset to apply a complete starting configuration.</div>
             </div>
             
             <!-- Accordion Section 1: Exam Settings -->
@@ -2853,40 +2282,6 @@ function showCreateExamModal(examId = null) {
                             <div class="proctorio-icon"><img src="icons/secondary-mobile-camera.svg" alt="" /></div>
                             <div class="proctorio-title">Mobile Camera</div>
                             <input type="checkbox" id="chk-mobile" ${exam && exam.require_mobile_camera ? 'checked' : ''} style="display:none;" />
-                        </div>
-                    </div>
-
-                    <label class="seb-inline-check" style="margin: -14px 0 20px; border-color: #93c5fd; background: #eff6ff;">
-                        <input type="checkbox" id="seb-allow-capture" ${sebSettings.allow_screen_capture ? 'checked' : ''}>
-                        <span>
-                            <strong>Capture the screen inside SEB (experimental)</strong>
-                            <small>Use this with Record Screen and Require Safe Exam Browser. ProctorGuard will ask the student to share SEB, show a frozen proof image, and include the screen in the uploaded recording and live snapshots. This relaxes SEB's screen-capture restriction for that exam.</small>
-                        </span>
-                    </label>
-
-                    <div style="margin: 0 0 20px; padding: 16px; border: 1px solid #c4b5fd; border-radius: 10px; background: #faf8ff;">
-                        <h4 style="margin:0 0 5px; font-size:13px; color:var(--text-primary);">Primary device & interruption policy</h4>
-                        <p style="font-size:11px; color:var(--text-muted); margin:0 0 12px; line-height:1.5;">Enforced by the server before the wizard and again when the recording starts. Your existing Mobile Camera option remains separate and requires a computer as the primary device.</p>
-                        <div style="display:grid; grid-template-columns:minmax(210px,1fr) minmax(260px,1.4fr); gap:12px; align-items:start;">
-                            <div>
-                                <label class="form-label" for="device-policy">Allowed primary devices</label>
-                                <select id="device-policy" class="form-input" onchange="syncDevicePolicyControls()">
-                                    <option value="desktop_only" ${devicePolicy === 'desktop_only' ? 'selected' : ''}>Computers only (recommended)</option>
-                                    <option value="desktop_or_tablet" ${devicePolicy === 'desktop_or_tablet' ? 'selected' : ''}>Computers or tablets</option>
-                                    <option value="any_supported" ${devicePolicy === 'any_supported' ? 'selected' : ''}>Any supported device</option>
-                                </select>
-                                <div id="device-policy-note" class="form-hint" style="margin-top:6px;"></div>
-                            </div>
-                            <div style="display:flex; flex-direction:column; gap:8px;">
-                                <label class="seb-inline-check" style="margin:0; background:#fff;">
-                                    <input type="checkbox" id="chk-require-screen-capability" ${requireScreenCapability ? 'checked' : ''} onchange="syncDevicePolicyControls()">
-                                    <span><strong>Require working screen recording</strong><small>Block devices that cannot expose and activate screen capture. This automatically requires Record Screen.</small></span>
-                                </label>
-                                <label class="seb-inline-check" style="margin:0; background:#fff;">
-                                    <input type="checkbox" id="chk-resume-approval" ${requireResumeApproval ? 'checked' : ''}>
-                                    <span><strong>Approve interrupted resumes</strong><small>After a force-close, device change, or connection loss longer than 30 seconds, pause the attempt until you approve it.</small></span>
-                                </label>
-                            </div>
                         </div>
                     </div>
 
@@ -2943,6 +2338,11 @@ function showCreateExamModal(examId = null) {
                             <div class="proctorio-icon"><img src="icons/prevent-reentry.svg" alt="" /></div>
                             <div class="proctorio-title">Prevent Re-entry</div>
                             <input type="checkbox" id="chk-reentry" ${exam && exam.prevent_reentry ? 'checked' : ''} style="display:none;" />
+                        </div>
+                        <div class="proctorio-card ${exam && exam.allow_mobile_devices ? 'selected' : ''}" id="card-allow-mobile" onclick="toggleProctorioOption('chk-allow-mobile', 'card-allow-mobile')" title="Allow iPad/iPhone/Android browsers; skips extension lockdown on those devices">
+                            <div class="proctorio-icon"><img src="icons/secondary-mobile-camera.svg" alt="" /></div>
+                            <div class="proctorio-title">Allow Mobile Devices</div>
+                            <input type="checkbox" id="chk-allow-mobile" ${exam && exam.allow_mobile_devices ? 'checked' : ''} style="display:none;" />
                         </div>
                     </div>
 
@@ -3181,71 +2581,7 @@ function showCreateExamModal(examId = null) {
                         </div>
                         
                         <div id="seb-options-container" style="display: ${exam && exam.require_seb ? 'block' : 'none'}; margin-top: 16px; border-top: 1px solid #cbd5e1; padding-top: 12px;">
-                            <div class="seb-policy-notice">
-                                <strong>Exam-specific SEB policy</strong>
-                                <span>The monitor, download, printing, right-click, camera, and microphone choices above are applied to the generated SEB file automatically. Configure the additional SEB permissions below.</span>
-                            </div>
-
-                            <div class="seb-policy-section">
-                                <div class="seb-policy-heading">
-                                    <div><strong>Website access</strong><span>Control which sites students can open inside SEB.</span></div>
-                                </div>
-                                <label class="seb-field-label" for="seb-url-filter-mode">Filtering mode</label>
-                                <select id="seb-url-filter-mode" class="form-input" onchange="toggleSebUrlFilterFields()">
-                                    <option value="off" ${sebSettings.url_filter_mode === 'off' ? 'selected' : ''}>No URL filter</option>
-                                    <option value="allowlist" ${sebSettings.url_filter_mode === 'allowlist' ? 'selected' : ''}>Only approved websites</option>
-                                    <option value="blocklist" ${sebSettings.url_filter_mode === 'blocklist' ? 'selected' : ''}>Allow the web except blocked websites</option>
-                                </select>
-                                <div id="seb-allowed-urls-group" class="seb-url-list-group">
-                                    <label class="seb-field-label" for="seb-allowed-urls">Approved websites or SEB wildcard patterns</label>
-                                    <textarea id="seb-allowed-urls" class="form-input seb-policy-textarea" placeholder="wikipedia.org&#10;https://desmos.com/*">${escapeHtml(sebSettings.allowed_urls.join('\n'))}</textarea>
-                                    <div class="form-hint">One per line. ProctorGuard and this Canvas quiz's domain are always added automatically.</div>
-                                </div>
-                                <div id="seb-blocked-urls-group" class="seb-url-list-group">
-                                    <label class="seb-field-label" for="seb-blocked-urls">Blocked websites or SEB wildcard patterns</label>
-                                    <textarea id="seb-blocked-urls" class="form-input seb-policy-textarea" placeholder="chat.openai.com&#10;*.example.com">${escapeHtml(sebSettings.blocked_urls.join('\n'))}</textarea>
-                                    <div class="form-hint">One per line. Everything else remains available.</div>
-                                </div>
-                                <label id="seb-filter-content-group" class="seb-inline-check seb-advanced-check">
-                                    <input type="checkbox" id="seb-filter-embedded" ${sebSettings.filter_embedded_content ? 'checked' : ''}>
-                                    <span><strong>Also filter embedded page content</strong><small>Stricter, but can break Canvas images, scripts, videos, or equation tools. Test before enabling.</small></span>
-                                </label>
-                            </div>
-
-                            <div class="seb-policy-section">
-                                <div class="seb-policy-heading"><div><strong>Browser permissions</strong><span>These settings apply only while this exam is running in SEB.</span></div></div>
-                                <div class="seb-permission-grid">
-                                    <label class="seb-inline-check"><input type="checkbox" id="seb-allow-uploads" ${sebSettings.allow_uploads ? 'checked' : ''}><span><strong>File uploads</strong><small>Needed for Canvas file-upload questions.</small></span></label>
-                                    <label class="seb-inline-check"><input type="checkbox" id="seb-allow-navigation" ${sebSettings.allow_navigation ? 'checked' : ''}><span><strong>Back and forward</strong><small>Allow browser-history navigation.</small></span></label>
-                                    <label class="seb-inline-check"><input type="checkbox" id="seb-allow-reload" ${sebSettings.allow_reload ? 'checked' : ''}><span><strong>Reload page</strong><small>Show and permit the reload action.</small></span></label>
-                                    <label class="seb-inline-check"><input type="checkbox" id="seb-allow-spellcheck" ${sebSettings.allow_spellcheck ? 'checked' : ''}><span><strong>Spell check</strong><small>Enable browser spelling assistance.</small></span></label>
-                                    <label class="seb-inline-check"><input type="checkbox" id="seb-allow-find" ${sebSettings.allow_find ? 'checked' : ''}><span><strong>Find on page</strong><small>Permit Ctrl/Cmd + F.</small></span></label>
-                                    <label class="seb-inline-check"><input type="checkbox" id="seb-allow-zoom" ${sebSettings.allow_zoom ? 'checked' : ''}><span><strong>Page zoom</strong><small>Permit accessibility zoom controls.</small></span></label>
-                                    <label class="seb-inline-check"><input type="checkbox" id="seb-show-taskbar" ${sebSettings.show_taskbar ? 'checked' : ''}><span><strong>SEB taskbar</strong><small>Automatically shown when apps are permitted.</small></span></label>
-                                    <label class="seb-inline-check"><input type="checkbox" id="seb-show-wifi" ${sebSettings.show_wifi_control ? 'checked' : ''}><span><strong>Wi-Fi control</strong><small>Let students reconnect to a network.</small></span></label>
-                                </div>
-                                <div class="seb-select-grid">
-                                    <label><span>Clipboard behavior</span><select id="seb-clipboard-mode" class="form-input"><option value="blocked" ${sebSettings.clipboard_mode === 'blocked' ? 'selected' : ''}>Block copy/paste</option><option value="isolated" ${sebSettings.clipboard_mode === 'isolated' ? 'selected' : ''}>Private clipboard inside SEB</option><option value="system" ${sebSettings.clipboard_mode === 'system' ? 'selected' : ''}>Allow system clipboard</option></select><small>The global Disable Clipboard option above always forces Block.</small></label>
-                                    <label><span>Links and pop-up windows</span><select id="seb-popup-policy" class="form-input"><option value="block" ${sebSettings.popup_policy === 'block' ? 'selected' : ''}>Block new windows</option><option value="same_window" ${sebSettings.popup_policy === 'same_window' ? 'selected' : ''}>Open in the same window</option><option value="new_window" ${sebSettings.popup_policy === 'new_window' ? 'selected' : ''}>Allow additional windows</option></select></label>
-                                </div>
-                            </div>
-
-                            <div class="seb-policy-section">
-                                <div class="seb-policy-heading">
-                                    <div><strong>Permitted applications</strong><span>Allow specific Windows or macOS applications to run beside SEB.</span></div>
-                                    <button type="button" class="btn btn-secondary btn-sm" onclick="addSebPermittedApp()">+ Add application</button>
-                                </div>
-                                <div class="seb-policy-warning">Only allow software you trust and test the exact executable on every supported operating system before the exam.</div>
-                                <div id="seb-permitted-apps">${sebAppsHtml}</div>
-                            </div>
-
-                            <details class="seb-policy-section seb-danger-zone">
-                                <summary>High-risk compatibility exceptions</summary>
-                                <p>These weaken SEB's normal isolation and should only be used for a documented accommodation or a tested exam requirement.</p>
-                                <div class="seb-permission-grid">
-                                    <label class="seb-inline-check"><input type="checkbox" id="seb-allow-vm" ${sebSettings.allow_virtual_machine ? 'checked' : ''}><span><strong>Allow virtual machines</strong><small>Permit SEB to run inside a VM.</small></span></label>
-                                </div>
-                            </details>
+                            <p style="font-size:12px; color:var(--text-muted); margin:0;">SEB enforces its own lockdown. Use Lock Down Options above for download/clipboard rules that apply outside SEB.</p>
                         </div>
                     </div>
 
@@ -3323,7 +2659,7 @@ function showCreateExamModal(examId = null) {
             </div>
         </div>
 
-        <div class="pg-settings-footer">
+        <div style="margin-top: 32px; text-align: right; border-top: 1px solid var(--border); padding-top: 15px;">
             <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
             <button class="btn btn-primary" onclick="saveExam(${examId})">${exam ? 'Save Changes' : 'Enable Proctoring'}</button>
         </div>
@@ -3334,8 +2670,6 @@ function showCreateExamModal(examId = null) {
         const el = document.getElementById(sectionId);
         if (el) {
             el.classList.toggle('collapsed');
-            const header = el.querySelector('.proctorio-section-header');
-            if (header) header.setAttribute('aria-expanded', String(!el.classList.contains('collapsed')));
         }
     };
 
@@ -3433,9 +2767,6 @@ function showCreateExamModal(examId = null) {
 
     document.getElementById('modal-content').innerHTML = html;
     applyOptionCardIcons(document.getElementById('modal-content'));
-    enhanceSettingsAccessibility(document.getElementById('modal-content'));
-    toggleSebUrlFilterFields();
-    syncDevicePolicyControls();
 
     // Initialize metric segments visually
     setTimeout(() => {
@@ -3461,8 +2792,6 @@ function toggleProctorioOption(checkboxId, cardId) {
         } else {
             card.classList.remove('selected');
         }
-        card.setAttribute('aria-checked', String(chk.checked));
-        if (checkboxId === 'chk-mobile' || checkboxId === 'chk-screen') syncDevicePolicyControls();
     }
 }
 
@@ -3473,7 +2802,6 @@ function setOptionChecked(checkboxId, cardId, checked) {
     if (card) {
         if (checked) card.classList.add('selected');
         else card.classList.remove('selected');
-        card.setAttribute('aria-checked', String(!!checked));
     }
 }
 
@@ -3486,7 +2814,7 @@ function applyExamPreset(name) {
             downloads: true, cache: false, rc: true, reentry: false,
             verifyVideo: true, verifyAudio: true, verifyDesktop: true, verifyId: false, verifySig: false,
             seb: false, extension: true, companion: false,
-            behavior: 'Recommended', devicePolicy: 'desktop_only', requireCapture: true, approveResume: false
+            behavior: 'Recommended'
         },
         strict: {
             camera: true, mic: true, screen: true, traffic: true, room: true, mobile: true,
@@ -3494,7 +2822,7 @@ function applyExamPreset(name) {
             downloads: true, cache: true, rc: true, reentry: true,
             verifyVideo: true, verifyAudio: true, verifyDesktop: true, verifyId: true, verifySig: true,
             seb: false, extension: true, companion: true,
-            behavior: 'Moderate', devicePolicy: 'desktop_only', requireCapture: true, approveResume: true
+            behavior: 'Moderate'
         },
         open: {
             camera: true, mic: false, screen: false, traffic: false, room: false, mobile: false,
@@ -3502,7 +2830,7 @@ function applyExamPreset(name) {
             downloads: false, cache: false, rc: false, reentry: false,
             verifyVideo: true, verifyAudio: false, verifyDesktop: false, verifyId: false, verifySig: false,
             seb: false, extension: true, companion: false,
-            behavior: 'Open Note', devicePolicy: 'any_supported', requireCapture: false, approveResume: false
+            behavior: 'Open Note'
         },
         seb: {
             camera: true, mic: true, screen: false, traffic: false, room: false, mobile: false,
@@ -3510,7 +2838,7 @@ function applyExamPreset(name) {
             downloads: true, cache: false, rc: true, reentry: false,
             verifyVideo: true, verifyAudio: true, verifyDesktop: false, verifyId: false, verifySig: false,
             seb: true, extension: false, companion: false,
-            behavior: 'Recommended', devicePolicy: 'desktop_only', requireCapture: false, approveResume: false
+            behavior: 'Recommended'
         },
         companion: {
             camera: true, mic: true, screen: true, traffic: false, room: false, mobile: false,
@@ -3518,7 +2846,7 @@ function applyExamPreset(name) {
             downloads: true, cache: false, rc: true, reentry: false,
             verifyVideo: true, verifyAudio: true, verifyDesktop: true, verifyId: false, verifySig: false,
             seb: false, extension: true, companion: true,
-            behavior: 'Recommended', devicePolicy: 'desktop_only', requireCapture: true, approveResume: false
+            behavior: 'Recommended'
         }
     };
     const p = presets[name];
@@ -3563,86 +2891,9 @@ function applyExamPreset(name) {
     if (typeof window.selectBehaviorPreset === 'function') {
         window.selectBehaviorPreset(p.behavior);
     }
-    const devicePolicySelect = document.getElementById('device-policy');
-    if (devicePolicySelect) devicePolicySelect.value = p.devicePolicy;
-    const captureCheck = document.getElementById('chk-require-screen-capability');
-    if (captureCheck) captureCheck.checked = p.requireCapture;
-    const resumeCheck = document.getElementById('chk-resume-approval');
-    if (resumeCheck) resumeCheck.checked = p.approveResume;
-    syncDevicePolicyControls();
-    document.querySelectorAll('.pg-exam-preset-btn').forEach(button => {
-        const active = button.dataset.preset === name;
-        button.classList.toggle('is-active', active);
-        button.setAttribute('aria-pressed', String(active));
-    });
-    const summary = document.getElementById('preset-summary');
-    const descriptions = {
-        standard: 'Standard applied: webcam, audio, screen recording, and core browser controls.',
-        strict: 'Strict applied: maximum recording, identity checks, companion controls, and resume approval.',
-        open: 'Open book applied: webcam monitoring with reduced lockdown and no required screen capture.',
-        seb: 'SEB only applied: Safe Exam Browser is the primary lockdown path.',
-        companion: 'Companion applied: desktop companion controls plus webcam, audio, and screen recording.'
-    };
-    if (summary) summary.textContent = descriptions[name] || 'Preset applied. Review the settings below before saving.';
     showToast(`Applied “${name}” preset — review and save when ready`, 'success');
 }
-function syncDevicePolicyControls() {
-    const select = document.getElementById('device-policy');
-    const note = document.getElementById('device-policy-note');
-    const requireCapture = document.getElementById('chk-require-screen-capability');
-    const screenCheck = document.getElementById('chk-screen');
-    const screenCard = document.getElementById('card-screen');
-    if (!select) return;
-
-    if (requireCapture && requireCapture.checked && screenCheck) {
-        screenCheck.checked = true;
-        if (screenCard) screenCard.classList.add('selected');
-    }
-
-    const notes = {
-        desktop_only: 'Windows, macOS, and Chromebook only. This is the recommended high-stakes setting.',
-        desktop_or_tablet: 'Tablets may enter, but phones are blocked. Screen recording still depends on device capability.',
-        any_supported: 'Phones may enter. Use only when the reduced screen-recording assurance is acceptable.'
-    };
-    if (note) {
-        const secondCamera = document.getElementById('chk-mobile');
-        note.textContent = notes[select.value] || notes.desktop_only;
-        if (secondCamera && secondCamera.checked && select.value !== 'desktop_only') {
-            note.textContent += ' Because Mobile Camera is enabled, phone/tablet primary devices will still be blocked.';
-            note.style.color = 'var(--danger)';
-        } else {
-            note.style.color = '';
-        }
-    }
-}
-
-async function approveSessionResume(sessionId, examId) {
-    try {
-        const response = await apiFetch(`/api/sessions/${sessionId}/approve-resume`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({})
-        });
-        const data = await response.json();
-        if (!response.ok) throw new Error(data.error || 'Approval failed');
-        const local = currentSessionsList.find(s => Number(s.id) === Number(sessionId));
-        if (local) {
-            local.resume_approval_required = false;
-            local.status = data.session && data.session.status ? data.session.status : 'started';
-            local.resume_approved_at = new Date().toISOString();
-        }
-        closeModal();
-        showToast('Student approved to resume this attempt.', 'success');
-        await fetchReportData(examId);
-    } catch (error) {
-        showToast(`Could not approve resume: ${error.message}`, 'error');
-    }
-}
-
 async function saveExam(examId = null) {
-    const selectedDevicePolicy = document.getElementById('device-policy')
-        ? document.getElementById('device-policy').value
-        : 'desktop_only';
     const payload = {
         title: document.getElementById('exam-title').value,
         canvas_quiz_url: document.getElementById('exam-url').value,
@@ -3656,7 +2907,6 @@ async function saveExam(examId = null) {
         disable_right_click: document.getElementById('chk-rc').checked,
         require_fullscreen: document.getElementById('chk-fs').checked,
         require_seb: document.getElementById('chk-seb').checked,
-        seb_settings: collectSebSettings(),
         disable_clipboard: document.getElementById('chk-clipboard').checked,
         disable_printing: document.getElementById('chk-printing').checked,
         only_one_screen: document.getElementById('chk-one-screen').checked,
@@ -3664,11 +2914,7 @@ async function saveExam(examId = null) {
         prevent_reentry: document.getElementById('chk-reentry').checked,
         require_room_scan: document.getElementById('chk-room-scan').checked,
         require_mobile_camera: document.getElementById('chk-mobile') ? document.getElementById('chk-mobile').checked : false,
-        device_policy: selectedDevicePolicy,
-        allow_mobile_devices: selectedDevicePolicy !== 'desktop_only',
-        block_mobile: selectedDevicePolicy === 'desktop_only',
-        require_screen_capability: document.getElementById('chk-require-screen-capability') ? document.getElementById('chk-require-screen-capability').checked : false,
-        require_resume_approval: document.getElementById('chk-resume-approval') ? document.getElementById('chk-resume-approval').checked : false,
+        allow_mobile_devices: document.getElementById('chk-allow-mobile') ? document.getElementById('chk-allow-mobile').checked : false,
         require_extension: document.getElementById('chk-extension').checked,
         record_web_traffic: document.getElementById('chk-ext-traffic') ? document.getElementById('chk-ext-traffic').checked : false,
         disable_new_tabs: document.getElementById('chk-ext-newtabs') ? document.getElementById('chk-ext-newtabs').checked : false,
@@ -3731,7 +2977,7 @@ async function saveExam(examId = null) {
             // If we are in the dashboard, we might want to stay there
             if (currentLiveExamId && examId == currentLiveExamId) {
                 // The exams array is reloaded by loadExams, but we need to re-render the current view
-                setTimeout(() => loadExamDashboard(currentLiveExamId, currentWorkspaceView), 500);
+                setTimeout(() => loadExamDashboard(currentLiveExamId), 500); 
             }
         }
     } catch(err) {
@@ -3740,18 +2986,10 @@ async function saveExam(examId = null) {
 }
 
 function closeModal() {
-    const modalOverlay = document.getElementById('modal-overlay');
-    if (window.activeReviewWheelHandler) {
-        modalOverlay.removeEventListener('wheel', window.activeReviewWheelHandler, true);
-        window.activeReviewWheelHandler = null;
-    }
-    modalOverlay.classList.remove('active', 'pg-review-open');
-    document.body.classList.remove('pg-review-lock');
-    document.documentElement.classList.remove('pg-review-lock');
+    document.getElementById('modal-overlay').classList.remove('active');
     // Reset inline styles that may have been set by the immersive report view
     const mc = document.getElementById('modal-content');
     if (mc) {
-        mc.classList.remove('pg-settings-modal', 'pg-report-modal');
         mc.style.padding = '';
         mc.style.background = '';
         mc.style.border = '';
@@ -3783,7 +3021,7 @@ async function toggleExamStatus(id) {
             
             // If we are currently in the dashboard for this exam, re-render it
             if (currentLiveExamId == id) {
-                loadExamDashboard(id, currentWorkspaceView);
+                loadExamDashboard(id);
             } else {
                 renderExams();
             }

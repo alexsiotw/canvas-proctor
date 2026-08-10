@@ -5,8 +5,7 @@
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "dev": "node server.js",
-    "test": "node --test test/*.test.js"
+    "dev": "node server.js"
   },
   "dependencies": {
     "archiver": "^7.0.1",
